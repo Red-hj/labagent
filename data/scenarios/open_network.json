@@ -1,0 +1,34 @@
+{
+  "title": "开放网络排查：终端跨网段访问（合成演示）",
+  "description": "不使用OSPF故障规则。读取交换机配置与终端输出，提出待验证假设。全部是合成材料，不证明实机效果。",
+  "stages": [
+    {
+      "title": "读取当前材料并提出待验证假设",
+      "description": "开放排查输入：交换机文本与终端信息，没有OSPF拓扑或故障类别标签。",
+      "diagnostic_mode": "open_network",
+      "use_llm": true,
+      "evidence_kind": "demo",
+      "question": "终端通过DHCP取得地址，但不能访问其他网段。请对比现有材料找排查方向，不预设故障类别，也不要把疑点直接当作根因。",
+      "configs": {
+        "SW1": "# 合成演示配置\ninterface Vlanif20\n ip address 10.20.0.1 255.255.255.0\n dhcp select global\n#\nip pool VLAN20\n network 10.20.0.0 mask 255.255.255.0\n gateway-list 10.20.0.254\n dns-list 1.1.1.1\n#\n",
+        "PC1": "合成终端记录，未连接实际设备\nIPv4 Address: 10.20.0.10\nSubnet Mask: 255.255.255.0\nDefault Gateway: 10.20.0.254\nPing 10.20.0.254: 4 packets transmitted, 0 received\nPing 10.30.0.10: 4 packets transmitted, 0 received\n"
+      },
+      "topology": {},
+      "requirements": {"goal": "PC1需要通过实验网关访问10.30.0.10；尚未提供上联设备或VRRP设计。"}
+    },
+    {
+      "title": "补充修改后的当前材料，继续同一会话",
+      "description": "模拟更新网关和终端租约后，网关能通但跨网段仍失败。应依据新材料继续请求路由等证据，不能认定已修复。",
+      "diagnostic_mode": "open_network",
+      "use_llm": true,
+      "evidence_kind": "demo",
+      "question": "已经按实验设计将DHCP网关改为10.20.0.1并重新获取租约。现在能ping通本地网关，但仍不能访问10.30.0.10，请基于当前材料继续排查。",
+      "configs": {
+        "SW1": "# 合成演示修改后配置\ninterface Vlanif20\n ip address 10.20.0.1 255.255.255.0\n dhcp select global\n#\nip pool VLAN20\n network 10.20.0.0 mask 255.255.255.0\n gateway-list 10.20.0.1\n dns-list 1.1.1.1\n#\n",
+        "PC1": "合成终端记录，未连接实际设备\nIPv4 Address: 10.20.0.10\nSubnet Mask: 255.255.255.0\nDefault Gateway: 10.20.0.1\nPing 10.20.0.1: 4 packets transmitted, 4 received\nPing 10.30.0.10: 4 packets transmitted, 0 received\n"
+      },
+      "topology": {},
+      "requirements": {"goal": "PC1需要通过实验网关访问10.30.0.10；尚未提供完整去程和回程路由证据。"}
+    }
+  ]
+}

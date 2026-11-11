@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LabAgent · 网络实验助教</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/knowledge.css">
+</head>
+<body>
+  <header><div class="brand"><span class="logo">L</span><div><strong>LabAgent</strong><small>网络实验诊断与学习指导</small></div></div><span id="health" class="pill">连接本地引擎…</span></header>
+  <main>
+    <div class="intro"><div><span class="eyebrow">网络实验工作台</span><h1>从发现故障，到验证修复。</h1><p>根据配置和检查证据定位问题，循序获取提示，再提交运行结果完成复测。</p></div><div class="local-note">本地运行 · 数据保存在项目内<br><span>OSPF 规则检查 · 开放网络排查</span></div></div>
+    <div class="workspace">
+      <section class="panel input-panel">
+        <div class="section-head"><h2>实验输入</h2><button id="new-session" class="link-button">开始新实验</button></div>
+        <label for="diagnostic-mode">排查模式</label><select id="diagnostic-mode"><option value="ospf_rules">OSPF 规则检查与分级提示</option><option value="open_network">开放网络排查 · 从原始材料提出假设</option></select><p id="mode-description" class="muted small">使用明确的 OSPF 检查规则，支持修改后复测。</p>
+        <label for="knowledge-scope">本次使用的实验资料</label><select id="knowledge-scope"><option value="default">default · 通用资料</option></select>
+        <details><summary>导入或试查教学资料</summary>
+          <p class="muted small">支持 UTF-8 的 .txt / .md，也可粘贴正文。资料用于检索参考；本实验的目标区域等要求仍在“拓扑与实验要求”中明确设置。</p>
+          <label class="file-button" for="knowledge-file">读取资料文件<input id="knowledge-file" type="file" accept=".txt,.md"></label>
+          <label for="knowledge-title">资料标题</label><input id="knowledge-title" type="text" maxlength="120" placeholder="例如：OSPF 单区域实验指导">
+          <label for="knowledge-import-scope">归属范围</label><input id="knowledge-import-scope" type="text" value="ospf-lab" maxlength="64" placeholder="英文字母、数字、短横线，如 ospf-lab">
+          <label for="knowledge-version">资料版本</label><input id="knowledge-version" type="text" value="v1" maxlength="60">
+          <label for="knowledge-source">来源说明</label><input id="knowledge-source" type="text" value="用户提供的实验教学资料" maxlength="200">
+          <label for="knowledge-url">参考链接（可选）</label><input id="knowledge-url" type="url" placeholder="https://…">
+          <label for="knowledge-content">资料正文</label><textarea id="knowledge-content" rows="6"></textarea>
+          <button id="knowledge-import" class="secondary">保存到本地知识库</button>
+          <label for="knowledge-query">试查问题</label><textarea id="knowledge-query" rows="2" placeholder="例如：邻居正常但端到端 Ping 不通，应继续检查什么？"></textarea>
+          <button id="knowledge-search" class="secondary">试查所选范围</button><p id="knowledge-message" class="muted small" role="status" aria-live="polite"></p><div id="knowledge-preview"></div>
+        </details>
+        <label for="case-select">演示案例</label><div class="row"><select id="case-select"></select><button id="load-case" class="secondary">载入</button></div><p id="case-description" class="muted"></p><button id="next-stage" class="secondary" hidden>载入下一阶段演示输入</button>
+        <label for="question">你遇到了什么问题？</label><textarea id="question" rows="2"></textarea>
+        <div class="section-head compact"><label id="materials-label">设备配置</label><label class="file-button" for="config-files">导入 .txt / .cfg / .log<input id="config-files" type="file" multiple accept=".txt,.cfg,.conf,.log,.md"></label></div>
+        <p id="materials-description" class="muted small">文件名须对应设备名，如 R1.txt。也可以直接修改下方配置。</p><button id="add-material" class="secondary" hidden>新增一份材料</button><div id="configs"></div>
+        <details><summary>拓扑与实验要求</summary><label for="topology">拓扑 JSON</label><textarea id="topology" class="code" rows="9"></textarea><label for="requirements">实验要求 JSON</label><textarea id="requirements" class="code" rows="3"></textarea><label for="routing-queries">路由检查目标 JSON</label><textarea id="routing-queries" class="code" rows="3">[]</textarea></details>
+        <details><summary>读取设备命令原始输出</summary><p class="muted small">支持 display ospf peer、display ip routing-table、Ping 汇总。每条记录包含 device、command、text。完整路由表还需 complete: true。先确认采集，再使用下方绑定按钮关联当前配置。</p><label for="command-outputs">命令输出 JSON 数组</label><textarea id="command-outputs" class="code" rows="8">[]</textarea></details>
+        <details id="observations-section"><summary>提交修复后的运行观测</summary><p class="muted small">填写你在实验设备或仿真环境实际采集的结果。此处核对提交内容，不会连接设备执行命令。不要使用旧配置的观测。</p><textarea id="observations" class="code" rows="9" aria-label="运行观测 JSON"></textarea><label class="check"><input id="fresh-observations" type="checkbox">这些结果是针对当前配置新采集的</label><button id="bind-observations" class="secondary">绑定当前配置指纹</button><p id="binding-status" class="muted small"></p></details>
+        <div id="hint-options" class="options"><label for="hint-level">提示等级</label><select id="hint-level"><option value="1">1 · 检查方向</option><option value="2">2 · 定位线索</option><option value="3">3 · 修改建议</option></select></div>
+        <label class="check"><input id="use-llm" type="checkbox" disabled>使用已配置模型调用证据工具并补充教学解释</label>
+        <p class="muted small">启用后会将问题和相关检查证据发送至已配置的模型服务。调用失败时仍可查看本地诊断结果。</p>
+        <button id="diagnose" class="primary">开始诊断 / 再次复测 <span>→</span></button><p id="message" role="status" aria-live="polite"></p>
+      </section>
+      <section class="panel result-panel">
+        <div class="section-head"><h2>诊断与学习记录</h2><button id="export" class="link-button" disabled>保存记录到项目</button></div>
+        <div id="empty" class="empty"><div class="empty-icon">⌁</div><h3>准备好一次有依据的排查</h3><p>选择案例或上传配置，点击开始诊断。<br>没有运行证据时，系统会保留“待复测”状态。</p><div class="steps"><span>配置检查</span><b>→</b><span>分级提示</span><b>→</b><span>修复复测</span></div></div>
+        <div id="result" hidden>
+          <div id="status-banner" class="status-banner"><span id="status-label"></span><p id="status-explanation"></p></div>
+          <div id="rule-stats" class="stats"><div><strong id="fault-count">0</strong><span>发现问题</span></div><div><strong id="unknown-count">0</strong><span>待确认项</span></div><div><strong id="check-count">0</strong><span>配置检查通过</span></div></div>
+          <div class="hint"><span class="eyebrow" id="hint-label">当前提示</span><p id="hint-text"></p><p id="llm-status" class="muted small"></p><div id="llm-text"></div><details id="llm-tools" hidden><summary>查看模型读取的证据工具</summary><pre id="llm-tool-list"></pre></details></div>
+          <div class="tabs" role="tablist"><button class="active" data-tab="evidence" role="tab" aria-selected="true">检查证据</button><button data-tab="trace" role="tab" aria-selected="false">执行记录</button><button data-tab="knowledge" role="tab" aria-selected="false">知识依据</button><button data-tab="record" role="tab" aria-selected="false">学习记录</button><button data-tab="report" role="tab" aria-selected="false">实验报告</button></div>
+          <div id="tab-evidence" class="tab-content"></div><div id="tab-trace" class="tab-content" hidden></div><div id="tab-knowledge" class="tab-content" hidden></div><div id="tab-record" class="tab-content" hidden></div><div id="tab-report" class="tab-content" hidden><p class="muted small">根据当前会话的实际记录生成。点击保存记录后，Markdown 报告一并写入项目。</p><pre id="report-text"></pre></div>
+          <details><summary>给队友接入的完整 JSON</summary><pre id="raw-result"></pre></details>
+        </div>
+      </section>
+    </div>
+    <footer>支持资料检索、工具调用与同会话排查；实验记录保存在本项目内。</footer>
+  </main><script src="/app.js"></script>
+</body>
+</html>

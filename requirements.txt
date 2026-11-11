@@ -1,0 +1,2 @@
+# Compatibility mode uses the standard library. Full graph mode also needs
+# requirements-workflow.txt; use setup.cmd to create the project environment.

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LabAgent · 实验诊断</title><link rel="stylesheet" href="/student.css">
+</head>
+<body>
+  <div id="ambient-network" aria-hidden="true"></div>
+  <header><a class="brand" href="/"><span class="logo">L<span class="logo-dot"></span></span><span>LabAgent<small>实验材料 · 分析与排查</small></span></a><div class="header-actions"><span id="service-status" class="service-status" role="status">正在连接服务…</span><button id="motion-toggle" class="motion-toggle" aria-pressed="false">暂停背景动效</button></div></header>
+  <main>
+    <div class="workspace">
+      <section class="card input-card" aria-labelledby="input-heading">
+        <div class="card-heading"><h2 id="input-heading"><span class="section-index">01</span>诊断材料</h2><button id="new-diagnosis" class="text-button">新的排查</button></div>
+        <div id="drop-zone" class="drop-zone">
+          <svg width="34" height="34" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M10 22H8a6 6 0 0 1-1-12 9 9 0 0 1 17 1 5.5 5.5 0 0 1 0 11h-2M16 26V13m-5 5 5-5 5 5"/></svg>
+          <strong>拖入文件，或点击添加</strong><p>配置、设备输出、终端信息、实验说明都可以</p>
+          <button id="choose-files" class="upload-button">添加诊断材料</button><input id="material-files" type="file" multiple accept=".txt,.cfg,.conf,.log,.md,.json" hidden>
+          <small>支持 txt、cfg、log、md、json 等文本文件</small>
+        </div>
+        <div class="materials-heading"><span id="material-count">尚未添加材料</span><button id="paste-toggle" class="text-button" aria-expanded="false" aria-controls="paste-panel">直接粘贴内容</button></div>
+        <div id="paste-panel" class="paste-panel" hidden><label for="pasted-material">粘贴诊断材料</label><textarea id="pasted-material" rows="5" placeholder="粘贴设备配置、命令输出或实验说明…"></textarea><button id="add-pasted" class="secondary-button">添加这份材料</button></div>
+        <div id="material-list" class="material-list" aria-live="polite"></div>
+        <label for="problem">补充说明 <span class="optional">选填</span></label><textarea id="problem" rows="3" placeholder="例如：终端拿到了地址，但访问不了其他网段。也可以直接上传材料开始分析。"></textarea>
+        <button id="analyze" class="primary-button" disabled>开始诊断 <span aria-hidden="true">→</span></button>
+        <p class="privacy-note">分析时会将相关材料内容发送至已配置的模型服务。</p><p id="message" class="message" role="status" aria-live="polite"></p>
+      </section>
+      <section class="card result-card" aria-labelledby="result-heading">
+        <div class="card-heading"><h2 id="result-heading"><span class="section-index">02</span>诊断与交流</h2><button id="save-report" class="text-button" hidden>保存实验报告</button></div>
+        <div id="request-status" class="request-status" role="status" aria-live="polite" hidden><span class="status-indicator" aria-hidden="true"></span><span id="request-status-text"></span><span id="request-elapsed"></span></div>
+        <div id="empty-result" class="empty-result"><span class="empty-symbol" aria-hidden="true">⌁</span><h3>准备好材料，就可以开始。</h3><p>这里会显示问题原因、材料依据和下一步操作。</p><div class="flow"><span>提供材料</span><b>→</b><span>分析问题</span><b>→</b><span>补充验证</span></div></div>
+        <div id="analysis-result" hidden>
+          <div class="interaction-actions"><button data-intent="ask">解释一下原因</button><button data-intent="repair">给我修改步骤</button><button data-intent="verify">核对修改结果</button></div>
+          <div class="analysis-summary"><span id="result-state" class="eyebrow">本次分析</span><p id="analysis-summary"></p></div>
+          <section id="steps-section" hidden><h3 class="subheading">操作步骤</h3><ol id="guidance-steps" class="guidance-steps"></ol></section>
+          <div id="verification-checks" class="verification-checks" hidden></div>
+          <div id="hypotheses"></div><section id="requests-section" class="requests-section" hidden><h3>还需要这些材料</h3><p class="section-note">可以直接粘贴对应输出，也可以在左侧上传文件。</p><div id="evidence-requests"></div></section>
+          <details id="references-section" class="references-section" hidden><summary>参考资料</summary><div id="references"></div></details>
+          <section class="dialogue-section"><div class="dialogue-heading"><h3>继续交流</h3><span>保留本次排查上下文</span></div><div id="conversation" class="conversation" aria-live="polite"></div><form id="followup-form"><label for="followup-message" class="sr-only">继续追问</label><textarea id="followup-message" rows="2" aria-describedby="followup-shortcuts" placeholder="为什么这里不对？我已经修改了，还需要验证什么？"></textarea><div class="composer-footer"><span id="followup-shortcuts">Enter 发送 · Shift+Enter 换行</span><button id="send-followup" class="send-button" type="submit">发送追问 ↗</button></div></form></section>
+        </div>
+      </section>
+    </div>
+    <footer><span>LabAgent / 从读懂问题开始</span><span>材料与过程保存在项目文件夹内</span></footer>
+  </main><div id="feedback-toast" class="feedback-toast" role="status" aria-live="polite" hidden></div><script src="/vendor/tsparticles.slim.bundle.min.js"></script><script src="/ambient-network.js"></script><script src="/student.js"></script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "ospf-area", "title": "互联链路的 OSPF 区域检查",
+    "codes": ["AREA_MISMATCH", "AREA_POLICY_VIOLATION"],
+    "content": "建立 OSPF 邻居的互连接口需要属于相同区域。应比较拓扑中相连的接口，不能要求全网所有接口都属于同一区域。认定哪一端配置错误，需要结合本实验规定的目标区域。两端区域相同也可能共同违反实验要求。",
+    "source_type": "本地整理的教学说明",
+    "reference_url": "https://info.support.huawei.com/network/ptmngsys/Web/tsrev_ce/cn/content/ce/12_edesk_dc_fail_to_establish_ospf_peer/edesk_dc_fail_to_establish_ospf_peer_edesk004.html"
+  },
+  {
+    "id": "ospf-interface", "title": "接口、IP 和 OSPF 启用检查",
+    "codes": ["INTERFACE_SHUTDOWN", "SUBNET_MISMATCH", "DUPLICATE_IP", "OSPF_NOT_ENABLED", "SILENT_INTERFACE", "MISSING_IP"],
+    "content": "先确认互联接口状态和 IP，再检查接口是否启用 OSPF。VRP 的 network 配置需要匹配接口主 IP；也可以在接口直接启用 OSPF。配置中的 undo shutdown 只表示管理状态允许启用，不能证明物理链路已经 Up。静默接口不能正常发送 OSPF Hello。",
+    "source_type": "本地整理的教学说明",
+    "reference_url": "https://info.support.huawei.com/network/ptmngsys/Web/tsrev_ar/cn/content/ar/17_edesk_ospf_peer_status_abnormal/edesk_ospf_peer_status_abnormal_edesk001.html"
+  },
+  {
+    "id": "ospf-runtime", "title": "配置检查与运行复测的区别",
+    "codes": ["PING_FAILED", "NEIGHBOR_NOT_FULL"],
+    "content": "直连接口能够 Ping 通，不代表 OSPF 邻居已建立。静态配置检查通过后，还需检查 display ospf peer、display ip routing-table 和端到端 Ping。本地版只核对用户提交的结构化观测，不会真实连接设备执行 Ping。两端点直连实验预期邻居达到 Full；共享广播网的其他场景可能正常停留在 2-Way，需要另行设置验证规则。",
+    "source_type": "本地整理的教学说明",
+    "reference_url": "https://info.support.huawei.com/network/ptmngsys/Web/tsrev_ar/cn/content/ar/17_edesk_ospf_peer_status_abnormal/edesk_ospf_peer_status_abnormal_edesk001.html"
+  },
+  {
+    "id": "ospf-parameters", "title": "Router ID 与邻居参数",
+    "codes": ["DUPLICATE_ROUTER_ID", "TIMER_MISMATCH", "UNSUPPORTED_CONFIG", "AMBIGUOUS_OSPF_BINDING"],
+    "content": "检查互联两端的 Router ID 和邻居参数。OSPF 进程号是本地标识，两台设备进程号不同本身不构成故障。本地版检查显式 Router ID 冲突、Hello/Dead 定时器；没有显式 Router ID 时不推测其运行值。认证、特殊网络类型、多地址等未支持配置会要求人工确认。",
+    "source_type": "本地整理的教学说明",
+    "reference_url": "https://info.support.huawei.com/network/ptmngsys/Web/tsrev_ce/cn/content/ce/12_edesk_dc_fail_to_establish_ospf_peer/edesk_dc_fail_to_establish_ospf_peer_edesk004.html"
+  }
+]
