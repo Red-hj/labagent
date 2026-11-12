@@ -1,6 +1,6 @@
 # LabAgent 实验诊断工具
 
-当前版本 v0.7.3，默认页面只需要用户提供诊断材料。上传文件或粘贴内容后直接开始分析，问题描述可以留空。分析后可以继续追问原因、获取修改步骤、直接补充请求中的材料，再核对修改与测试结果。
+当前版本 v0.8.0，默认页面只需要用户提供诊断材料。上传文件或粘贴内容后直接开始分析，问题描述可以留空。分析后可以继续追问原因、获取修改步骤、直接补充请求中的材料，再核对修改与测试结果。
 
 已有两类后端能力：
 
@@ -36,6 +36,16 @@ DeepSeek Flash 与本地 LangGraph 已接通。开放模式已经用 DHCP/终端
 开放模式分析上传材料，逐行核对引用，给出排查方向和具体材料请求。上传补充输出后可继续分析并核对复测记录。OSPF 模式提供规则检查，开放模式提供模型分析。AgentArts 云端接入是下一阶段工作。
 
 密钥、运行数据和个人课程资料不进入协作包。所有主动生成文件、环境与缓存均位于本项目内。
+
+## 三人在线测试
+
+[在Render创建免费测试站点](https://render.com/deploy?repo=https://github.com/Red-hj/labagent)。部署配置在 `render.yaml`：Free计划、Docker运行现有Python与LangGraph后端、健康检查 `/api/health`，从main更新。
+
+首次部署时在Render填写 `LABAGENT_LLM_KEY`。其余模型参数已经配置；平台自动生成 `LABAGENT_TEAM_PASSWORD`，可在服务Environment中查看。三人打开站点后共用用户名 `labagent` 和这个访问口令，进入同一个测试环境。线上“下载实验报告”会把Markdown报告保存到访问者电脑。
+
+Render免费服务闲置15分钟后休眠，再次访问约一分钟唤醒；本地文件、SQLite会话会在休眠、重启或重新部署后重置。完成测试后下载报告留存。主机采用[免费方案](https://render.com/docs/free)，DeepSeek调用按现有模型账户用量计费。
+
+自有服务器也可运行本项目Docker镜像，挂载 `/app/runtime` 与 `/app/data/course_notes` 以持久保存过程和课程资料。`PORT`设置监听端口，`LABAGENT_PUBLIC_URL`设置HTTPS网站根地址，`LABAGENT_TEAM_PASSWORD`设置团队口令；Render会自动提供线上地址。
 
 ## 开发入口
 

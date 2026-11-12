@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 const materials = new Map();
 let sessionId = null;
 let modelReady = false;
+let online = false;
 let busy = false;
 let evidenceKind = "user_submitted";
 let knowledgeScope = "default";
@@ -279,12 +280,25 @@ $("new-diagnosis").addEventListener("click", () => {
 });
 $("save-report").addEventListener("click", async () => {
   $("save-report").disabled = true;
-  try { await api("/api/export", {session_id:sessionId}); message("实验报告已保存到项目文件夹。"); }
+  try {
+    const report = await api("/api/export", {session_id:sessionId});
+    if (online) {
+      const url = URL.createObjectURL(new Blob([report.markdown], {type:"text/markdown;charset=utf-8"}));
+      const link = element("a"); link.href = url; link.download = report.filename;
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      message("实验报告已下载。");
+    } else message("实验报告已保存到项目文件夹。");
+  }
   catch (error) { message(error.message, true); }
   finally { $("save-report").disabled = false; }
 });
 async function start() {
-  const health = await api("/api/health"); modelReady = health.llm_configured; setBusy(false);
+  const health = await api("/api/health"); modelReady = health.llm_configured; online = health.online; setBusy(false);
+  if (online) {
+    $("save-report").textContent = "下载实验报告";
+    document.querySelector("footer span:last-child").textContent = "测试过程保存在当前在线服务";
+  }
   const savedSession = new URLSearchParams(window.location.search).get("session");
   if (savedSession && /^[a-f0-9]{32}$/.test(savedSession)) {
     const saved = await api("/api/sessions/" + savedSession);

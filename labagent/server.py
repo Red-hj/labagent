@@ -1,6 +1,8 @@
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import base64
+import hmac
 from pathlib import Path
 import re
 import threading
@@ -44,15 +46,36 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def safe_host(self):
-        port = self.server.server_port
-        return self.headers.get("Host") in (f"127.0.0.1:{port}", f"localhost:{port}")
+        return self.headers.get("Host") in self.server.allowed_hosts
+
+    def team_access(self):
+        if not self.server.team_password:
+            return True
+        try:
+            scheme, value = self.headers.get("Authorization", "").split(" ", 1)
+            credentials = base64.b64decode(value, validate=True).decode("utf-8")
+            if scheme.lower() == "basic" and hmac.compare_digest(credentials.encode(), ("labagent:" + self.server.team_password).encode()):
+                return True
+        except (ValueError, UnicodeError):
+            pass
+        content = "请输入团队访问口令".encode()
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="LabAgent", charset="UTF-8"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(content)
+        return False
 
     def do_GET(self):
         if not self.safe_host():
-            return self.reply({"error": "只接受本机地址访问"}, 403)
+            return self.reply({"error": "请使用当前网站地址访问"}, 403)
         path = urlparse(self.path).path
         if path == "/api/health":
-            return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "llm_configured": configured(), "llm": public_config()})
+            return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "llm_configured": configured(), "llm": public_config()})
+        if not self.team_access():
+            return
         if path == "/api/knowledge/scopes":
             return self.reply({"scopes": list_scopes()})
         if path == "/api/knowledge/documents":
@@ -106,10 +129,11 @@ class Handler(BaseHTTPRequestHandler):
         self.reply({"error": "未找到内容"}, 404)
 
     def do_POST(self):
-        port = self.server.server_port
         origin = self.headers.get("Origin")
-        if not self.safe_host() or (origin and origin not in (f"http://127.0.0.1:{port}", f"http://localhost:{port}")):
-            return self.reply({"error": "只接受本机同源请求"}, 403)
+        if not self.safe_host() or (origin and origin not in self.server.allowed_origins):
+            return self.reply({"error": "请从当前网站提交请求"}, 403)
+        if not self.team_access():
+            return
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.reply({"error": "请使用 application/json"}, 415)
         path = urlparse(self.path).path
@@ -140,7 +164,10 @@ class Handler(BaseHTTPRequestHandler):
                 target.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
                 report_path = target.with_suffix(".md")
                 report_path.write_text(generate_report(history), encoding="utf-8")
-                return self.reply({"path": str(target), "report_path": str(report_path)})
+                result = {"path": str(target), "report_path": str(report_path)}
+                if self.server.public_url:
+                    result.update(markdown=report_path.read_text(encoding="utf-8"), filename="labagent-" + session[:8] + ".md")
+                return self.reply(result)
             validate(payload)
             if path == "/api/fingerprint":
                 return self.reply({"config_fingerprint": fingerprint(payload)})
@@ -168,9 +195,22 @@ class Handler(BaseHTTPRequestHandler):
             self.server.write_log(traceback.format_exc(), error=True)
 
 
-def create_server(port=8765, database=None):
+def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None, team_password=""):
+    if public_url:
+        parsed = urlparse(public_url)
+        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            raise ValueError("线上地址须为HTTPS网站根地址")
+        public_url = parsed.scheme + "://" + parsed.netloc
+        if not team_password:
+            raise ValueError("请设置LABAGENT_TEAM_PASSWORD作为三人测试访问口令")
     store = Store(database)
-    server = ThreadingHTTPServer(("127.0.0.1", port), partial(Handler, store=store))
+    server = ThreadingHTTPServer((host, port), partial(Handler, store=store))
+    server.public_url, server.team_password = public_url, team_password
+    server.allowed_hosts = {f"127.0.0.1:{server.server_port}", f"localhost:{server.server_port}"}
+    server.allowed_origins = {"http://" + item for item in server.allowed_hosts}
+    if public_url:
+        server.allowed_hosts.add(urlparse(public_url).netloc)
+        server.allowed_origins.add(public_url)
     server.diagnosis_slots = threading.BoundedSemaphore(4)
     server.session_locks = [threading.Lock() for _ in range(32)]
     server.workflow_database = store.path.with_name("workflow-" + store.path.name)
@@ -181,14 +221,14 @@ def create_server(port=8765, database=None):
         with log_lock, path.open("a", encoding="utf-8") as file:
             file.write(stamp + " " + message + "\n")
     server.write_log = write_log
-    write_log("LabAgent " + __version__ + " started on 127.0.0.1:" + str(server.server_port))
+    write_log("LabAgent " + __version__ + " started on " + host + ":" + str(server.server_port))
     server.daemon_threads = True
     return server
 
 
-def serve(port=8765):
-    with create_server(port) as server:
-        print(f"LabAgent: http://127.0.0.1:{server.server_port}", flush=True)
+def serve(port=8765, *, host="127.0.0.1", public_url=None, team_password=""):
+    with create_server(port, host=host, public_url=public_url, team_password=team_password) as server:
+        print(f"LabAgent: {public_url or ('http://' + host + ':' + str(server.server_port))}", flush=True)
         print("Local rules enabled. Ctrl+C to stop.", flush=True)
         try:
             server.serve_forever()

@@ -4,6 +4,7 @@ sys.dont_write_bytecode = True
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from labagent.engine import diagnose
@@ -17,7 +18,8 @@ def main():
     parser = argparse.ArgumentParser(description="LabAgent local OSPF assistant")
     commands = parser.add_subparsers(dest="command")
     serve = commands.add_parser("serve", help="Start local web UI and HTTP API")
-    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8765")))
+    serve.add_argument("--host", default=os.environ.get("LABAGENT_HOST", "127.0.0.1"))
     check = commands.add_parser("diagnose", help="Diagnose a JSON input without starting the server")
     check.add_argument("input", type=Path)
     check.add_argument("--output", type=Path)
@@ -36,7 +38,9 @@ def main():
             print(text)
     else:
         from labagent.server import serve
-        serve(getattr(args, "port", 8765))
+        serve(getattr(args, "port", 8765), host=getattr(args, "host", "127.0.0.1"),
+              public_url=os.environ.get("LABAGENT_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL"),
+              team_password=os.environ.get("LABAGENT_TEAM_PASSWORD", ""))
 
 
 if __name__ == "__main__":

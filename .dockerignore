@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+!.env.example
+.venv
+runtime
+handoff
+data/course_notes
+**/__pycache__
+**/*.pyc

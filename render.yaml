@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: labagent
+    runtime: docker
+    repo: https://github.com/Red-hj/labagent
+    branch: main
+    plan: free
+    region: singapore
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: LABAGENT_LLM_URL
+        value: https://api.deepseek.com/chat/completions
+      - key: LABAGENT_LLM_MODEL
+        value: deepseek-flash
+      - key: LABAGENT_LLM_THINKING
+        value: disabled
+      - key: LABAGENT_LLM_KEY
+        sync: false
+      - key: LABAGENT_TEAM_PASSWORD
+        generateValue: true
