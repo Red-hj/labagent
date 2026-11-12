@@ -1,0 +1,28 @@
+{
+  "case_type": "fault",
+  "findings": [
+    {
+      "code": "AREA_MISMATCH",
+      "devices": [
+        "R1",
+        "R2"
+      ],
+      "link_id": "r1-r2"
+    },
+    {
+      "code": "AREA_POLICY_VIOLATION",
+      "devices": [
+        "R2"
+      ],
+      "link_id": "r1-r2"
+    }
+  ],
+  "injected_on": "R2:GE0/0/0",
+  "label_source": "按地址表和单根因变更预先定义；待教师或队友复核",
+  "reason": "仅将 R2 互联接口的 network 从 Area 0 移至 Area 1；保留其 LAN 在 Area 0。",
+  "repair": "在 R2 的 OSPF 1 Area 1 视图撤销互联 network，在 Area 0 恢复同一条 network。",
+  "status": "fault_found",
+  "title": "互联 Area 不一致",
+  "unknowns": [],
+  "verification": "not_run"
+}

@@ -1,0 +1,20 @@
+{
+  "case_type": "fault",
+  "findings": [
+    {
+      "code": "OSPF_NOT_ENABLED",
+      "devices": [
+        "R2"
+      ],
+      "link_id": "r1-r2"
+    }
+  ],
+  "injected_on": "R2:GE0/0/0",
+  "label_source": "按地址表和单根因变更预先定义；待教师或队友复核",
+  "reason": "只移除 R2 Area 0 的互联 network，保持接口地址正常。",
+  "repair": "在 R2 的 OSPF 1 Area 0 恢复 network 10.12.0.0 0.0.0.255。",
+  "status": "fault_found",
+  "title": "network 未匹配",
+  "unknowns": [],
+  "verification": "not_run"
+}

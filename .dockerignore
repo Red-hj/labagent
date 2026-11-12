@@ -6,5 +6,7 @@
 runtime
 handoff
 data/course_notes
+data/b_benchmark
+data/b_private
 **/__pycache__
 **/*.pyc
