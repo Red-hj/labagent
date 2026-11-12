@@ -39,7 +39,9 @@ DeepSeek Flash 与本地 LangGraph 已接通。开放模式已经用 DHCP/终端
 
 ## 三人在线测试
 
-[在Render创建免费测试站点](https://render.com/deploy?repo=https://github.com/Red-hj/labagent)。部署配置在 `render.yaml`：Free计划、Docker运行现有Python与LangGraph后端、健康检查 `/api/health`，从main更新。
+已上线：[LabAgent在线测试站](https://labagent-15yh.onrender.com/)。三人共用用户名 `labagent` 与团队口令；口令在Render服务的Environment中对应`LABAGENT_TEAM_PASSWORD`。
+
+[在自己的Render账号创建免费测试站点](https://render.com/deploy?repo=https://github.com/Red-hj/labagent)。部署配置在 `render.yaml`：Free计划、Docker运行现有Python与LangGraph后端、健康检查 `/api/health`，从main构建。当前通过公开仓库URL部署，更新代码后可在Render的Manual Deploy中部署最新提交；连接GitHub集成后可使用自动部署。
 
 首次部署时在Render填写 `LABAGENT_LLM_KEY`。其余模型参数已经配置；平台自动生成 `LABAGENT_TEAM_PASSWORD`，可在服务Environment中查看。三人打开站点后共用用户名 `labagent` 和这个访问口令，进入同一个测试环境。线上“下载实验报告”会把Markdown报告保存到访问者电脑。
 
@@ -68,7 +70,7 @@ GitHub仓库：[Red-hj/labagent](https://github.com/Red-hj/labagent)。首次协
 
 本轮改动集中在引擎交互、学生入口和你指定的背景效果。专业工作台的 web/index.html、web/app.js、web/style.css 及队友实验资料未改动。付雨航继续真实实验与评测，赵亦康继续真实案例联调、演示与比赛展示；AgentArts平台接入仍由黄泓钧推进。
 
-完整包适合在新目录运行。已有v0.7.0的队友使用 LabAgent_update_v0.7.0_to_v0.7.3.zip；仍在v0.6的队友先合并上一份v0.6到v0.7的增量。只合并改动文件；遇到自己已修改的同名文件先比较再合并，保留各自的实验数据与本地配置。不要直接用完整文件夹覆盖队友的工作。
+完整包适合在新目录运行。已有v0.7.3的队友使用 LabAgent_update_v0.7.3_to_v0.8.0.zip；更早版本依次合并对应增量，也可以从GitHub获取最新代码。只合并改动文件；遇到自己已修改的同名文件先比较再合并，保留各自的实验数据与本地配置。不要直接用完整文件夹覆盖队友的工作。
 
 ## 验证
 
