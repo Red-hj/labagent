@@ -275,12 +275,40 @@ def prepare_model(path, mode):
     print(f'Wrote {len(inputs)} requests without labels -> {path}')
 
 
+def comparison(reports):
+    modes = ('rules', 'model-direct', 'model-knowledge')
+    reference = None
+    by_mode = {}
+    for report in reports:
+        mode = report['mode']
+        if mode not in modes or mode in by_mode:
+            raise ValueError(f'报告模式未知或重复：{mode}')
+        identity = tuple(report[key] for key in ('version', 'manifest_sha256', 'labels_sha256', 'candidate_count'))
+        if reference is not None and identity != reference:
+            raise ValueError('输入、标签版本或样本数量不同，不能放在同一张对照表。')
+        reference = identity
+        by_mode[mode] = report['metrics']
+    if reference is None:
+        raise ValueError('至少需要一份已运行的 evaluation.json。')
+    fields = {'state_agreement': '状态吻合', 'strict_case_agreement': '严格匹配',
+              'fault_location': '故障定位', 'normal_false_alarm': '正常误报', 'unknown_handling': '待确认处理'}
+    lines = ['# B 组离线评测对照', '', f'集合：`{reference[0]}`，共 {reference[3]} 个合成候选。', '',
+             '| 指标 | 本地规则 | 模型直接诊断 | 模型+检索资料 |', '| --- | --- | --- | --- |']
+    for key, label in fields.items():
+        cells = [metric_text(by_mode[mode][key]) if mode in by_mode else '待运行' for mode in modes]
+        lines.append('| ' + ' | '.join([label, *cells]) + ' |')
+    lines += ['', '按相同的输入清单和标签对照。模型两组应使用相同模型与参数。',
+              '设备实测与实际修复有效率另行记录，不用合成候选分数替代。']
+    return '\n'.join(lines) + '\n'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('task', choices=('labs', 'benchmark', 'knowledge', 'import-knowledge', 'prepare-model'))
+    parser.add_argument('task', choices=('labs', 'benchmark', 'knowledge', 'import-knowledge', 'prepare-model', 'compare'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--mode', choices=('rules', 'model-direct', 'model-knowledge'), default='rules')
     parser.add_argument('--predictions', type=Path)
+    parser.add_argument('--report', type=Path, action='append', default=[], help='compare: path to evaluation.json; repeat per mode')
     args = parser.parse_args()
     if args.task == 'import-knowledge':
         scope, docs = install_knowledge()
@@ -294,6 +322,14 @@ def main():
         benchmark(args.output, args.mode, args.predictions)
     elif args.task == 'knowledge':
         retrieval(args.output)
+    elif args.task == 'compare':
+        if not args.report:
+            parser.error('compare 需要至少一个 --report evaluation.json')
+        markdown = comparison([read(path) for path in args.report])
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with args.output.open('x', encoding='utf-8') as file:
+            file.write(markdown)
+        print(f'对照表：{args.output}')
     else:
         if args.mode == 'rules':
             parser.error('prepare-model 需要 --mode model-direct 或 model-knowledge')

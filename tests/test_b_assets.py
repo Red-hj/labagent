@@ -12,6 +12,16 @@ SPEC.loader.exec_module(b)
 
 
 class BEvaluationTests(unittest.TestCase):
+    def test_comparison_keeps_unrun_modes_pending_and_rejects_mixed_labels(self):
+        fields = ('state_agreement', 'strict_case_agreement', 'fault_location', 'normal_false_alarm', 'unknown_handling')
+        rule = {'mode': 'rules', 'version': 'v1', 'manifest_sha256': 'inputs', 'labels_sha256': 'labels',
+                'candidate_count': 60, 'metrics': {key: b.score(1, 2) for key in fields}}
+        model = {**rule, 'mode': 'model-direct'}
+        self.assertIn('| 状态吻合 | 1/2（50.0%） | 待运行 | 待运行 |', b.comparison([rule]))
+        self.assertIn('| 状态吻合 | 1/2（50.0%） | 1/2（50.0%） | 待运行 |', b.comparison([rule, model]))
+        with self.assertRaisesRegex(ValueError, '标签版本'):
+            b.comparison([rule, {**model, 'labels_sha256': 'other'}])
+
     @unittest.skipUnless((b.PRIVATE / 'diagnosis_labels.json').is_file(), 'Private B benchmark not distributed')
     def test_benchmark_fixed_split_and_no_answer_fields(self):
         from collections import Counter
