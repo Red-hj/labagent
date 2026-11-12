@@ -18,6 +18,7 @@ from .workflow import run_workflow, available
 from .report import generate_report
 from .knowledge import import_document, list_documents, list_scopes, search
 from .cases import demo_cases
+from .demos import network_access_demo
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -77,6 +78,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "llm_configured": configured(), "llm": public_config()})
         if not self.team_access():
             return
+        if path == "/api/demos/network_access":
+            return self.reply(network_access_demo())
         if path == "/api/knowledge/scopes":
             return self.reply({"scopes": list_scopes()})
         if path == "/api/knowledge/documents":

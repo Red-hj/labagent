@@ -11,6 +11,8 @@ let pasteNumber = 0;
 let activeRequest = null;
 let requestTimer = null;
 let toastTimer = null;
+let materialViews = new Map();
+let demoActive = false;
 const defaultQuestion = "请根据上传的实验材料分析问题，给出有原文依据的排查方向，并说明下一步需要补充哪些材料。";
 
 function element(tag, text, className) {
@@ -36,7 +38,9 @@ async function api(path, body) {
 }
 function setBusy(value) {
   busy = value;
-  for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "followup-message", "send-followup"]) $(id).disabled = busy;
+  for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "followup-message", "send-followup", "load-demo"]) $(id).disabled = busy;
+  $("load-demo").disabled = busy || Boolean(sessionId);
+  $("load-demo-repair").disabled = busy || !demoActive || !sessionId;
   $("analyze").disabled = busy || !modelReady;
   $("analyze").replaceChildren(document.createTextNode(busy ? "正在处理…" : sessionId ? "继续诊断" : "开始诊断"), element("span", "→"));
   $("send-followup").textContent = busy && activeRequest?.type === "ask" ? "正在回复…" : "发送追问 ↗";
@@ -50,7 +54,8 @@ function materialChanged(detail) {
   if (sessionId) $("result-state").textContent = "材料已更新 · 下方为上一次分析";
 }
 function renderMaterials() {
-  $("material-list").replaceChildren();
+  $("material-list").replaceChildren(); materialViews = new Map();
+  $("material-source").hidden = evidenceKind !== "demo";
   $("material-count").textContent = materials.size ? "已添加 " + materials.size + " 份材料" : "尚未添加材料";
   for (const [name, text] of materials) {
     const item = element("div", undefined, "material-item");
@@ -61,8 +66,60 @@ function renderMaterials() {
     remove.setAttribute("aria-label", "移除 " + name);
     remove.addEventListener("click", () => { if (busy) return; materials.delete(name); renderMaterials(); materialChanged(); });
     row.append(element("span", "TXT", "file-icon"), info, remove);
-    const preview = element("details"); preview.append(element("summary", "查看内容"), element("pre", text));
+    const preview = element("details");
+    const source = element("pre", text);
+    preview.append(element("summary", "查看内容"), source);
+    materialViews.set(name, {preview, source, text});
     item.append(row, preview); $("material-list").append(item);
+  }
+}
+function locateCitation(citation) {
+  const view = materialViews.get(citation.device);
+  const lines = view?.text.split(/\r?\n/);
+  if (!view || lines[citation.line - 1] !== citation.quote) return message("当前材料已更新，请继续诊断以更新原文定位。", true);
+  const selected = element("mark", lines[citation.line - 1]); selected.tabIndex = -1;
+  selected.setAttribute("aria-label", citation.device + " 第" + citation.line + "行：" + citation.quote);
+  view.source.replaceChildren(document.createTextNode(lines.slice(0, citation.line - 1).join("\n") + (citation.line > 1 ? "\n" : "")), selected,
+    document.createTextNode("\n" + lines.slice(citation.line).join("\n")));
+  view.preview.open = true; selected.focus({preventScroll:true}); selected.scrollIntoView({block:"center", behavior:"instant"});
+  message("已定位 " + citation.device + " 第" + citation.line + "行。");
+}
+async function loadDemo(repaired = false) {
+  if (busy) return;
+  if (!repaired && (sessionId || materials.size)) return message("点击“新的排查”后，可带入完整示例材料。");
+  try {
+    const demo = await api("/api/demos/network_access");
+    const stage = demo.stages[repaired ? 1 : 0];
+    for (const [name, text] of Object.entries(stage.materials)) materials.set(name, text);
+    evidenceKind = "demo"; demoActive = true; renderMaterials();
+    if (!repaired) $("problem").value = "PC1取得DHCP地址后，为什么访问不了10.30.0.10？";
+    $("demo-status").textContent = repaired ? "复测材料已更新。点击“核对修改结果”，沿用当前会话继续。" : "故障材料已就绪。点击“开始诊断”，随后可追问原因、获取修改步骤。";
+    materialChanged(repaired ? "修改与复测材料已带入，点击“核对修改结果”继续。" : "示例材料已带入，点击“开始诊断”。");
+    setBusy(false);
+  } catch (error) { message("示例载入失败：" + error.message, true); }
+}
+
+function renderTools(result) {
+  const tools = result.llm?.tool_trace || [];
+  $("tools-section").hidden = !tools.length;
+  $("tools-heading").textContent = "本轮工具记录 · " + tools.length + " 次调用";
+  $("tool-records").replaceChildren();
+  const names = {read_source:"读取材料", retrieve_reference:"检索参考资料", compare_materials:"比较材料改动", check_submitted_pings:"核对Ping结果", submit_hypotheses:"整理分析与下一步"};
+  for (const tool of tools) {
+    const row = element("li");
+    row.append(element("strong", names[tool.tool] || tool.tool), element("span", tool.status === "ok" ? "已完成" : "需要调整", "tag"));
+    const details = element("details"); details.append(element("summary", "查看调用参数与结果"), element("pre", JSON.stringify({parameters:tool.arguments, result:tool.result}, null, 2)));
+    row.append(details); $("tool-records").append(row);
+  }
+}
+function renderProgress(result) {
+  const completed = result.status === "verified_from_observations";
+  const outcome = result.investigation?.outcome;
+  const intent = result.conversation?.at(-1)?.intent;
+  const current = completed ? 4 : outcome === "ready_for_retest" || intent === "verify" ? 3 : intent === "repair" ? 2 : 1;
+  for (const [index, step] of [...$("diagnosis-progress").children].entries()) {
+    step.className = index < current ? "done" : index === current ? "current" : "";
+    if (index === current) step.setAttribute("aria-current", "step"); else step.removeAttribute("aria-current");
   }
 }
 async function addFiles(files) {
@@ -83,7 +140,7 @@ async function addFiles(files) {
     if (new Set([...materials.keys(), ...incoming.keys()]).size > 20) throw new Error("一次诊断最多添加20份材料，请先保留相关文件。");
     const updated = [...incoming.keys()].filter(name => materials.has(name)).length;
     for (const [name, text] of incoming) materials.set(name, text);
-    evidenceKind = "user_submitted"; renderMaterials();
+    evidenceKind = demoActive ? "demo" : "user_submitted"; renderMaterials();
     materialChanged("材料已就绪：" + incoming.size + " 份" + (updated ? "（更新同名文件 " + updated + " 份）" : "") + "。点击“" + (sessionId ? "继续诊断" : "开始诊断") + "”提交分析。");
   } catch (error) { message(error.message, true); }
 }
@@ -170,7 +227,7 @@ function renderChecks(checks) {
   }
   if (checks.check_submitted_pings) {
     const pings = checks.check_submitted_pings.pings;
-    container.append(element("p", pings.length ? "已核对上传材料中的 " + pings.length + " 条 Ping 记录：" : "当前材料尚无可读取的单行 Ping 收发统计。"));
+    container.append(element("p", pings.length ? "已核对上传材料中的 " + pings.length + " 条 Ping 记录：" : "请补充包含收发统计的 Ping 输出。"));
     for (const ping of pings) container.append(element("p", ping.device + " → " + ping.target + "：" + ping.sent + " 发 " + ping.received + " 收 · " + (ping.passed ? "该条观测通过" : "该条观测未通过"), ping.passed ? "check-pass" : "check-fail"));
   }
 }
@@ -179,6 +236,7 @@ function showResult(result) {
   window.history.replaceState(null, "", "/?session=" + sessionId);
   $("empty-result").hidden = true; $("analysis-result").hidden = false; $("save-report").hidden = false;
   const analysis = result.investigation || {};
+  renderProgress(result); renderTools(result);
   const ok = result.llm?.status === "ok";
   const intent = result.conversation?.at(-1)?.intent;
   $("result-state").textContent = ok ? (result.status === "verified_from_observations" && intent !== "ask" ? "本轮测试通过 · 排查完成" : {ask:"本次回复", repair:"修改步骤", verify:"本轮材料核对", update:"补充材料后的进展"}[intent] || "本次排查发现") : "本次分析尚未完成";
@@ -195,7 +253,9 @@ function showResult(result) {
     const detail = element("details"); detail.append(element("summary", "查看材料依据（" + hypothesis.evidence.length + "处）"));
     for (const citation of hypothesis.evidence) {
       const row = element("div", undefined, "citation");
-      row.append(element("p", citation.device + " · 第" + citation.line + "行"), element("pre", citation.quote)); detail.append(row);
+      const locate = element("button", "定位原文 ↗", "text-button"); locate.type = "button";
+      locate.addEventListener("click", () => locateCitation(citation));
+      row.append(element("p", citation.device + " · 第" + citation.line + "行"), element("pre", citation.quote), locate); detail.append(row);
     }
     item.append(detail); $("hypotheses").append(item);
   }
@@ -215,7 +275,7 @@ function showResult(result) {
       if (!input.value.trim()) { input.focus(); return message("请先粘贴这项材料。", true); }
       if (materials.size >= 20 || input.value.length > 200000) return message("请精简这次补充的内容。", true);
       let name; do { name = request.device.slice(0, 60) + "-补充" + (++pasteNumber) + ".log"; } while (materials.has(name));
-      materials.set(name, input.value); evidenceKind = "user_submitted"; renderMaterials();
+      materials.set(name, input.value); evidenceKind = demoActive ? "demo" : "user_submitted"; renderMaterials();
       await performInteraction("update", "我已补充 " + request.device + " 的材料，请继续验证：" + request.information);
     });
     panel.append(label, input, submit); row.append(add, panel); $("evidence-requests").append(row);
@@ -224,6 +284,7 @@ function showResult(result) {
   $("references").replaceChildren();
   for (const document of result.knowledge || []) {
     const reference = element("div"); reference.append(element("p", document.title), element("p", document.content));
+    reference.append(element("p", [document.version, "第" + document.line_start + "～" + document.line_end + "行", document.source_name].filter(Boolean).join(" · "), "source-location"));
     if (/^https?:\/\//i.test(document.reference_url || "")) {
       const link = element("a", "查看来源"); link.href = document.reference_url; link.target = "_blank"; link.rel = "noopener noreferrer"; reference.append(link);
     }
@@ -231,6 +292,8 @@ function showResult(result) {
   }
 }
 
+$("load-demo").addEventListener("click", () => loadDemo());
+$("load-demo-repair").addEventListener("click", () => loadDemo(true));
 $("choose-files").addEventListener("click", () => $("material-files").click());
 $("material-files").addEventListener("change", async event => { await addFiles(event.target.files); event.target.value = ""; });
 for (const type of ["dragenter", "dragover"]) $("drop-zone").addEventListener(type, event => { event.preventDefault(); if (!busy) $("drop-zone").classList.add("dragging"); });
@@ -242,7 +305,7 @@ $("add-pasted").addEventListener("click", () => {
   if (!text.trim()) return message("请先粘贴材料内容。", true);
   if (materials.size >= 20 || text.length > 200000) return message("请保留与本次问题相关的材料，每份200 KB以内，最多20份。", true);
   let name; do { name = "粘贴材料" + (++pasteNumber) + ".txt"; } while (materials.has(name));
-  materials.set(name, text); evidenceKind = "user_submitted"; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false"); renderMaterials(); materialChanged();
+  materials.set(name, text); evidenceKind = demoActive ? "demo" : "user_submitted"; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false"); renderMaterials(); materialChanged();
 });
 $("analyze").addEventListener("click", async () => {
   if (busy) return;
@@ -269,7 +332,8 @@ $("followup-message").addEventListener("keydown", event => {
   if (!busy && !event.repeat) $("followup-form").requestSubmit();
 });
 $("new-diagnosis").addEventListener("click", () => {
-  materials.clear(); sessionId = null; evidenceKind = "user_submitted"; knowledgeScope = "default";
+  materials.clear(); sessionId = null; evidenceKind = "user_submitted"; knowledgeScope = "default"; demoActive = false;
+  $("demo-status").textContent = "先带入故障材料，再点击“开始诊断”。";
   $("problem").value = ""; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false");
   $("followup-message").value = ""; $("conversation").replaceChildren();
   $("analysis-result").hidden = true; $("empty-result").hidden = false; $("save-report").hidden = true;
@@ -307,6 +371,7 @@ async function start() {
     for (const [index, output] of (latest.input.command_outputs || []).entries()) materials.set((output.device + "-输出" + (index + 1) + ".log").slice(0, 120), output.command + "\n" + output.text);
     $("problem").value = latest.input.question === defaultQuestion ? "" : latest.input.question || "";
     knowledgeScope = latest.input.knowledge_scope || "default"; evidenceKind = latest.input.evidence_kind || "user_submitted";
+    demoActive = evidenceKind === "demo" && materials.has("终端跨网段访问.txt");
     renderMaterials();
     if (latest.result.mode === "open_network") { showResult({...latest.result, session_id:savedSession}); setBusy(false); message("已恢复这次诊断，可以继续交流或补充材料。"); }
     else { message("已带入保存的材料，可以开始诊断。"); }

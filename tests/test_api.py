@@ -78,6 +78,23 @@ class ApiTests(unittest.TestCase):
         report = self.request("/api/sessions/" + result["session_id"] + "/report")[1]["markdown"]
         self.assertIn("排查方向与原文依据", report)
 
+    def test_demo_provides_current_materials_for_each_stage(self):
+        from labagent.connectivity import parse_ping_records
+        demo = self.request("/api/demos/network_access")[1]
+        self.assertEqual(demo["source"], "合成演示材料")
+        first, second = demo["stages"]
+        self.assertEqual(set(first["materials"]), set(second["materials"]))
+        initial = next(iter(first["materials"].values()))
+        repaired = next(iter(second["materials"].values()))
+        self.assertIn("gateway-list 10.20.0.254", initial)
+        self.assertIn("gateway-list 10.20.0.1", repaired)
+        self.assertNotIn("10.20.0.254", repaired)
+        self.assertTrue(any(not row["passed"] for row in parse_ping_records(initial.splitlines())))
+        records = parse_ping_records(repaired.splitlines())
+        self.assertTrue(records)
+        self.assertTrue(all(row["passed"] for row in records))
+        self.assertTrue(any(row["target"] == "10.30.0.10" for row in records))
+
     def test_session_modes_cannot_be_mixed(self):
         first = self.request("/api/diagnose", case())[1]
         payload = {"session_id": first["session_id"], "diagnostic_mode": "open_network", "question": "网络排查", "configs": {"PC1": "test"}, "use_llm": False}

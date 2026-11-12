@@ -42,6 +42,24 @@ p { line-height:1.85; font-size:14px; }
 .material-item details { margin-top:7px; }
 .material-item summary { font-size:10px; color:#8b9ab0; cursor:pointer; }
 .material-item pre { max-height:180px; overflow:auto; overscroll-behavior:contain; }
+.material-item mark { color:#234b83; background:#ffe7a5; border-radius:3px; box-shadow:0 0 0 2px #ffe7a5; }
+.material-source { font-size:10px; color:#9c7835; background:#fcf6e8; border:1px solid #eee1bd; padding:7px 10px; border-radius:6px; margin:0 0 10px; }
+.demo-panel { margin-top:16px; border:1px solid #e0e7f3; border-radius:8px; padding:12px; background:#f9fbff; }
+.demo-panel>summary { font-size:12px; color:#5775a7; cursor:pointer; }
+.demo-panel p { font-size:11px; color:#7c8da8; margin:10px 0; }
+.demo-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:8px; }
+.demo-actions .secondary-button { text-align:left; line-height:1.7; }
+.diagnosis-progress { display:flex; list-style:none; padding:0; margin:0 0 20px; counter-reset:progress; gap:8px; }
+.diagnosis-progress li { flex:1; font-size:10px; color:#9aa8bd; border-top:2px solid #e5eaf3; padding-top:8px; counter-increment:progress; }
+.diagnosis-progress li::before { content:counter(progress, decimal-leading-zero) " "; font-size:9px; }
+.diagnosis-progress .done { border-color:#6eaa93; color:#4d8c74; }
+.diagnosis-progress .current { border-color:#527ac4; color:#315bb7; font-weight:600; }
+.tool-records { padding-left:20px; font-size:11px; color:#607594; }
+.tool-records>li { padding:9px 0; }
+.tool-records .tag { margin-left:8px; }
+.tool-records details { margin-top:7px; }
+.tool-records pre { max-height:240px; overflow:auto; font-size:10px; }
+.source-location { font-size:10px!important; color:#8b9bb2!important; }
 .paste-panel { border:1px solid var(--border); padding:14px; border-radius:9px; background:#fafbfe; }
 .paste-panel label { margin-top:0; }
 .secondary-button { background:#edf1f8; color:#5d76a0; font-size:11px; padding:9px 12px; border-radius:6px; margin-top:8px; }
