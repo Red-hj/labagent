@@ -93,6 +93,8 @@ python -X utf8 scripts/evaluate_b.py labs --output runtime/b-first-five
 python -X utf8 scripts/evaluate_b.py import-knowledge
 ```
 
+有 B 组私有评测包时，可在本地运行 `python -X utf8 scripts/evaluate_b.py benchmark --output runtime/b-rules`，再用 `python -X utf8 scripts/evaluate_b.py compare --report runtime/b-rules/evaluation.json --output runtime/b-comparison.md` 生成对照表。模型两组跑完后各追加一个 `--report`，未运行的组显示为待运行。
+
 在 `/workbench` 的“演示案例”中选择 `B组 · 01～05` 并载入，即可检查对应配置；页面自动切换到 `b-ospf` 资料范围与 OSPF 规则模式。修改配置后可在同一会话继续复测。
 
 三份自编资料随项目加载，首页默认检索包含这些资料，工作台也可选择 `b-ospf` 单独使用。首次启动即可使用，手动导入命令继续保留；已导入的相同资料在检索时合并为一份。独立评测输入与答案由 B 单独保管。
