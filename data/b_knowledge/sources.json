@@ -1,0 +1,10 @@
+{
+  "scope": "b-ospf",
+  "version": "b-ospf-notes-1",
+  "source_type": "原创教学摘要；非学校正式指导书",
+  "notes": [
+    {"file": "ospf.md", "title": "OSPF 区域和邻接", "source_name": "自编教学说明；依据 RFC 2328 及华为 OSPF 邻居排障资料", "reference_url": "https://www.rfc-editor.org/rfc/rfc2328.html", "references": ["https://info.support.huawei.com/network/ptmngsys/Web/tsrev_s/en/content/s/22_OSPF_Neighbors_Failing_to_Be_Established/edesk_OSPF_Neighbors_Failing_to_Be_Established_edesk004.html", "https://info.support.huawei.com/hedex/api/pages/EDOC1100149308/AEJ0713J/17/resources/admin/sec_admin_router_ospf_0013.html"]},
+    {"file": "link.md", "title": "互联接口与基本排查", "source_name": "自编教学说明；依据团队拓扑、配置检查范围和 IPv4 路由规范", "reference_url": "https://www.rfc-editor.org/rfc/rfc1812.html", "references": []},
+    {"file": "verification.md", "title": "路由与实验复测", "source_name": "自编教学说明；依据 IPv4 转发规范与团队指纹接口约定", "reference_url": "https://www.rfc-editor.org/rfc/rfc1812.html#section-5.2.4.3", "references": []}
+  ]
+}

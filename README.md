@@ -84,6 +84,17 @@ GitHub仓库：[Red-hj/labagent](https://github.com/Red-hj/labagent)。首次协
 
 项目代码与演示数据通过Git同步；各自的模型配置、运行记录、导入课程资料和本地打包文件保存在本机。
 
+### B 组案例与资料
+
+`data/team_cases/` 提供五个 OSPF 实验练习：正常、区域不匹配、接口关闭、OSPF 未启用和互联 IP 网段错误。每例包含配置、诊断输入、预期与修复输入。运行步骤见 [OSPF 实验环境与复测](docs/实验环境与复测.md#b-组首批实验)。
+
+```powershell
+python -X utf8 scripts/evaluate_b.py labs --output runtime/b-first-five
+python -X utf8 scripts/evaluate_b.py import-knowledge
+```
+
+导入后在 `/workbench` 选择 `b-ospf` 查看自编资料。独立评测输入与答案由 B 单独保管；没有私有包也能运行上述练习和导入。
+
 本轮改动集中在黄泓钧负责的SDK接入、引擎会话和复测工具。前端与队友实验资料保持原样。付雨航继续真实实验与评测，赵亦康继续真实案例联调、演示与比赛展示；黄泓钧继续华为云运行时发布与联调。
 
 完整包适合在新目录运行。已有v0.8.0的队友使用 LabAgent_update_v0.8.0_to_v0.9.0.zip；更早版本依次合并对应增量，也可以从GitHub获取最新代码。遇到自己已修改的同名文件先比较再合并，保留各自的实验数据与本地配置。

@@ -1,0 +1,12 @@
+{
+  "case_type": "normal",
+  "findings": [],
+  "injected_on": null,
+  "label_source": "按地址表和单根因变更预先定义；待教师或队友复核",
+  "reason": "不注入故障；先保存正常基线。",
+  "repair": "不修改配置，重复采集。",
+  "status": "awaiting_verification",
+  "title": "正常对照",
+  "unknowns": [],
+  "verification": "not_run"
+}

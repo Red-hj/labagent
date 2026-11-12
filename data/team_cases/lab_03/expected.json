@@ -1,0 +1,20 @@
+{
+  "case_type": "fault",
+  "findings": [
+    {
+      "code": "INTERFACE_SHUTDOWN",
+      "devices": [
+        "R2"
+      ],
+      "link_id": "r1-r2"
+    }
+  ],
+  "injected_on": "R2:GE0/0/0",
+  "label_source": "按地址表和单根因变更预先定义；待教师或队友复核",
+  "reason": "只在 R2 的 GE0/0/0 执行 shutdown，保留 LAN 接口状态。",
+  "repair": "在 R2 的 GE0/0/0 恢复 undo shutdown。",
+  "status": "fault_found",
+  "title": "接口管理关闭",
+  "unknowns": [],
+  "verification": "not_run"
+}

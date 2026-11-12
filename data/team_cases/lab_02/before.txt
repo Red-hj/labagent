@@ -1,0 +1,8 @@
+状态：未采集（before）；以下待填，不是运行记录。
+设备/仿真版本：
+采集时间（含时区）：
+对应配置：
+原始接口状态：
+R1/R2 display ospf peer：
+R1/R2 display ip routing-table：
+PC1 ping 192.168.20.10：

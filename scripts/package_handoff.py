@@ -8,6 +8,7 @@ import shutil
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
+LOCAL_DATA = {("data", name) for name in ("course_notes", "b_benchmark", "b_private")}
 
 
 def main():
@@ -22,7 +23,7 @@ def main():
     for directory in ("labagent", "web", "scripts", "tests", "docs", "data"):
         files.extend(file for file in (ROOT / directory).rglob("*") if file.is_file()
                      and "__pycache__" not in file.parts and file.suffix not in (".pyc", ".sqlite3")
-                     and file.name != ".env" and file.relative_to(ROOT).parts[:2] != ("data", "course_notes"))
+                     and file.name != ".env" and file.relative_to(ROOT).parts[:2] not in LOCAL_DATA)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for file in sorted(files):
             archive.write(file, "LabAgent/" + file.relative_to(ROOT).as_posix())
@@ -30,7 +31,8 @@ def main():
         if archive.testzip() is not None:
             raise RuntimeError("Archive integrity check failed")
         assert not any(name.startswith("LabAgent/runtime/") or name.endswith("/.env") for name in archive.namelist())
-        assert not any(name.startswith("LabAgent/data/course_notes/") for name in archive.namelist())
+        assert not any(name.startswith(tuple("LabAgent/" + "/".join(parts) + "/" for parts in LOCAL_DATA))
+                       for name in archive.namelist())
         print(f"Packaged {len(archive.namelist())} files")
     version = re.search(r'__version__ = "([0-9]+\.[0-9]+\.[0-9]+)"', (ROOT / "labagent/__init__.py").read_text(encoding="utf-8")).group(1)
     versioned = output.with_name(f"LabAgent_team_v{version}.zip")
