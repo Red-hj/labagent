@@ -17,6 +17,7 @@ from .store import Store
 from .workflow import run_workflow, available
 from .report import generate_report
 from .knowledge import import_document, list_documents, list_scopes, search
+from .cases import demo_cases
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,11 +86,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error:
                 return self.reply({"error": str(error)}, 400)
         if path == "/api/cases":
-            cases = []
-            for file in sorted((ROOT / "data" / "cases").glob("*.json")):
-                data = json.loads(file.read_text(encoding="utf-8"))
-                cases.append({"id": file.stem, "title": data["title"], "description": data["description"]})
-            return self.reply(cases)
+            return self.reply([{"id": case_id, "title": data["title"], "description": data["description"]}
+                               for case_id, data in demo_cases().items()])
         if path == "/api/scenarios":
             return self.reply([{"id": file.stem, "title": json.loads(file.read_text(encoding="utf-8"))["title"]}
                                for file in sorted((ROOT / "data" / "scenarios").glob("*.json"))])
@@ -98,11 +96,9 @@ class Handler(BaseHTTPRequestHandler):
             if file.is_file():
                 return self.reply(json.loads(file.read_text(encoding="utf-8")))
         if match := re.fullmatch(r"/api/cases/([a-z0-9_-]+)", path):
-            file = ROOT / "data" / "cases" / (match[1] + ".json")
-            if file.is_file():
-                data = json.loads(file.read_text(encoding="utf-8"))
-                # Gold labels belong to offline evaluation, not engine input.
-                return self.reply({k: v for k, v in data.items() if k != "expected"})
+            data = demo_cases().get(match[1])
+            if data is not None:
+                return self.reply(data)
         if path == "/api/sessions":
             return self.reply(self.store.sessions())
         if match := re.fullmatch(r"/api/sessions/([a-f0-9]{32})(/export|/report)?", path):

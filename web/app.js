@@ -80,8 +80,10 @@ function applyInput(data) {
   renderConfigs(data.configs);
   $("question").value = data.question; $("topology").value = pretty(data.topology || {}); $("requirements").value = pretty(data.requirements || {});
   $("observations").value = pretty(data.observations || {neighbors: [], pings: []});
-  $("case-description").textContent = data.description;
-  if (data.knowledge_scope && [...$("knowledge-scope").options].some(option => option.value === data.knowledge_scope)) $("knowledge-scope").value = data.knowledge_scope;
+  $("case-description").textContent = data.description || "";
+  $("knowledge-scope").value = data.knowledge_scope || "default";
+  $("hint-level").value = data.hint_level || 1;
+  $("use-llm").checked = !$("use-llm").disabled && data.use_llm === true;
   evidenceKind = data.evidence_kind || "user_submitted";
   $("command-outputs").value = pretty(data.command_outputs || []); $("routing-queries").value = pretty(data.routing_queries || []);
   $("next-stage").hidden = !scenario || stageIndex >= scenario.stages.length - 1;

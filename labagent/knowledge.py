@@ -22,7 +22,7 @@ def validate_scope(value):
     return value
 
 
-def import_document(payload):
+def make_document(payload):
     if not isinstance(payload, dict):
         raise ValueError("资料必须为对象")
     title, content = payload.get("title"), payload.get("content")
@@ -42,10 +42,14 @@ def import_document(payload):
     metadata = {"title": title.strip(), "content": normalized, "scope": scope, "version": version,
                 "source_name": source_name, "reference_url": url}
     digest = hashlib.sha256(json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-    document = {**metadata, "id": "course-" + digest, "content_hash": hashlib.sha256(normalized.encode()).hexdigest(),
-                "source_type": "课程资料（用户导入，未自动核实）", "codes": [], "imported_at": datetime.now(timezone.utc).isoformat()}
+    return {**metadata, "id": "course-" + digest, "content_hash": hashlib.sha256(normalized.encode()).hexdigest(),
+            "source_type": "课程资料（用户导入，未自动核实）", "codes": []}
+
+
+def import_document(payload):
+    document = {**make_document(payload), "imported_at": datetime.now(timezone.utc).isoformat()}
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
-    path = NOTES_DIR / (digest + ".json")
+    path = NOTES_DIR / (document["id"].removeprefix("course-") + ".json")
     with IMPORT_LOCK:
         if path.exists():
             document = json.loads(path.read_text(encoding="utf-8"))
@@ -65,6 +69,19 @@ def summary(document):
     return {key: document.get(key) for key in ("id", "title", "scope", "version", "source_name", "reference_url", "source_type", "content_hash")}
 
 
+def bundled_documents():
+    folder = ROOT / "data" / "b_knowledge"
+    source = json.loads((folder / "sources.json").read_text(encoding="utf-8"))
+    documents = []
+    for row in source["notes"]:
+        document = make_document({**{key: row[key] for key in ("title", "source_name", "reference_url")},
+                                  "scope": source["scope"], "version": source["version"],
+                                  "content": (folder / row["file"]).read_text(encoding="utf-8")})
+        document["source_type"] = source["source_type"]
+        documents.append(document)
+    return documents
+
+
 def corpus(scope="default"):
     validate_scope(scope)
     base = json.loads((ROOT / "data" / "knowledge.json").read_text(encoding="utf-8"))
@@ -72,6 +89,8 @@ def corpus(scope="default"):
     for original in base:
         documents.append({**original, "scope": "common", "version": "bundled-v1", "source_name": "项目整理的教学说明",
                           "content_hash": hashlib.sha256(original["content"].encode()).hexdigest()})
+    documents.extend(doc for doc in bundled_documents() if scope in ("default", doc["scope"]))
+    seen = {doc["id"] for doc in documents}
     for file in sorted(NOTES_DIR.glob("*.json")):
         try:
             if file.stat().st_size > 1_000_000:
@@ -88,8 +107,9 @@ def corpus(scope="default"):
                 raise ValueError("document metadata mismatch")
             document["codes"] = []
             document["source_type"] = "课程资料（用户导入，未自动核实）"
-            if document.get("scope") == scope:
+            if document.get("scope") == scope and document["id"] not in seen:
                 documents.append(document)
+                seen.add(document["id"])
         except (ValueError, OSError, TypeError, KeyError):
             warnings.append(f"资料文件 {file.name} 格式或校验不通过，未加入检索。")
     return documents, warnings
@@ -101,7 +121,7 @@ def list_documents(scope="default"):
 
 
 def list_scopes():
-    scopes = {"default"}
+    scopes = {"default", *(doc["scope"] for doc in bundled_documents())}
     for file in NOTES_DIR.glob("*.json"):
         try:
             if file.stat().st_size <= 1_000_000:

@@ -41,8 +41,32 @@ class ApiTests(unittest.TestCase):
 
     def test_health_and_cases(self):
         self.assertEqual(self.request("/api/health")[1]["app"], "LabAgent")
-        self.assertEqual(len(self.request("/api/cases")[1]), 16)
+        cases = self.request("/api/cases")[1]
+        self.assertTrue({"team_lab_01", "team_lab_02", "team_lab_03", "team_lab_04", "team_lab_05"} <= {row["id"] for row in cases})
         self.assertNotIn("expected", self.request("/api/cases/01_area_mismatch")[1])
+
+    def test_team_cases_load_diagnose_and_continue_with_repaired_input(self):
+        for number in range(1, 6):
+            name = f"lab_{number:02}"
+            with self.subTest(case=name):
+                payload = self.request("/api/cases/team_" + name)[1]
+                original = json.loads((ROOT / "data/team_cases" / name / "input.json").read_text(encoding="utf-8"))
+                expected = json.loads((ROOT / "data/team_cases" / name / "expected.json").read_text(encoding="utf-8"))
+                self.assertEqual(payload["configs"], original["configs"])
+                self.assertNotIn("expected", payload)
+                self.assertNotIn("repair", payload)
+                self.assertEqual(payload["knowledge_scope"], "b-ospf")
+                self.assertFalse(payload["use_llm"])
+                result = self.request("/api/diagnose", payload)[1]
+                self.assertEqual(result["status"], expected["status"])
+                self.assertEqual(sorted(row["code"] for row in result["findings"]), sorted(row["code"] for row in expected["findings"]))
+                repaired = json.loads((ROOT / "data/team_cases" / name / "repaired.json").read_text(encoding="utf-8"))
+                second = self.request("/api/diagnose", {**payload, **repaired, "session_id": result["session_id"]})[1]
+                self.assertEqual(second["status"], "awaiting_verification")
+                self.assertEqual(second["findings"], [])
+                self.assertEqual(second["knowledge_scope"], "b-ospf")
+                history = self.request("/api/sessions/" + result["session_id"])[1]
+                self.assertEqual(len(history["attempts"]), 2)
 
     def test_open_mode_accepts_non_ospf_material_without_topology(self):
         payload = {"diagnostic_mode": "open_network", "question": "终端DHCP地址正常但外网不通，缺少哪些证据？", "configs": {"PC1": "Default Gateway: 10.0.0.1"}, "use_llm": False}

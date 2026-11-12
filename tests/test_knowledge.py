@@ -44,8 +44,35 @@ class KnowledgeTests(unittest.TestCase):
         other = knowledge.search("蓝杉课程 OSPF 回程路由", scope="course-b")["results"]
         self.assertIn(imported, {doc["id"] for doc in own})
         self.assertNotIn(imported, {doc["id"] for doc in other})
-        self.assertEqual(knowledge.list_scopes(), ["course-a", "default"])
+        self.assertEqual(knowledge.list_scopes(), ["b-ospf", "course-a", "default"])
         self.assertTrue(any(doc["scope"] == "common" for doc in other))
+
+    def test_bundled_notes_available_to_homepage_without_import(self):
+        self.assertFalse(knowledge.NOTES_DIR.exists())
+        bundled = knowledge.bundled_documents()
+        ids = {doc["id"] for doc in bundled}
+        self.assertEqual(len(ids), 3)
+        for scope in ("default", "b-ospf"):
+            self.assertTrue(ids <= {doc["id"] for doc in knowledge.corpus(scope)[0]})
+            results = knowledge.search("OSPF 邻居停在 2-Way 一定有故障吗？Full 适用于什么情况？", scope=scope, limit=10)["results"]
+            passages = [item for item in results if item["id"] in ids]
+            self.assertTrue(passages)
+            for item in passages:
+                body = next(doc["content"] for doc in bundled if doc["id"] == item["id"])
+                self.assertEqual(body[item["char_start"]:item["char_end"]], item["content"])
+        self.assertFalse(ids & {doc["id"] for doc in knowledge.corpus("course-a")[0]})
+        self.assertFalse(knowledge.NOTES_DIR.exists())
+
+    def test_manual_import_of_bundled_notes_keeps_one_search_copy(self):
+        bundled = knowledge.bundled_documents()
+        for document in bundled:
+            self.assertEqual(knowledge.import_document(document)["document"]["id"], document["id"])
+        for scope in ("default", "b-ospf"):
+            documents, warnings = knowledge.corpus(scope)
+            ids = [doc["id"] for doc in documents]
+            for document in bundled:
+                self.assertEqual(ids.count(document["id"]), 1)
+            self.assertEqual(warnings, [])
 
     def test_exact_chunk_offsets_and_line_locations(self):
         source = "开头\n" + ("接口地址检查与故障证据\n" * 140) + "结尾"
