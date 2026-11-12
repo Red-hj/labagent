@@ -11,6 +11,7 @@ import time
 
 from .knowledge import search, validate_scope
 from .model import configured, chat_completion, ModelError, public_config, bounded_setting
+from .connectivity import parse_ping_records
 
 SENSITIVE = re.compile(r"authentication|password|passwd|cipher|community|secret|pre-shared|api[_-]?key|authorization|bearer|sk-[a-z0-9]{12,}|BEGIN.*PRIVATE KEY", re.I)
 
@@ -88,7 +89,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "retrieve_reference", "description": "检索所选课程资料，仅作为背景参考，不是当前设备运行证据。", "parameters": {
         "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "compare_materials", "description": "实际比较同一会话上次材料与本次材料，返回新增、删除和修改行。复测时先调用它，未更新材料不能假定已经修改。", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
-    {"type": "function", "function": {"name": "check_submitted_pings", "description": "读取当前上传材料中逐行的Ping收发统计，实际核对包数。支持中文发送/收到及英文transmitted/received单行摘要。", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "check_submitted_pings", "description": "核对上传材料中的Ping目标和收发包数。支持华为VRP、Windows中英文、Linux多行输出及单行摘要；返回目标、通过状态和逐行原文依据。", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "submit_hypotheses", "description": "提交诊断说明、原文依据和下一步操作。每个假设至少引用一行实际读过的材料，quote须逐字匹配。观测通过使用Ping工具结果填写outcome。", "parameters": {
         "type": "object", "properties": {
             "summary": {"type": "string"}, "reply": {"type": "string", "description": "直接回答本次追问，最多250字。"},
@@ -185,14 +186,9 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
         exact_keys(args, ())
         observations = []
         for source_id, source in sources.items():
-            for number, line in enumerate(source["lines"], 1):
-                target = re.search(r"ping\s+((?:\d{1,3}\.){3}\d{1,3})", line, re.I)
-                counts = re.search(r"发送\s*(\d+)\s*个.*?收到\s*(\d+)\s*个", line) or re.search(r"(\d+)\s+packets?\s+transmitted.*?(\d+)\s+(?:packets?\s+)?received", line, re.I)
-                if target and counts and 0 < int(counts[1]) <= 1000000 and 0 <= int(counts[2]) <= int(counts[1]):
-                    sent, received = int(counts[1]), int(counts[2])
-                    observations.append({"source_id": source_id, "device": source["device"], "line": number, "quote": line,
-                                         "target": target[1], "sent": sent, "received": received, "passed": sent == received})
-                    seen.add((source_id, number))
+            for row in parse_ping_records(source["lines"]):
+                observations.append({"source_id": source_id, "device": source["device"], **row})
+                seen.update((source_id, item["line"]) for item in row["evidence"])
         return {"source": "uploaded_text", "pings": observations[:100], "note": "已核对上传文本中的Ping收发包数。"}, False
     if name == "read_source":
         exact_keys(args, ("source_id", "start_line", "end_line"))

@@ -5,6 +5,7 @@ import re
 
 from .engine import fingerprint
 from .parser import interface_id, parse_config
+from .connectivity import parse_ping_records
 
 
 def parse_neighbors(text):
@@ -28,15 +29,10 @@ def parse_neighbors(text):
 
 
 def parse_ping(text):
-    target = re.search(r"\bPING\s+([\d.]+)\s*:", text, re.I)
-    sent = re.search(r"(\d+)\s+packet\(s\)\s+transmitted", text, re.I)
-    received = re.search(r"(\d+)\s+packet\(s\)\s+received", text, re.I)
-    if not (target and sent and received):
+    records = parse_ping_records(text.splitlines())
+    if len(records) != 1:
         return None
-    ipaddress.IPv4Address(target[1])
-    if int(received[1]) > int(sent[1]) or int(sent[1]) == 0:
-        return None
-    return {"target": target[1], "sent": int(sent[1]), "received": int(received[1])}
+    return {key: records[0][key] for key in ("target", "sent", "received")}
 
 
 def parse_routes(text):

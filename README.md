@@ -1,6 +1,6 @@
 # LabAgent 实验诊断工具
 
-当前版本 v0.8.0，默认页面只需要用户提供诊断材料。上传文件或粘贴内容后直接开始分析，问题描述可以留空。分析后可以继续追问原因、获取修改步骤、直接补充请求中的材料，再核对修改与测试结果。
+当前版本 v0.9.0，默认页面只需要用户提供诊断材料。上传文件或粘贴内容后直接开始分析，问题描述可以留空。分析后可以继续追问原因、获取修改步骤、直接补充请求中的材料，再核对修改与测试结果。
 
 已有两类后端能力：
 
@@ -33,7 +33,23 @@ DeepSeek Flash 与本地 LangGraph 已接通。开放模式已经用 DHCP/终端
 
 将 `.env.example` 复制为项目内 `.env`，填写服务地址、模型名和密钥。本机使用 DeepSeek 官方 Chat Completions 接口及 `deepseek-flash` 非思考模式。首页点击诊断时自动使用已配置模型；专业工作台仍可单独选择规则检查。
 
-开放模式分析上传材料，逐行核对引用，给出排查方向和具体材料请求。上传补充输出后可继续分析并核对复测记录。OSPF 模式提供规则检查，开放模式提供模型分析。AgentArts 云端接入是下一阶段工作。
+开放模式分析上传材料，逐行核对引用，给出排查方向和具体材料请求。上传补充输出后可继续分析并核对复测记录。Ping工具支持华为VRP、Windows中英文和Linux多行输出，并保留目标与收发统计的原文行。OSPF模式和开放模式使用同一份Ping解析逻辑。
+
+## AgentArts SDK入口
+
+`agentarts_app.py`使用官方`agentarts-sdk==0.1.10`包装现有LangGraph流程，提供`GET /ping`与`POST /invocations`。首次提交`materials`，后续用返回的`session_id`追问、获取步骤或更新材料。新增文件会合并，同名文件会更新。
+
+在项目内安装独立环境并启动：
+
+```powershell
+python -m venv runtime/agentarts-env
+runtime/agentarts-env/Scripts/python.exe -m pip install -r requirements-agentarts.txt
+runtime/agentarts-env/Scripts/python.exe -B agentarts_app.py
+```
+
+本地入口为`http://127.0.0.1:8080`，模型配置沿用项目`.env`。运行`runtime/agentarts-env/Scripts/python.exe -B scripts/verify_agentarts.py`检查SDK协议；加`--live-model`可验证实际模型与工具调用。
+
+华为云运行时镜像使用`Dockerfile.agentarts`，端口8080；当前Render网页继续使用原Dockerfile。SDK依赖独立安装，便于队友按需使用。接口和云端配置步骤见`docs/接口说明.md`。[官方SDK发布说明](https://pypi.org/project/agentarts-sdk/)、[AgentArts运行时接口](https://support.huaweicloud.com/api-agentarts/agentarts_07_0035.html)。
 
 密钥、运行数据和个人课程资料不进入协作包。所有主动生成文件、环境与缓存均位于本项目内。
 
@@ -68,9 +84,9 @@ GitHub仓库：[Red-hj/labagent](https://github.com/Red-hj/labagent)。首次协
 
 项目代码与演示数据通过Git同步；各自的模型配置、运行记录、导入课程资料和本地打包文件保存在本机。
 
-本轮改动集中在引擎交互、学生入口和你指定的背景效果。专业工作台的 web/index.html、web/app.js、web/style.css 及队友实验资料未改动。付雨航继续真实实验与评测，赵亦康继续真实案例联调、演示与比赛展示；AgentArts平台接入仍由黄泓钧推进。
+本轮改动集中在黄泓钧负责的SDK接入、引擎会话和复测工具。前端与队友实验资料保持原样。付雨航继续真实实验与评测，赵亦康继续真实案例联调、演示与比赛展示；黄泓钧继续华为云运行时发布与联调。
 
-完整包适合在新目录运行。已有v0.7.3的队友使用 LabAgent_update_v0.7.3_to_v0.8.0.zip；更早版本依次合并对应增量，也可以从GitHub获取最新代码。只合并改动文件；遇到自己已修改的同名文件先比较再合并，保留各自的实验数据与本地配置。不要直接用完整文件夹覆盖队友的工作。
+完整包适合在新目录运行。已有v0.8.0的队友使用 LabAgent_update_v0.8.0_to_v0.9.0.zip；更早版本依次合并对应增量，也可以从GitHub获取最新代码。遇到自己已修改的同名文件先比较再合并，保留各自的实验数据与本地配置。
 
 ## 验证
 
