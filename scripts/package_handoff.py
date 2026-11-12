@@ -20,7 +20,7 @@ def main():
     output = ROOT / "handoff" / "LabAgent_team.zip"
     output.parent.mkdir(parents=True, exist_ok=True)
     files = [ROOT / name for name in ("AGENTS.md", "README.md", "app.py", "agentarts_app.py", "start.cmd", "setup.cmd", "requirements.txt", "requirements-workflow.txt", "requirements-agentarts.txt", ".env.example", ".gitignore", "Dockerfile", "Dockerfile.agentarts", ".dockerignore", "render.yaml")]
-    for directory in ("labagent", "web", "scripts", "tests", "docs", "data"):
+    for directory in (".github", "labagent", "web", "scripts", "tests", "docs", "data"):
         files.extend(file for file in (ROOT / directory).rglob("*") if file.is_file()
                      and "__pycache__" not in file.parts and file.suffix not in (".pyc", ".sqlite3")
                      and file.name != ".env" and file.relative_to(ROOT).parts[:2] not in LOCAL_DATA)

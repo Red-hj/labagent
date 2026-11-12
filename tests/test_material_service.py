@@ -59,12 +59,30 @@ class AgentArtsSdkTests(unittest.TestCase):
             first = client.post("/invocations", json={"materials": stages()[0]["configs"]}, headers={SESSION_HEADER: "platform-session-1"})
             self.assertEqual(first.status_code, 200)
             session = first.json()["session_id"]
-            self.assertEqual(first.headers[SESSION_HEADER], session)
-            second = client.post("/invocations", json={"message": "说明网关参数"}, headers={SESSION_HEADER: session})
+            self.assertEqual(first.headers[SESSION_HEADER], "platform-session-1")
+            self.assertEqual(first.json()["platform_session_id"], "platform-session-1")
+            second = client.post("/invocations", json={"message": "说明网关参数"}, headers={SESSION_HEADER: "platform-session-1"})
             self.assertEqual(second.status_code, 200)
             self.assertEqual(second.json()["session_id"], session)
             self.assertEqual(len(second.json()["result"]["conversation"]), 2)
             self.assertEqual(client.post("/invocations", json={"materials": []}).status_code, 400)
+
+    def test_platform_session_survives_adapter_reopen_and_keeps_sessions_separate(self):
+        from starlette.testclient import TestClient
+        from labagent.agentarts_runtime import create_app
+        from agentarts.sdk.runtime.model import SESSION_HEADER
+        with TestClient(create_app(self.database, completion)) as client:
+            first = client.post("/invocations", json={"materials": stages()[0]["configs"]}, headers={SESSION_HEADER: "cloud-a"}).json()
+        with TestClient(create_app(self.database, completion)) as client:
+            response = client.post("/invocations", json={"message": "继续解释"}, headers={SESSION_HEADER: "cloud-a"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers[SESSION_HEADER], "cloud-a")
+            self.assertEqual(response.json()["session_id"], first["session_id"])
+            self.assertEqual(len(response.json()["result"]["conversation"]), 2)
+            self.assertEqual(client.post("/invocations", json={"message": "继续解释"}, headers={SESSION_HEADER: "cloud-b"}).status_code, 400)
+            other = client.post("/invocations", json={"materials": stages()[0]["configs"]}, headers={SESSION_HEADER: "cloud-b"}).json()
+            self.assertNotEqual(other["session_id"], first["session_id"])
+            self.assertEqual(len(other["result"]["conversation"]), 1)
 
 
 if __name__ == "__main__":

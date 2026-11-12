@@ -1,6 +1,6 @@
 # LabAgent 实验诊断工具
 
-当前版本 v0.9.1，默认页面只需要用户提供诊断材料。上传文件或粘贴内容后直接开始分析，问题描述可以留空。分析后可以继续追问原因、获取修改步骤、直接补充请求中的材料，再核对修改与测试结果。
+当前版本 v0.9.2，默认页面只需要用户提供诊断材料。上传文件或粘贴内容后直接开始分析，问题描述可以留空。分析后可以继续追问原因、获取修改步骤、直接补充请求中的材料，再核对修改与测试结果。
 
 已有两类后端能力：
 
@@ -50,6 +50,17 @@ runtime/agentarts-env/Scripts/python.exe -B agentarts_app.py
 本地入口为`http://127.0.0.1:8080`，模型配置沿用项目`.env`。运行`runtime/agentarts-env/Scripts/python.exe -B scripts/verify_agentarts.py`检查SDK协议；加`--live-model`可验证实际模型与工具调用。
 
 华为云运行时镜像使用`Dockerfile.agentarts`，端口8080；当前Render网页继续使用原Dockerfile。SDK依赖独立安装，便于队友按需使用。接口和云端配置步骤见`docs/接口说明.md`。[官方SDK发布说明](https://pypi.org/project/agentarts-sdk/)、[AgentArts运行时接口](https://support.huaweicloud.com/api-agentarts/agentarts_07_0035.html)。
+
+GitHub的Actions页面提供“Build AgentArts ARM64 image”：手动运行后在ARM64环境构建镜像，检查SDK协议、会话续接和随项目加载的知识资料，并生成可下载的镜像压缩包。镜像标签使用本次提交编号，适合上传华为云SWR后创建AgentArts运行时。构建使用公开仓库的[标准ARM64运行器](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
+
+取得云端调用地址后，在项目内`runtime/agentarts-client.env`填写`LABAGENT_AGENTARTS_URL`与API Key认证对应的`LABAGENT_AGENTARTS_KEY`。用以下入口上传材料、继续追问；记录保存在`runtime/agentarts-client/`：
+
+```powershell
+python -B scripts/call_agentarts.py "data/examples/实验诊断材料_终端跨网段访问.txt"
+python -B scripts/call_agentarts.py --session 上次显示的平台会话编号 --message "给我修改步骤"
+```
+
+同一实验持续使用相同的平台会话编号；SDK会将它关联到诊断记录，HTTP响应同时返回`platform_session_id`与`session_id`。云端配置、SWR上传和本地构建命令见`docs/接口说明.md`。
 
 密钥、运行数据和个人课程资料不进入协作包。所有主动生成文件、环境与缓存均位于本项目内。
 
