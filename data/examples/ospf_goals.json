@@ -1,0 +1,34 @@
+{
+  "title": "Ping恢复之后，OSPF实验完成了吗？",
+  "source": "合成演示材料",
+  "description": "三轮材料展示主动检查、连通性与实验要求的区别，以及OSPF修复后的目标核对。",
+  "stages": [
+    {
+      "title": "目标不可达",
+      "materials": {
+        "实验说明.txt": "实验目标：R1访问R3的Loopback0地址10.3.3.3，Ping全部成功。\n要求：R1必须通过OSPF学习10.3.3.3/32的路由。\n要求：R1的当前配置中不得使用ip route-static命令。\n拓扑：R1 -- R2 -- R3。互联链路均位于Area 0。\n材料来源：为LabAgent演示编写的合成配置与运行输出。",
+        "R1.cfg": "sysname R1\n#\nospf 1 router-id 1.1.1.1\n area 0\n  network 10.12.0.1 0.0.0.0\n#\nreturn",
+        "R3.cfg": "sysname R3\n#\ninterface LoopBack0\n ip address 10.3.3.3 255.255.255.255\n#\n以上为Loopback接口摘录，OSPF配置和运行输出待补充。",
+        "R1-运行.log": "<R1>display ospf peer\n Area 0.0.0.0 interface 10.12.0.1\n Router ID: 2.2.2.2 Address: 10.12.0.2\n State: Full\n<R1>display ip routing-table\nDestination/Mask Proto Pre Cost Flags NextHop Interface\n10.12.0.0/24 Direct 0 0 D 10.12.0.1 GigabitEthernet0/0/0\n<R1>ping 10.3.3.3\n PING 10.3.3.3: 56 data bytes\n 5 packet(s) transmitted\n 0 packet(s) received"
+      }
+    },
+    {
+      "title": "使用静态路由恢复连通",
+      "materials": {
+        "实验说明.txt": "实验目标：R1访问R3的Loopback0地址10.3.3.3，Ping全部成功。\n要求：R1必须通过OSPF学习10.3.3.3/32的路由。\n要求：R1的当前配置中不得使用ip route-static命令。\n拓扑：R1 -- R2 -- R3。互联链路均位于Area 0。\n材料来源：为LabAgent演示编写的合成配置与运行输出。",
+        "R1.cfg": "sysname R1\n#\nospf 1 router-id 1.1.1.1\n area 0\n  network 10.12.0.1 0.0.0.0\n#\nip route-static 10.3.3.3 255.255.255.255 10.12.0.2\nreturn",
+        "R3.cfg": "sysname R3\n#\ninterface LoopBack0\n ip address 10.3.3.3 255.255.255.255\n#\nospf 1 router-id 3.3.3.3\n area 0\n  network 10.23.0.3 0.0.0.0\n#\nreturn",
+        "R1-运行.log": "<R1>display ip routing-table\nDestination/Mask Proto Pre Cost Flags NextHop Interface\n10.3.3.3/32 Static 60 0 RD 10.12.0.2 GigabitEthernet0/0/0\n<R1>ping 10.3.3.3\n PING 10.3.3.3: 56 data bytes\n 5 packet(s) transmitted\n 5 packet(s) received"
+      }
+    },
+    {
+      "title": "按要求通过OSPF完成",
+      "materials": {
+        "实验说明.txt": "实验目标：R1访问R3的Loopback0地址10.3.3.3，Ping全部成功。\n要求：R1必须通过OSPF学习10.3.3.3/32的路由。\n要求：R1的当前配置中不得使用ip route-static命令。\n拓扑：R1 -- R2 -- R3。互联链路均位于Area 0。\n材料来源：为LabAgent演示编写的合成配置与运行输出。",
+        "R1.cfg": "sysname R1\n#\nospf 1 router-id 1.1.1.1\n area 0\n  network 10.12.0.1 0.0.0.0\n#\nreturn",
+        "R3.cfg": "sysname R3\n#\ninterface LoopBack0\n ip address 10.3.3.3 255.255.255.255\n#\nospf 1 router-id 3.3.3.3\n area 0\n  network 10.23.0.3 0.0.0.0\n  network 10.3.3.3 0.0.0.0\n#\nreturn",
+        "R1-运行.log": "<R1>display ip routing-table\nDestination/Mask Proto Pre Cost Flags NextHop Interface\n10.3.3.3/32 OSPF 10 2 D 10.12.0.2 GigabitEthernet0/0/0\n<R1>ping 10.3.3.3\n PING 10.3.3.3: 56 data bytes\n 5 packet(s) transmitted\n 5 packet(s) received"
+      }
+    }
+  ]
+}

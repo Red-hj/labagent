@@ -19,7 +19,7 @@ from .workflow import run_workflow, available
 from .report import generate_report
 from .knowledge import import_document, list_documents, list_scopes, search
 from .cases import demo_cases
-from .demos import network_access_demo
+from .demos import network_access_demo, ospf_goals_demo
 from .progress import emit_progress, progress_to
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +82,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/demos/network_access":
             return self.reply(network_access_demo())
+        if path == "/api/demos/ospf_goals":
+            return self.reply(ospf_goals_demo())
         if path == "/api/knowledge/scopes":
             return self.reply({"scopes": list_scopes()})
         if path == "/api/knowledge/documents":

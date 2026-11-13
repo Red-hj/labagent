@@ -116,6 +116,18 @@ pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#f4f7fb; padding:
 .verification-checks p { font-size:11px; margin:5px 0; }
 .check-pass { color:#4a907c; }
 .check-fail { color:#b78460; }
+.goals-section,.plan-section { margin:20px 0; padding:15px; border:1px solid #dfe8f4; border-radius:9px; min-width:0; }
+#demo-case { width:100%; margin:6px 0; padding:9px; border:1px solid #dfe8f4; border-radius:6px; color:#48628b; background:#fff; font:inherit; font-size:12px; }
+.goal-check { margin-top:10px; padding:11px; border-left:3px solid #a1b2cc; background:#f7f9fd; border-radius:5px; font-size:12px; }
+.goal-check.passed { border-left-color:#4a907c; }
+.goal-check.failed { border-left-color:#bc875c; }
+.goal-check .tag { margin-left:8px; }
+.goal-check p,.plan-section p { font-size:12px; margin:7px 0; }
+.goal-check details,.plan-section details { margin-top:9px; font-size:11px; color:#6d819f; }
+.goal-check pre,.plan-section pre { max-height:160px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; padding:9px; background:#edf2fa; border-radius:5px; }
+.goal-check details button { display:block; text-align:left; margin-top:8px; }
+.plan-hypothesis.ruled_out { color:#78978a; }
+.plan-alternative { border-top:1px solid #e2e9f4; padding:10px 0; overflow-wrap:anywhere; }
 .dialogue-section { margin-top:25px; border-top:1px solid #e2e9f4; padding-top:21px; }
 .dialogue-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:15px; }
 .dialogue-heading h3 { font-size:13px; color:#48628b; margin:0; }

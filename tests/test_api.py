@@ -95,6 +95,15 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(all(row["passed"] for row in records))
         self.assertTrue(any(row["target"] == "10.30.0.10" for row in records))
 
+    def test_goals_demo_provides_three_stages_without_diagnosis_answers(self):
+        demo = self.request("/api/demos/ospf_goals")[1]
+        self.assertEqual(len(demo["stages"]), 3)
+        self.assertIn("Static", demo["stages"][1]["materials"]["R1-运行.log"])
+        self.assertIn("OSPF", demo["stages"][2]["materials"]["R1-运行.log"])
+        for stage in demo["stages"]:
+            self.assertNotIn("expected_result", stage)
+            self.assertNotIn("hypotheses", stage)
+
     def test_session_modes_cannot_be_mixed(self):
         first = self.request("/api/diagnose", case())[1]
         payload = {"session_id": first["session_id"], "diagnostic_mode": "open_network", "question": "网络排查", "configs": {"PC1": "test"}, "use_llm": False}

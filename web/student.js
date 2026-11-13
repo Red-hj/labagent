@@ -85,8 +85,12 @@ async function diagnose(input) {
 function setBusy(value) {
   busy = value;
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "followup-message", "send-followup", "load-demo"]) $(id).disabled = busy;
+  $("demo-case").disabled = busy || Boolean(sessionId) || demoActive;
   $("load-demo").disabled = busy || Boolean(sessionId);
   $("load-demo-repair").disabled = busy || !demoActive || !sessionId;
+  $("load-demo-final").disabled = busy || !demoActive || !sessionId;
+  $("load-demo-final").hidden = $("demo-case").value !== "ospf_goals";
+  $("load-demo-repair").textContent = $("demo-case").value === "ospf_goals" ? "② 带入静态路由复测" : "② 带入修改与复测材料";
   $("analyze").disabled = busy || !modelReady || sessionProblem;
   $("analyze").replaceChildren(document.createTextNode(busy ? "正在处理…" : sessionId ? "继续诊断" : "开始诊断"), element("span", "→"));
   $("send-followup").textContent = busy && activeRequest?.type === "ask" ? "正在回复…" : "发送追问 ↗";
@@ -135,15 +139,16 @@ function locateCitation(citation) {
   view.preview.open = true; selected.focus({preventScroll:true}); selected.scrollIntoView({block:"center", behavior:"instant"});
   message("已定位 " + citation.device + " 第" + citation.line + "行。");
 }
-async function loadDemo(repaired = false) {
+async function loadDemo(repaired = false, final = false) {
   if (busy) return;
   if (!repaired && (sessionId || materials.size)) return message("点击“新的排查”后，可带入完整示例材料。");
   try {
-    const demo = await api("/api/demos/network_access");
-    const stage = demo.stages[repaired ? 1 : 0];
+    const goalsDemo = $("demo-case").value === "ospf_goals";
+    const demo = await api("/api/demos/" + $("demo-case").value);
+    const stage = demo.stages[final ? 2 : repaired ? 1 : 0];
     for (const [name, text] of Object.entries(stage.materials)) materials.set(name, text);
     evidenceKind = "demo"; demoActive = true; renderMaterials();
-    if (!repaired) $("problem").value = "PC1取得DHCP地址后，为什么访问不了10.30.0.10？";
+    if (!repaired) $("problem").value = goalsDemo ? "按实验说明排查R1到10.3.3.3的访问，并核对OSPF要求。" : "PC1取得DHCP地址后，为什么访问不了10.30.0.10？";
     $("demo-status").textContent = repaired ? "复测材料已更新。点击“核对修改结果”，沿用当前会话继续。" : "故障材料已就绪。点击“开始诊断”，随后可追问原因、获取修改步骤。";
     materialChanged(repaired ? "修改与复测材料已带入，点击“核对修改结果”继续。" : "示例材料已带入，点击“开始诊断”。");
     setBusy(false);
@@ -155,7 +160,7 @@ function renderTools(result) {
   $("tools-section").hidden = !tools.length;
   $("tools-heading").textContent = "本轮工具记录 · " + tools.length + " 次调用";
   $("tool-records").replaceChildren();
-  const names = {read_source:"读取材料", retrieve_reference:"检索参考资料", compare_materials:"比较材料改动", check_submitted_pings:"核对Ping结果", submit_hypotheses:"整理分析与下一步"};
+  const names = {read_source:"读取材料", retrieve_reference:"检索参考资料", compare_materials:"比较材料改动", check_submitted_pings:"核对Ping结果", check_experiment_goals:"核对实验目标", plan_diagnostic_checks:"选择下一项检查", submit_hypotheses:"整理分析与下一步"};
   for (const tool of tools) {
     const row = element("li");
     row.append(element("strong", names[tool.tool] || tool.tool), element("span", tool.status === "ok" ? "已完成" : "需要调整", "tag"));
@@ -291,6 +296,44 @@ function renderChecks(checks) {
     for (const ping of pings) container.append(element("p", ping.device + " → " + ping.target + "：" + ping.sent + " 发 " + ping.received + " 收 · " + (ping.passed ? "该条观测通过" : "该条观测未通过"), ping.passed ? "check-pass" : "check-fail"));
   }
 }
+function renderGoalsAndPlan(analysis, status) {
+  const checks = analysis.goal_assessment?.checks || [];
+  $("goals-section").hidden = !checks.length;
+  $("goal-checks").replaceChildren();
+  $("goals-summary").textContent = "已满足 " + checks.filter(check => check.status === "passed").length + " / " + checks.length + " 项 · 按实验说明逐项检查";
+  for (const check of checks) {
+    const row = element("div", undefined, "goal-check " + check.status);
+    row.append(element("strong", check.title), element("span", {passed:"已满足", failed:"未满足", needs_evidence:"待补充输出"}[check.status], "tag"), element("p", check.detail));
+    const details = element("details"); details.append(element("summary", "查看实验要求与检查依据"));
+    for (const [label, citation] of [["实验要求", check.instruction], ...check.evidence.map(item => ["检查依据", item])]) {
+      const locate = element("button", label + " · " + citation.device + " 第" + citation.line + "行 ↗", "text-button"); locate.type = "button";
+      locate.addEventListener("click", () => locateCitation(citation));
+      details.append(locate, element("pre", citation.quote));
+    }
+    row.append(details); $("goal-checks").append(row);
+  }
+  const plan = analysis.diagnostic_plan;
+  const selected = plan?.selected;
+  $("plan-section").hidden = !selected || ["resolved_by_user_report", "verified_from_observations"].includes(status);
+  $("diagnostic-plan").replaceChildren();
+  if (!selected) return;
+  const container = $("diagnostic-plan");
+  container.append(element("strong", selected.device), element("pre", selected.command), element("p", selected.purpose), element("p", plan.reason, "section-note"));
+  for (const hypothesis of plan.hypotheses) {
+    container.append(element("p", {active:"待检查", supported:"已有依据", ruled_out:"已排除"}[hypothesis.state] + " · " + hypothesis.title, "plan-hypothesis " + hypothesis.state));
+  }
+  const details = element("details"); details.append(element("summary", "比较候选检查与预期结果"));
+  for (const test of plan.tests) {
+    const row = element("div", undefined, "plan-alternative");
+    row.append(element("strong", test.device + " · " + test.command), element("p", "可区分 " + test.pair_count + " 组原因 · 采集成本 " + test.cost));
+    for (const prediction of test.predictions) {
+      const hypothesis = plan.hypotheses.find(item => item.id === prediction.hypothesis_id);
+      row.append(element("p", (hypothesis?.title || prediction.hypothesis_id) + " → 预期 " + prediction.result));
+    }
+    details.append(row);
+  }
+  container.append(details);
+}
 function showResult(result) {
   sessionId = result.session_id;
   window.history.replaceState(null, "", "/?session=" + sessionId);
@@ -303,7 +346,7 @@ function showResult(result) {
     resolution.append(element("p", analysis.experiment_goal || "本次实验目标"));
     for (const evidence of analysis.verification?.evidence || []) resolution.append(element("p", "恢复反馈：" + evidence.quote));
   }
-  renderProgress(result); renderTools(result);
+  renderProgress(result); renderTools(result); renderGoalsAndPlan(analysis, result.status);
   const ok = result.llm?.status === "ok";
   const intent = result.conversation?.at(-1)?.intent;
   $("result-state").textContent = ok ? (result.status === "verified_from_observations" && intent !== "ask" ? "本轮测试通过 · 排查完成" : {ask:"本次回复", repair:"修改步骤", verify:"本轮材料核对", update:"补充材料后的进展"}[intent] || "本次排查发现") : "本次分析尚未完成";
@@ -361,6 +404,8 @@ function showResult(result) {
 
 $("load-demo").addEventListener("click", () => loadDemo());
 $("load-demo-repair").addEventListener("click", () => loadDemo(true));
+$("load-demo-final").addEventListener("click", () => loadDemo(true, true));
+$("demo-case").addEventListener("change", () => setBusy(false));
 $("choose-files").addEventListener("click", () => $("material-files").click());
 $("material-files").addEventListener("change", async event => { await addFiles(event.target.files); event.target.value = ""; });
 for (const type of ["dragenter", "dragover"]) $("drop-zone").addEventListener(type, event => { event.preventDefault(); if (!busy) $("drop-zone").classList.add("dragging"); });
@@ -401,6 +446,7 @@ $("followup-message").addEventListener("keydown", event => {
 $("new-diagnosis").addEventListener("click", () => {
   sessionProblem = false; requestFailed = false;
   materials.clear(); sessionId = null; evidenceKind = "user_submitted"; knowledgeScope = "default"; demoActive = false;
+  $("demo-case").value = "network_access";
   $("demo-status").textContent = "先带入故障材料，再点击“开始诊断”。";
   $("problem").value = ""; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false");
   $("followup-message").value = ""; $("conversation").replaceChildren();
@@ -461,7 +507,8 @@ async function start() {
     for (const [index, output] of (latest.input.command_outputs || []).entries()) materials.set((output.device + "-输出" + (index + 1) + ".log").slice(0, 120), output.command + "\n" + output.text);
     $("problem").value = latest.input.question === defaultQuestion ? "" : latest.input.question || "";
     knowledgeScope = latest.input.knowledge_scope || "default"; evidenceKind = latest.input.evidence_kind || "user_submitted";
-    demoActive = evidenceKind === "demo" && materials.has("终端跨网段访问.txt");
+    demoActive = evidenceKind === "demo" && (materials.has("终端跨网段访问.txt") || materials.has("实验说明.txt"));
+    if (demoActive && materials.has("实验说明.txt")) $("demo-case").value = "ospf_goals";
     renderMaterials();
     if (latest.result.mode === "open_network") { showResult({...latest.result, session_id:savedSession}); setBusy(false); message("已恢复这次诊断，可以继续交流或补充材料。"); }
     else { message("已带入保存的材料，可以开始诊断。"); }

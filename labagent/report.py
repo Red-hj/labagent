@@ -1,6 +1,7 @@
 """Evidence-only experiment process reports; no fabricated scores or outcomes."""
 from datetime import datetime, timezone, timedelta
 from .session_state import STATUS_LABELS, RESOLVED_STATUSES, experiment_goal
+from .experiment_goals import LABELS
 
 STATUS = {"fault_found": "发现问题，等待修正", "needs_information": "证据不足，等待补充", "awaiting_verification": "配置检查通过，等待运行复测", "verified_from_observations": "用户提交的运行观测通过"}
 
@@ -127,6 +128,22 @@ def generate_open_report(history):
             rows.append(f"- {clean(evidence['device'])} 第{evidence['line']}行：{clean(evidence['quote'])}")
     elif result["status"] == "verified_from_observations":
         rows += ["", "恢复依据：工具已核对实验目标对应的提交测试输出。"]
+    assessment = analysis.get("goal_assessment", {})
+    if assessment.get("checks"):
+        rows += ["", "## 实验目标逐项核对", "", "| 目标 | 状态 | 核对结果 |", "| --- | --- | --- |"]
+        for check in assessment["checks"]:
+            rows.append(f"| {clean(check['title'])} | {LABELS[check['status']]} | {clean(check['detail'])} |")
+        for check in assessment["checks"]:
+            instruction = check["instruction"]
+            rows.append(f"- 要求：{clean(instruction['device'])} 第{instruction['line']}行：{clean(instruction['quote'])}")
+            for item in check["evidence"]:
+                rows.append(f"  - 结果：{clean(item['device'])} 第{item['line']}行：{clean(item['quote'])}")
+    plan = analysis.get("diagnostic_plan", {})
+    if plan.get("selected") and result["status"] not in RESOLVED_STATUSES:
+        selected = plan["selected"]
+        rows += ["", "## 下一项检查的选择", "", f"{clean(selected['device'])}：{clean(selected['command'])}", "", clean(plan["reason"])]
+        for hypothesis in plan["hypotheses"]:
+            rows.append(f"- {clean(hypothesis['title'])}：" + {"active": "待检查", "supported": "已有支持依据", "ruled_out": "已排除"}[hypothesis["state"]])
     rows += ["", "## 排查方向与原文依据", ""]
     findings = []
     for number, attempt in enumerate(attempts, 1):

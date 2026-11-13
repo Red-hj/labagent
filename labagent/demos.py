@@ -1,7 +1,12 @@
 """Materials for the optional, live diagnosis walkthrough."""
 from pathlib import Path
+import json
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def ospf_goals_demo():
+    return json.loads((ROOT / "data/examples/ospf_goals.json").read_text(encoding="utf-8"))
 
 
 def network_access_demo():
