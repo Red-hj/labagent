@@ -149,6 +149,31 @@ class ApiTests(unittest.TestCase):
             self.request("/api/diagnose", payload)
         self.assertEqual(context.exception.code, 400)
 
+    def test_missing_saved_session_has_a_specific_error(self):
+        with self.assertRaises(HTTPError) as context:
+            self.request("/api/sessions/" + "f" * 32)
+        self.assertEqual(context.exception.code, 404)
+        error = json.loads(context.exception.read())
+        self.assertEqual(error["code"], "session_not_found")
+        self.assertIn("新的排查", error["error"])
+
+    def test_stream_reports_actual_graph_progress_and_saves_final_result(self):
+        import os
+        from test_investigation import ENV, stages, completion
+        payload = stages()[0]
+        with patch.dict(os.environ, ENV), patch("labagent.investigation.chat_completion", side_effect=lambda messages, **kwargs: completion(messages)):
+            request = Request(self.base + "/api/diagnose/stream", data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"})
+            with urlopen(request, timeout=5) as response:
+                self.assertIn("application/x-ndjson", response.headers["Content-Type"])
+                events = [json.loads(line) for line in response if line.strip()]
+        self.assertEqual(events[0]["stage"], "received")
+        self.assertTrue(any(event.get("stage") == "tool" and "SW1" in event["message"] for event in events))
+        self.assertTrue(any(event.get("stage") == "saving" for event in events))
+        self.assertEqual(events[-1]["type"], "result")
+        result = events[-1]["result"]
+        self.assertEqual(result["llm"]["status"], "ok")
+        self.assertEqual(len(self.request("/api/sessions/" + result["session_id"])[1]["attempts"]), 1)
+
     def test_cross_origin_write_rejected(self):
         with self.assertRaises(HTTPError) as context:
             self.request("/api/diagnose", case(), {"Origin": "https://untrusted.invalid"})

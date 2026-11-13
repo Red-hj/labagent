@@ -1,4 +1,5 @@
 from functools import partial
+from queue import Empty, Queue
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import base64
@@ -19,6 +20,7 @@ from .report import generate_report
 from .knowledge import import_document, list_documents, list_scopes, search
 from .cases import demo_cases
 from .demos import network_access_demo
+from .progress import emit_progress, progress_to
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -110,6 +112,7 @@ class Handler(BaseHTTPRequestHandler):
                 if match[2] == "/report":
                     return self.reply({"markdown": generate_report(history)})
                 return self.reply(history, download=bool(match[2]))
+            return self.reply({"code": "session_not_found", "error": "这次会话已不存在，请开始新的排查并重新提供材料。"}, 404)
         assets = {"/": ("student.html", "text/html; charset=utf-8"), "/student.js": ("student.js", "text/javascript; charset=utf-8"), "/student.css": ("student.css", "text/css; charset=utf-8"),
                   "/ambient-network.js": ("ambient-network.js", "text/javascript; charset=utf-8"),
                   "/vendor/tsparticles.slim.bundle.min.js": ("vendor/tsparticles.slim.bundle.min.js", "text/javascript; charset=utf-8"),
@@ -136,7 +139,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.reply({"error": "请使用 application/json"}, 415)
         path = urlparse(self.path).path
-        if path not in ("/api/diagnose", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search"):
+        if path not in ("/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search"):
             return self.reply({"error": "未找到接口"}, 404)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -178,6 +181,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("切换排查模式时请开始新实验")
             if not self.server.diagnosis_slots.acquire(blocking=False):
                 return self.reply({"error": "当前正在处理其他诊断，请稍后重试"}, 429)
+            if path == "/api/diagnose/stream":
+                return self.stream_diagnosis(payload, session)
             try:
                 key = session or "new"
                 with self.server.session_locks[hash(key) % len(self.server.session_locks)]:
@@ -192,6 +197,49 @@ class Handler(BaseHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self.server.write_log(traceback.format_exc(), error=True)
+
+    def stream_diagnosis(self, payload, session):
+        events = Queue()
+
+        def process():
+            try:
+                with progress_to(events.put):
+                    emit_progress("received", "请求已收到，正在准备本轮诊断。")
+                    with self.server.session_locks[hash(session or "new") % len(self.server.session_locks)]:
+                        result = run_workflow(payload, self.server.workflow_database)
+                        emit_progress("saving", "正在保存本轮结论与会话记录…")
+                        saved = self.store.save(payload, result)
+                    events.put({"type": "result", "result": saved})
+            except (ValueError, KeyError, TypeError) as error:
+                events.put({"type": "error", "message": str(error)})
+            except Exception:
+                import traceback
+                self.server.write_log(traceback.format_exc(), error=True)
+                events.put({"type": "error", "message": "本轮诊断处理失败，请重新提交。"})
+            finally:
+                self.server.diagnosis_slots.release()
+
+        threading.Thread(target=process, daemon=True).start()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            while True:
+                try:
+                    event = events.get(timeout=10)
+                except Empty:
+                    event = {"type": "heartbeat"}
+                self.wfile.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
+                self.wfile.flush()
+                if event["type"] in ("result", "error"):
+                    return
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
 
 def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None, team_password=""):

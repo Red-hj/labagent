@@ -29,11 +29,13 @@
       <section class="card result-card" aria-labelledby="result-heading">
         <div class="card-heading"><h2 id="result-heading"><span class="section-index">02</span>诊断与交流</h2><button id="save-report" class="text-button" hidden>保存实验报告</button></div>
         <div id="request-status" class="request-status" role="status" aria-live="polite" hidden><span class="status-indicator" aria-hidden="true"></span><span id="request-status-text"></span><span id="request-elapsed"></span></div>
+        <details id="processing-progress" class="processing-progress" hidden open><summary>本轮处理进展</summary><ol id="processing-events" aria-live="polite"></ol></details>
         <div id="empty-result" class="empty-result"><span class="empty-symbol" aria-hidden="true">⌁</span><h3>准备好材料，就可以开始。</h3><p>这里会显示问题原因、材料依据和下一步操作。</p><div class="flow"><span>提供材料</span><b>→</b><span>分析问题</span><b>→</b><span>补充验证</span></div></div>
         <div id="analysis-result" hidden>
           <ol id="diagnosis-progress" class="diagnosis-progress" aria-label="排查进度"><li>材料</li><li>分析</li><li>修改</li><li>复测</li></ol>
           <div class="interaction-actions"><button data-intent="ask">解释一下原因</button><button data-intent="repair">给我修改步骤</button><button data-intent="verify">核对修改结果</button></div>
           <div class="analysis-summary"><span id="result-state" class="eyebrow">本次分析</span><p id="analysis-summary"></p></div>
+          <div id="resolution-status" class="verification-checks" hidden></div>
           <section id="steps-section" hidden><h3 class="subheading">操作步骤</h3><ol id="guidance-steps" class="guidance-steps"></ol></section>
           <div id="verification-checks" class="verification-checks" hidden></div>
           <div id="hypotheses"></div><section id="requests-section" class="requests-section" hidden><h3>还需要这些材料</h3><p class="section-note">可以直接粘贴对应输出，也可以在左侧上传文件。</p><div id="evidence-requests"></div></section>

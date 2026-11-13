@@ -12,6 +12,8 @@ import time
 from .knowledge import search, validate_scope
 from .model import configured, chat_completion, ModelError, public_config, bounded_setting
 from .connectivity import parse_ping_records
+from .session_state import RESOLVED_OUTCOMES, experiment_goal
+from .progress import emit_progress
 
 SENSITIVE = re.compile(r"authentication|password|passwd|cipher|community|secret|pre-shared|api[_-]?key|authorization|bearer|sk-[a-z0-9]{12,}|BEGIN.*PRIVATE KEY", re.I)
 
@@ -61,7 +63,7 @@ def validate_open(payload):
         short_text(interaction["message"], 4000)
 
 
-def source_bundle(payload):
+def source_bundle(payload, conversation=None):
     from .engine import fingerprint
     sources, warnings = {}, []
     for index, (device, text) in enumerate(payload["configs"].items(), 1):
@@ -71,6 +73,11 @@ def source_bundle(payload):
             warnings.append(f"运行输出{index}未绑定当前输入，未提供给模型；请采集或确认新输出并绑定后继续。")
             continue
         sources[f"output:{index}"] = {"device": output["device"], "kind": "submitted_command_output", "command": output["command"], "text": output["text"]}
+    for index, turn in enumerate(conversation or [], 1):
+        if turn.get("intent") != "analyze" and turn.get("user"):
+            sources[f"message:{index}"] = {"device": f"第{index}轮追问", "kind": "user_message", "text": turn["user"]}
+    if payload.get("interaction"):
+        sources["message:current"] = {"device": "本轮追问", "kind": "user_message", "text": payload["interaction"]["message"]}
     for source_id, source in sources.items():
         source["source_id"] = source_id
         source["lines"] = [safe_line(line) for line in source["text"].splitlines()]
@@ -94,8 +101,10 @@ TOOLS = [
         "type": "object", "properties": {
             "summary": {"type": "string"}, "reply": {"type": "string", "description": "直接回答本次追问，最多250字。"},
             "steps": {"type": "array", "items": {"type": "string"}, "description": "用户请求修改或复测时的具体步骤，最多4步。"},
-            "outcome": {"type": "string", "enum": ["investigating", "ready_for_retest", "observations_passed"]},
-            "verification_targets": {"type": "array", "items": {"type": "string"}, "description": "本次实验目标对应的Ping目的地址；观测通过时必须列出。"},
+            "outcome": {"type": "string", "enum": ["investigating", "ready_for_retest", "user_reported_resolved", "observations_passed"]},
+            "experiment_goal": {"type": "string", "description": "从材料提取的具体实验目标，保留设备和目的地址，后续沿用。"},
+            "verification_targets": {"type": "array", "items": {"type": "string"}, "description": "实验目标对应的Ping目的地址；首次分析时提取，后续核对同一组目标。"},
+            "resolution_evidence": {"type": "array", "items": {"type": "object", "properties": {"source_id": {"type": "string"}, "line": {"type": "integer"}, "quote": {"type": "string"}}, "required": ["source_id", "line", "quote"], "additionalProperties": False}, "description": "用户明确反馈目标已恢复时，引用本轮追问的原文。"},
             "hypotheses": {"type": "array", "items": {"type": "object", "properties": {
                 "title": {"type": "string"}, "reasoning": {"type": "string"},
                 "evidence": {"type": "array", "items": {"type": "object", "properties": {"source_id": {"type": "string"}, "line": {"type": "integer"}, "quote": {"type": "string"}}, "required": ["source_id", "line", "quote"], "additionalProperties": False}}},
@@ -116,9 +125,21 @@ def short_text(value, limit):
     return safe_text(value)
 
 
-def validate_submission(args, sources, seen, *, conversational=False, checked_pings=None, verifying=False):
+def checked_citation(citation, sources, seen):
+    exact_keys(citation, ("source_id", "line", "quote"))
+    source_id, line = citation["source_id"], citation["line"]
+    if not isinstance(source_id, str) or type(line) is not int or (source_id, line) not in seen:
+        raise ValueError("引用须指向本轮实际读取过的原文行")
+    source = sources[source_id]
+    quote = source["lines"][line - 1]
+    if citation["quote"] != quote or not quote.strip() or quote == "[敏感内容已省略]":
+        raise ValueError("quote必须逐字匹配可引用的完整原文行，保留缩进")
+    return {"source_id": source_id, "line": line, "quote": quote, "device": source["device"]}
+
+
+def validate_submission(args, sources, seen, *, conversational=False, checked_pings=None, verifying=False, required_targets=None):
     required = {"summary", "hypotheses", "evidence_requests"}
-    if not isinstance(args, dict) or not required <= set(args) or set(args) - required - {"reply", "steps", "outcome", "verification_targets"}:
+    if not isinstance(args, dict) or not required <= set(args) or set(args) - required - {"reply", "steps", "outcome", "verification_targets", "experiment_goal", "resolution_evidence"}:
         raise ValueError("字段不符合工具定义")
     summary = short_text(args["summary"], 1200)
     hypotheses, requests = args["hypotheses"], args["evidence_requests"]
@@ -134,15 +155,7 @@ def validate_submission(args, sources, seen, *, conversational=False, checked_pi
             raise ValueError("每个假设需要1～6条原文引用")
         citations = []
         for citation in evidence:
-            exact_keys(citation, ("source_id", "line", "quote"))
-            source_id, line = citation["source_id"], citation["line"]
-            if not isinstance(source_id, str) or type(line) is not int or (source_id, line) not in seen:
-                raise ValueError("引用须指向本轮实际读取过的原文行")
-            source = sources[source_id]
-            quote = source["lines"][line - 1]
-            if citation["quote"] != quote or not quote.strip() or quote == "[敏感内容已省略]":
-                raise ValueError("quote必须逐字匹配可引用的完整原文行，保留缩进")
-            citations.append({"source_id": source_id, "line": line, "quote": quote, "device": source["device"]})
+            citations.append(checked_citation(citation, sources, seen))
         checked.append({"title": short_text(hypothesis["title"], 160), "reasoning": short_text(hypothesis["reasoning"], 1000),
                         "state": "unverified", "evidence": citations, "citation_check": "exact_seen_lines"})
     checked_requests = []
@@ -154,24 +167,38 @@ def validate_submission(args, sources, seen, *, conversational=False, checked_pi
     if not isinstance(steps, list) or len(steps) > 4:
         raise ValueError("修改或验证步骤最多4步")
     outcome = args.get("outcome", "investigating")
-    if outcome not in ("investigating", "ready_for_retest", "observations_passed"):
+    if outcome not in ("investigating", "ready_for_retest", "user_reported_resolved", "observations_passed"):
         raise ValueError("不支持的排查阶段")
+    targets = args.get("verification_targets", [])
+    if not isinstance(targets, list) or len(targets) > 10 or not all(isinstance(target, str) and 0 < len(target) < 100 for target in targets):
+        raise ValueError("请提供最多10个实验目标地址")
     verification = {}
     if outcome == "observations_passed":
-        targets = args.get("verification_targets", [])
         rows = (checked_pings or {}).get("pings", [])
-        if not verifying or not isinstance(targets, list) or not 1 <= len(targets) <= 10 or not all(isinstance(target, str) for target in targets):
+        if not verifying or not targets:
             raise ValueError("请在复测时调用Ping核对工具，并列出实验目标地址")
+        if not set(required_targets or []) <= set(targets):
+            raise ValueError("请核对原实验目标地址，包含此前确定的全部目标")
         if not all(any(row["target"] == target and row["passed"] for row in rows) and not any(row["target"] == target and not row["passed"] for row in rows) for target in targets):
             raise ValueError("目标地址缺少通过的提交观测，或仍有失败记录")
         verification = {"targets": targets, "pings": rows, "source": "uploaded_text"}
         checked, checked_requests = [], []
+    if outcome == "user_reported_resolved":
+        evidence = args.get("resolution_evidence", [])
+        if not conversational or not isinstance(evidence, list) or not 1 <= len(evidence) <= 3:
+            raise ValueError("请引用本轮用户反馈恢复的原文")
+        citations = [checked_citation(item, sources, seen) for item in evidence]
+        if any(item["source_id"] != "message:current" for item in citations):
+            raise ValueError("恢复反馈须来自本轮追问")
+        verification = {"targets": targets or required_targets or [], "source": "user_report", "evidence": citations}
+        checked, checked_requests = [], []
     return {"summary": summary, "reply": reply, "steps": [short_text(step, 800) for step in steps], "hypotheses": checked, "evidence_requests": checked_requests,
-            "outcome": outcome, "verification": verification,
+            "outcome": outcome, "verification": verification, "verification_targets": targets,
+            "experiment_goal": short_text(args["experiment_goal"], 500) if args.get("experiment_goal") else "",
             "boundary": "依据本次提交的材料与工具记录生成。"}
 
 
-def execute_tool(name, args, payload, sources, seen, *, previous_materials=None, checked_pings=None):
+def execute_tool(name, args, payload, sources, seen, *, previous_materials=None, checked_pings=None, required_targets=None):
     if name == "compare_materials":
         exact_keys(args, ())
         old = previous_materials or {}
@@ -184,12 +211,19 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
         return {"has_previous": bool(old), "changed": bool(changes), "changes": changes}, False
     if name == "check_submitted_pings":
         exact_keys(args, ())
-        observations = []
+        observations, reported = [], []
         for source_id, source in sources.items():
+            if source["kind"] == "user_message" and source_id != "message:current":
+                continue
             for row in parse_ping_records(source["lines"]):
-                observations.append({"source_id": source_id, "device": source["device"], **row})
+                item = {"source_id": source_id, "device": source["device"], **row}
+                is_report = source["kind"] == "user_message" and row["line_end"] == row["line"]
+                (reported if is_report else observations).append(item)
                 seen.update((source_id, item["line"]) for item in row["evidence"])
-        return {"source": "uploaded_text", "pings": observations[:100], "note": "已核对上传文本中的Ping收发包数。"}, False
+        current_targets = {row["target"] for row in observations if row["source_id"] == "message:current"}
+        observations = [row for row in observations if row["source_id"] == "message:current" or row["target"] not in current_targets]
+        return {"source": "uploaded_text", "pings": observations[:100], "reported_pings": reported,
+                "note": "已读取本轮材料与追问；pings为可核对统计，reported_pings为用户口述统计。"}, False
     if name == "read_source":
         exact_keys(args, ("source_id", "start_line", "end_line"))
         source_id, first, last = args["source_id"], args["start_line"], args["end_line"]
@@ -217,7 +251,7 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
         if not seen:
             raise ValueError("请先读取当前材料，再提交假设或补充请求")
         return validate_submission(args, sources, seen, conversational=bool(payload.get("interaction")), checked_pings=checked_pings,
-                                   verifying=bool(payload.get("interaction"))), True
+                                   verifying=bool(payload.get("interaction")), required_targets=required_targets), True
     raise ValueError("不支持的工具")
 
 
@@ -231,9 +265,12 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
             "topology": safe_text(json.dumps(payload.get("topology", {}), ensure_ascii=False)), "evidence_kind": payload.get("evidence_kind", "user_submitted"),
             "previous_hypotheses": [{"title": item["title"], "state": "previous_unverified"} for item in (previous or {}).get("hypotheses", [])],
             "previous_summary": safe_text((previous or {}).get("summary", "")), "previous_requests": safe_value((previous or {}).get("pending_requests", (previous or {}).get("evidence_requests", []))), "interaction": safe_value(payload.get("interaction", {})),
+            "experiment_goal": safe_text((previous or {}).get("experiment_goal", "")), "previous_outcome": (previous or {}).get("outcome"),
+            "verification_targets": (previous or {}).get("verification_targets", []),
             "conversation": safe_value((conversation or [])[-6:])}, ensure_ascii=False)}]
     messages[0]["content"] += " ask直接回答追问，repair提供具体修改步骤，update分析补充材料，verify先用compare_materials和check_submitted_pings核对改动及上传的Ping统计。用reply回答本次问题、steps提供最多4步操作。修改建议使用材料明确给出的目标参数，不猜测删除命令后的默认行为。交流轮可不提出新假设或新材料请求，避免重复报告。已排除的旧原因不当作新假设。"
     messages[0]["content"] += " 不为无证据的理论风险延长排查。verify中当原故障已排除且实验目标对应的Ping统计均通过时，提交outcome=observations_passed并列出verification_targets，hypotheses与evidence_requests置空；可以保存报告后结束本轮。repair提供步骤后可用ready_for_retest。ask回答概念时不再添加新故障。"
+    messages[0]["content"] += " 首次从材料提取具体experiment_goal和verification_targets，后续沿用实验目标。追问中的配置、测试输出和用户反馈同样是本轮证据，使用read_source读取message:current。用户明确反馈修改后目标已恢复或Ping全部成功时，提交user_reported_resolved，resolution_evidence引用本轮反馈，结束排查；summary/reply直接说明用户反馈的恢复情况。用户在追问粘贴多行Ping原始输出时，用check_submitted_pings核对，可以提交observations_passed。用户口述成功与工具核验统计分别记录；已恢复时材料请求置空，不额外索要NAT、路由或其他无关输出。概念追问保留已完成状态；用户明确报告再次失败时，引用本轮失败反馈并重新排查。"
     messages[0]["content"] += " 表达风格：直接、自然、简洁的技术说明，不扮演老师、助教或导师，不称呼同学，不用鼓励、训导和角色开场。先回答问题，再说明关键原因与下一步；reply通常2～4句，用户要求一句话就只写一句。正文用设备名和关键参数解释，不堆砌第几行，行号留在evidence字段供界面展开。概念追问只回答概念，不重新复述整份诊断，summary也概括本次回答。材料相同时也直接回答本次问题，界面已经显示材料变化，不反复声明结论不变。不要添加‘未在设备上验证’‘仅为推断’‘不代表真实设备或全网已验证’等固定免责声明。确有缺项时直接写缺什么、补什么；不要编造设备操作或测试结果。合成案例的来源保留在材料来源中，不在每次回复重复。面向用户的功能介绍直接说明支持什么、需要提供什么、下一步怎样操作。例如：上传配置和测试输出后，可分析原因、给出修改步骤并核对复测结果。省去能力排除清单及“不连接设备、不执行命令、不做什么”等旁白；围绕当前任务给出有用信息。"
     if payload.get("interaction"):
         messages.append({"role": "user", "content": "本次请求：" + safe_text(payload["interaction"]["message"]) + "\n以上JSON中的question是最初实验背景，conversation是历史记录。reply和summary请直接回答本次请求，不重新回答最初问题。"})
@@ -245,6 +282,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
     completion = completion or (lambda history: chat_completion(history, tools=TOOLS, max_tokens=bounded_setting("LABAGENT_OPEN_MAX_TOKENS", 1600, 256, 2048)))
     try:
         for turn in range(6):
+            emit_progress("analyzing", "正在分析本轮材料与问题…")
             message = completion(messages)
             if not isinstance(message, dict):
                 raise ValueError("invalid response")
@@ -270,9 +308,16 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
                     args = json.loads(raw)
                     if name == "submit_hypotheses" and len(calls) != 1:
                         raise ValueError("提交假设时必须单独调用此工具")
+                    tool_labels = {"read_source": "正在读取材料", "retrieve_reference": "正在检索参考资料", "compare_materials": "正在比较前后材料", "check_submitted_pings": "正在核对Ping统计", "submit_hypotheses": "正在整理结论与下一步"}
+                    label = tool_labels.get(name, "正在处理工具请求")
+                    if name == "read_source" and isinstance(args, dict):
+                        label += "：" + sources.get(args.get("source_id"), {}).get("device", "")
+                    emit_progress("tool", label)
                     latest_pings = next((item["result"] for item in reversed(trace) if item["tool"] == "check_submitted_pings" and item["status"] == "ok"), None)
-                    observation, terminal = execute_tool(name, args, payload, sources, seen, previous_materials=previous_materials, checked_pings=latest_pings)
+                    observation, terminal = execute_tool(name, args, payload, sources, seen, previous_materials=previous_materials, checked_pings=latest_pings,
+                                                         required_targets=(previous or {}).get("verification_targets"))
                     state = "ok"
+                    emit_progress("tool_completed", label.replace("正在", "已完成：", 1))
                 except (ValueError, TypeError, KeyError) as error:
                     observation, state = {"error": str(error)[:200]}, "rejected"
                 trace.append({"tool": name if name in {tool["function"]["name"] for tool in TOOLS} else "unapproved_tool", "status": state,
@@ -292,40 +337,58 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
 def investigate(payload, previous=None, completion=None, *, conversation=None, previous_materials=None):
     from .engine import fingerprint
     validate_open(payload)
-    sources, warnings = source_bundle(payload)
+    sources, warnings = source_bundle(payload, conversation)
+    emit_progress("materials", f"已接收{len(payload['configs'])}份材料，正在结合本轮追问分析。")
     model = run_investigator(payload, sources, previous, completion, conversation=conversation, previous_materials=previous_materials)
     analysis = model.pop("investigation", {})
     same_materials = list(payload["configs"].items()) == list((previous_materials or {}).items())
-    if not analysis and (previous or {}).get("outcome") == "observations_passed" and same_materials:
+    previous_closed = (previous or {}).get("outcome") in RESOLVED_OUTCOMES
+    if not analysis and previous_closed and same_materials:
         analysis = dict(previous)
     if analysis:
-        if payload.get("interaction", {}).get("type") == "ask" and (previous or {}).get("outcome") == "observations_passed" and same_materials:
-            analysis["outcome"] = "observations_passed"
+        current_failure = any(citation["source_id"] == "message:current" for item in analysis.get("hypotheses", []) for citation in item["evidence"])
+        current_failure |= any(row["source_id"] == "message:current" and not row["passed"] for tool in model["tool_trace"]
+                               if tool["tool"] == "check_submitted_pings" and tool["status"] == "ok" for row in tool["result"]["pings"])
+        if previous_closed and same_materials and not current_failure and analysis.get("outcome") not in RESOLVED_OUTCOMES:
+            analysis["outcome"] = previous["outcome"]
             analysis["verification"] = previous["verification"]
+        closed = analysis.get("outcome") in RESOLVED_OUTCOMES
+        if closed:
             analysis["hypotheses"], analysis["evidence_requests"] = [], []
-        pending = analysis["evidence_requests"]
-        if not pending and payload.get("interaction", {}).get("type") in ("ask", "repair"):
+        pending = analysis.get("evidence_requests", [])
+        if not closed and not pending and payload.get("interaction", {}).get("type") in ("ask", "repair"):
             pending = (previous or {}).get("pending_requests", (previous or {}).get("evidence_requests", []))
         analysis["pending_requests"] = pending
+        analysis["experiment_goal"] = (previous or {}).get("experiment_goal") or analysis.get("experiment_goal") or experiment_goal(payload)
+        if not analysis.get("verification_targets"):
+            analysis["verification_targets"] = (previous or {}).get("verification_targets", [])
+        if closed:
+            analysis["resolution_summary"] = ((previous.get("resolution_summary") or previous.get("summary"))
+                                              if previous_closed and previous["outcome"] == analysis["outcome"] and same_materials and not current_failure else analysis["summary"])
     knowledge = {}
     for item in model["tool_trace"]:
         if item["tool"] == "retrieve_reference" and item["status"] == "ok":
             for document in item["result"]["results"]:
                 knowledge[document.get("chunk_id", document.get("id"))] = document
             warnings.extend(item["result"].get("warnings", []))
-    requests = [f"{item['device']}：{item['information']}（{item['why']}）" for item in analysis.get("evidence_requests", [])]
-    if not requests and model.get("status") != "ok" and analysis.get("outcome") != "observations_passed":
+    requests = [f"{item['device']}：{item['information']}（{item['why']}）" for item in analysis.get("pending_requests", [])]
+    if not requests and model.get("status") != "ok" and analysis.get("outcome") not in RESOLVED_OUTCOMES:
         requests = ["请启用可用模型或补充当前材料后继续开放排查。"]
     if model.get("status") == "ok":
         model["text"] = analysis["summary"]
     interaction_checks = {item["tool"]: item["result"] for item in model["tool_trace"] if item["status"] == "ok" and item["tool"] in ("compare_materials", "check_submitted_pings")}
     passed = analysis.get("outcome") == "observations_passed"
-    if passed and "check_submitted_pings" not in interaction_checks:
+    reported = analysis.get("outcome") == "user_reported_resolved"
+    if passed:
         interaction_checks["check_submitted_pings"] = analysis["verification"]
+    if reported:
+        interaction_checks.pop("check_submitted_pings", None)
+        interaction_checks["user_report"] = analysis["verification"]
+    status = "verified_from_observations" if passed else "resolved_by_user_report" if reported else "needs_information"
     return {"schema_version": "1.0", "mode": "open_network", "experiment": "开放网络排查", "created_at": datetime.now(timezone.utc).isoformat(),
-            "config_fingerprint": fingerprint(payload), "status": "verified_from_observations" if passed else "needs_information", "findings": [], "unknowns": [], "checks": [],
+            "config_fingerprint": fingerprint(payload), "status": status, "findings": [], "unknowns": [], "checks": [],
             "runtime_checks": [], "runtime_missing": requests, "hint_level": payload.get("hint_level", 2),
-            "hint": "根据当前材料提出假设，并安排下一步取证。", "knowledge": list(knowledge.values()), "knowledge_scope": payload.get("knowledge_scope", "default"),
+            "hint": analysis.get("summary") or "提交材料后开始分析。", "knowledge": list(knowledge.values()), "knowledge_scope": payload.get("knowledge_scope", "default"),
             "knowledge_retrieval": {"warnings": warnings}, "planning_knowledge": [], "command_output_parsing": {},
             "next_steps": requests, "summary": {"faults": 0, "unknowns": 0, "static_checks_passed": 0}, "investigation": analysis,
             "source_manifest": manifest(sources), "llm": model, "interaction_checks": interaction_checks,

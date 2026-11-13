@@ -60,6 +60,11 @@ p { line-height:1.85; font-size:14px; }
 .tool-records details { margin-top:7px; }
 .tool-records pre { max-height:240px; overflow:auto; font-size:10px; }
 .source-location { font-size:10px!important; color:#8b9bb2!important; }
+.processing-progress { margin:0 0 18px; padding:12px 14px; border:1px solid #dbe5f3; border-radius:8px; background:#f8faff; color:#54729c; font-size:11px; }
+.processing-progress summary { cursor:pointer; }
+.processing-progress ol { margin:10px 0 0; padding-left:18px; line-height:1.9; }
+.processing-progress li:last-child { color:#315bb7; font-weight:600; }
+.chat-retry { display:block; margin-top:8px; }
 .paste-panel { border:1px solid var(--border); padding:14px; border-radius:9px; background:#fafbfe; }
 .paste-panel label { margin-top:0; }
 .secondary-button { background:#edf1f8; color:#5d76a0; font-size:11px; padding:9px 12px; border-radius:6px; margin-top:8px; }
