@@ -119,6 +119,22 @@ def generate_open_report(history):
     summary = analysis.get("resolution_summary") or closed_attempt["result"].get("investigation", {}).get("summary") or analysis.get("summary")
     if summary:
         rows += ["", clean(summary)]
+    operations = result.get("operation_history", {})
+    if operations.get("events"):
+        focus = next((event for event in operations["events"] if event["id"] == operations.get("focus_id")), None)
+        rows += ["", "## 实验过程回溯", "", f"识别{operations['event_count']}步操作、{operations['error_count']}处报错。"]
+        if focus:
+            rows += ["", f"关键操作：{clean(focus['time_label'])} · {clean(focus['device'])} · {clean(focus['view_label'])}",
+                     "", clean(focus["command"]), "", clean(focus["explanation"])]
+        rows += ["", "| 时间 | 设备与视图 | 操作 | 终端结果 |", "| --- | --- | --- | --- |"]
+        for event in operations["events"]:
+            state = "报错后已重新输入" if event["recovered"] else {"issued": "命令已输入", "returned": "终端已返回", "error": "命令报错"}[event["status"]]
+            rows.append(f"| {clean(event['time_label'])} | {clean(event['device'])} / {clean(event['view_label'])} | {clean(event['command'])} | {state} |")
+        for event in operations["events"]:
+            if event["status"] == "error":
+                rows.append("")
+                for citation in event["evidence"] + event["response_evidence"]:
+                    rows.append(f"- {clean(citation['device'])} 第{citation['line']}行：{clean(citation['quote'])}")
     if result.get("llm", {}).get("status") != "ok" and result["status"] in RESOLVED_STATUSES:
         rows += ["", "本轮请求未完成，以上结论沿用此前保存的状态。"]
     verification = analysis.get("verification", {})

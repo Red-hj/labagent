@@ -37,7 +37,7 @@ class MaterialService:
             if not isinstance(materials, dict):
                 raise ValueError("materials须为材料名称与正文组成的对象")
             payload["configs"].update(materials)
-            for key in ("question", "use_llm", "evidence_kind", "knowledge_scope"):
+            for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings"):
                 if key in request:
                     payload[key] = request[key]
             action, message = request.get("action"), request.get("message")

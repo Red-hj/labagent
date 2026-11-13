@@ -9,7 +9,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 from .engine import diagnose, fingerprint, validate
 from .model import configured, public_config
@@ -21,6 +21,8 @@ from .knowledge import import_document, list_documents, list_scopes, search
 from .cases import demo_cases
 from .demos import network_access_demo, ospf_goals_demo
 from .progress import emit_progress, progress_to
+from .recordings import Recordings, VIDEO_SUFFIXES, available as replay_available
+from .operation_history import inspect_history
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -77,13 +79,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"error": "请使用当前网站地址访问"}, 403)
         path = urlparse(self.path).path
         if path == "/api/health":
-            return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "llm_configured": configured(), "llm": public_config()})
+            return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "llm_configured": configured(), "llm": public_config(), "replay_available": replay_available()})
         if not self.team_access():
             return
         if path == "/api/demos/network_access":
             return self.reply(network_access_demo())
         if path == "/api/demos/ospf_goals":
             return self.reply(ospf_goals_demo())
+        if path == "/api/demos/operation_history":
+            return self.reply({"title": "找回未生效的network命令", "source": "合成演示材料", "materials": {
+                "终端操作.log": (ROOT / "data/examples/终端操作回溯.log").read_text(encoding="utf-8"),
+                "实验要求.txt": "实验目标：R1通过OSPF访问R2的Loopback0地址10.2.2.2，Ping全部成功。\n分析操作记录中哪一步影响了配置，并说明怎样继续。"}})
+        if path == "/api/demos/operation_history/video":
+            return self.send_video(ROOT / "data/examples/实验操作回放.webm", "video/webm")
+        if match := re.fullmatch(r"/api/recordings/([a-f0-9]{32})(/video)?", path):
+            status = self.server.recordings.status(match[1])
+            if status is None:
+                return self.reply({"error": "录屏不存在，请重新添加"}, 404)
+            if match[2]:
+                return self.send_recording(match[1], status)
+            return self.reply(status)
         if path == "/api/knowledge/scopes":
             return self.reply({"scopes": list_scopes()})
         if path == "/api/knowledge/documents":
@@ -138,10 +153,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"error": "请从当前网站提交请求"}, 403)
         if not self.team_access():
             return
+        if urlparse(self.path).path == "/api/recordings":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                result = self.server.recordings.upload(self.rfile, length, unquote(self.headers.get("X-Recording-Name", "recording.mp4")))
+                return self.reply(result, 202)
+            except ValueError as error:
+                self.close_connection = True
+                return self.reply({"error": str(error)}, 400)
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.reply({"error": "请使用 application/json"}, 415)
         path = urlparse(self.path).path
-        if path not in ("/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search"):
+        if path not in ("/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect"):
             return self.reply({"error": "未找到接口"}, 404)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -150,6 +173,12 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8-sig"))
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
+            if path == "/api/operations/inspect":
+                from .investigation import validate_open, source_bundle
+                material_input = {"configs": payload.get("materials"), "question": "回溯操作记录"}
+                validate_open(material_input)
+                history = inspect_history(source_bundle(material_input)[0])
+                return self.reply(history)
             if path == "/api/knowledge/import":
                 return self.reply(import_document(payload))
             if path == "/api/knowledge/search":
@@ -199,6 +228,48 @@ class Handler(BaseHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self.server.write_log(traceback.format_exc(), error=True)
+
+    def send_recording(self, recording_id, status):
+        path = self.server.recordings.folder(recording_id) / ("video" + status["suffix"])
+        return self.send_video(path, VIDEO_SUFFIXES[status["suffix"]])
+
+    def send_video(self, path, mime):
+        size = path.stat().st_size
+        start, end = 0, size - 1
+        requested = self.headers.get("Range")
+        if requested:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested)
+            if not match or not any(match.groups()):
+                return self.reply({"error": "视频范围无效"}, 416)
+            if match[1]:
+                start = int(match[1]); end = min(int(match[2]), end) if match[2] else end
+            else:
+                start = max(0, size - int(match[2]))
+            if not 0 <= start <= end < size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+        self.send_response(206 if requested else 200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if requested:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        try:
+            with path.open("rb") as stream:
+                stream.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    chunk = stream.read(min(65536, remaining))
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def stream_diagnosis(self, payload, session):
         events = Queue()
@@ -263,6 +334,7 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
     server.diagnosis_slots = threading.BoundedSemaphore(4)
     server.session_locks = [threading.Lock() for _ in range(32)]
     server.workflow_database = store.path.with_name("workflow-" + store.path.name)
+    server.recordings = Recordings(store.path.parent / "recordings")
     log_lock = threading.Lock()
     def write_log(message, error=False):
         path = store.path.parent / ("server-error.log" if error else "server.log")

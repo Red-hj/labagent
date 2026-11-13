@@ -16,6 +16,7 @@ from .session_state import RESOLVED_OUTCOMES, experiment_goal
 from .progress import emit_progress
 from .experiment_goals import GOAL_TOOL, validate_goal_fields, check_goals
 from .diagnostic_planner import PLAN_TOOL, validate_plan
+from .operation_history import HISTORY_TOOL, inspect_history, model_history
 
 SENSITIVE = re.compile(r"authentication|password|passwd|cipher|community|secret|pre-shared|api[_-]?key|authorization|bearer|sk-[a-z0-9]{12,}|BEGIN.*PRIVATE KEY", re.I)
 
@@ -57,6 +58,9 @@ def validate_open(payload):
             raise ValueError("运行输出须包含 device、command、text，正文不超过100KB")
     if payload.get("evidence_kind", "user_submitted") not in ("demo", "user_submitted"):
         raise ValueError("evidence_kind 无效")
+    recordings = payload.get("recordings", [])
+    if not isinstance(recordings, list) or len(recordings) > 5 or not all(isinstance(item, str) and re.fullmatch(r"[a-f0-9]{32}", item) for item in recordings):
+        raise ValueError("recordings须为最多5个录屏编号")
     interaction = payload.get("interaction")
     if interaction is not None:
         exact_keys(interaction, ("type", "message"))
@@ -94,7 +98,7 @@ def manifest(sources):
 
 
 TOOLS = [
-    GOAL_TOOL, PLAN_TOOL,
+    GOAL_TOOL, PLAN_TOOL, HISTORY_TOOL,
     {"type": "function", "function": {"name": "read_source", "description": "按原文行号读取一份已上传材料，每次最多60行。", "parameters": {
         "type": "object", "properties": {"source_id": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}},
         "required": ["source_id", "start_line", "end_line"], "additionalProperties": False}}},
@@ -108,6 +112,7 @@ TOOLS = [
             "steps": {"type": "array", "items": {"type": "string"}, "description": "用户请求修改或复测时的具体步骤，最多4步。"},
             "outcome": {"type": "string", "enum": ["investigating", "ready_for_retest", "user_reported_resolved", "observations_passed"]},
             "experiment_goal": {"type": "string", "description": "从材料提取的具体实验目标，保留设备和目的地址，后续沿用。"},
+            "operation_focus": {"type": "string", "description": "直接复制inspect_operation_timeline返回的events[].id字符串，例如op004。普通材料可省略。"},
             "verification_targets": {"type": "array", "items": {"type": "string"}, "description": "实验目标对应的Ping目的地址；首次分析时提取，后续核对同一组目标。"},
             "resolution_evidence": {"type": "array", "items": {"type": "object", "properties": {"source_id": {"type": "string"}, "line": {"type": "integer"}, "quote": {"type": "string"}}, "required": ["source_id", "line", "quote"], "additionalProperties": False}, "description": "用户明确反馈目标已恢复时，引用本轮追问的原文。"},
             "hypotheses": {"type": "array", "items": {"type": "object", "properties": {
@@ -144,7 +149,7 @@ def checked_citation(citation, sources, seen):
 
 def validate_submission(args, sources, seen, *, conversational=False, checked_pings=None, verifying=False, required_targets=None):
     required = {"summary", "hypotheses", "evidence_requests"}
-    if not isinstance(args, dict) or not required <= set(args) or set(args) - required - {"reply", "steps", "outcome", "verification_targets", "experiment_goal", "resolution_evidence"}:
+    if not isinstance(args, dict) or not required <= set(args) or set(args) - required - {"reply", "steps", "outcome", "verification_targets", "experiment_goal", "resolution_evidence", "operation_focus"}:
         raise ValueError("字段不符合工具定义")
     summary = short_text(args["summary"], 1200)
     hypotheses, requests = args["hypotheses"], args["evidence_requests"]
@@ -205,6 +210,13 @@ def validate_submission(args, sources, seen, *, conversational=False, checked_pi
 
 def execute_tool(name, args, payload, sources, seen, *, previous_materials=None, checked_pings=None, required_targets=None, diagnostic_context=None):
     context = diagnostic_context if diagnostic_context is not None else {}
+    if name == "inspect_operation_timeline":
+        exact_keys(args, ())
+        history = inspect_history(sources)
+        context["operation_history"] = history
+        for event in history["events"]:
+            seen.update((item["source_id"], item["line"]) for item in event["evidence"] + event["response_evidence"])
+        return model_history(history), False
     if name == "check_experiment_goals":
         if not isinstance(args, dict) or set(args) - {"goals"}:
             raise ValueError("请提供goals或空对象")
@@ -291,6 +303,13 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
             raise ValueError("实验目标还未全部满足，请据此继续排查：" + missing)
         result = validate_submission(args, sources, seen, conversational=bool(payload.get("interaction")), checked_pings=checked_pings,
                                      verifying=checked_pings is not None, required_targets=required_targets)
+        if args.get("operation_focus"):
+            history = context.get("operation_history", {})
+            event = next((item for item in history.get("events", []) if item["id"] == args["operation_focus"]), None)
+            if not event:
+                choices = ", ".join(item["id"] for item in history.get("events", [])[:12])
+                raise ValueError("operation_focus直接填写事件id字符串，可选：" + (choices or "先调用inspect_operation_timeline"))
+            result["operation_focus"] = event["id"]
         if assessment:
             result["goal_assessment"] = assessment
             result["verification_targets"] = list(dict.fromkeys(result["verification_targets"] + [goal["target"] for goal in context["criteria"] if goal["kind"] == "reachability"]))
@@ -333,6 +352,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
             "verification_targets": (previous or {}).get("verification_targets", []),
             "saved_goals": (previous or {}).get("goal_assessment", {}).get("criteria", []),
             "previous_plan": safe_value((previous or {}).get("diagnostic_plan", {})),
+            "operation_history": {"event_count": inspect_history(sources)["event_count"], "tool": "inspect_operation_timeline"},
             "conversation": safe_value((conversation or [])[-6:])}, ensure_ascii=False)}]
     messages[0]["content"] += " ask直接回答追问，repair提供具体修改步骤，update分析补充材料，verify先用compare_materials和check_submitted_pings核对改动及上传的Ping统计。用reply回答本次问题、steps提供最多4步操作。修改建议使用材料明确给出的目标参数，不猜测删除命令后的默认行为。交流轮可不提出新假设或新材料请求，避免重复报告。已排除的旧原因不当作新假设。"
     messages[0]["content"] += " 不为无证据的理论风险延长排查。verify中当原故障已排除且实验目标对应的Ping统计均通过时，提交outcome=observations_passed并列出verification_targets，hypotheses与evidence_requests置空；可以保存报告后结束本轮。repair提供步骤后可用ready_for_retest。ask回答概念时不再添加新故障。"
@@ -340,6 +360,8 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
     messages[0]["content"] += " 读取实验说明后，使用check_experiment_goals提取可检查的目标：访问目标用reachability，指定路由来源用route_protocol，明确配置要求用config_contains/config_absent。仅提取原文要求，instruction引用要求原文。路由目标指定源设备、目的地址、要求协议；配置目标填写命令前缀。后续调用空对象沿用目标，不能只检查Ping就宣布协议实验完成。saved_goals为已保存目标。根据工具返回的checks回答满足了什么、还差哪项；观测全部通过才能提交observations_passed。若仅为概念追问，直接回答概念。"
     messages[0]["content"] += " 有多个合理原因时，调用plan_diagnostic_checks：用自由命名的候选原因和本轮引用更新active/supported/ruled_out状态；提出1～3项检查，填写每个原因下的预期结果标签，同一结果使用相同标签，无法预测写unknown。工具会按区分原因的能力与采集成本选择一项。下一步优先采用工具selected，用户补充后重新规划，不重复索要已有输出。预测是待检验的解释，排除原因需要本轮实际材料依据。"
     messages[0]["content"] += " 每轮最多8项工具调用；submit_hypotheses单独调用。目标编号留在工具字段，正文直接写‘连通性已满足，OSPF路由来源还需修正’等具体结果。"
+    messages[0]["content"] += " 有终端操作记录时，优先调用inspect_operation_timeline读取时间线，联系当前配置、实验要求与测试输出解释关键步骤，使用operation_focus标记相关事件。命令输入、终端返回、明确报错、后续重试分别叙述；已成功重试的旧报错用作过程记录。关键时间点用MM:SS表达，正文先解释具体操作与影响。事件时间来自日志或录屏采样，引用保持原文行。"
+    messages[0]["content"] += " OSPF语义：network地址与反掩码用于选择参与OSPF的接口。反掩码0.0.0.0表示精确匹配接口主IP，不能据此判断通告/32；通告前缀由接口掩码、OSPF网络类型等决定。例如普通以太网接口10.12.0.2/24使用network 10.12.0.2 0.0.0.0参与OSPF时，通告的接口网段仍为10.12.0.0/24。回答是否宣告/32时明确区分接口匹配与路由前缀；历史回答中的错误以此更正。"
     messages[0]["content"] += " 表达风格：直接、自然、简洁的技术说明，不扮演老师、助教或导师，不称呼同学，不用鼓励、训导和角色开场。先回答问题，再说明关键原因与下一步；reply通常2～4句，用户要求一句话就只写一句。正文用设备名和关键参数解释，不堆砌第几行，行号留在evidence字段供界面展开。概念追问只回答概念，不重新复述整份诊断，summary也概括本次回答。材料相同时也直接回答本次问题，界面已经显示材料变化，不反复声明结论不变。不要添加‘未在设备上验证’‘仅为推断’‘不代表真实设备或全网已验证’等固定免责声明。确有缺项时直接写缺什么、补什么；不要编造设备操作或测试结果。合成案例的来源保留在材料来源中，不在每次回复重复。面向用户的功能介绍直接说明支持什么、需要提供什么、下一步怎样操作。例如：上传配置和测试输出后，可分析原因、给出修改步骤并核对复测结果。省去能力排除清单及“不连接设备、不执行命令、不做什么”等旁白；围绕当前任务给出有用信息。"
     if payload.get("interaction"):
         messages.append({"role": "user", "content": "本次请求：" + safe_text(payload["interaction"]["message"]) + "\n以上JSON中的question是最初实验背景，conversation是历史记录。reply和summary请直接回答本次请求，不重新回答最初问题。"})
@@ -379,7 +401,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
                     args = json.loads(raw)
                     if name == "submit_hypotheses" and len(calls) != 1:
                         raise ValueError("提交假设时必须单独调用此工具")
-                    tool_labels = {"read_source": "正在读取材料", "retrieve_reference": "正在检索参考资料", "compare_materials": "正在比较前后材料", "check_submitted_pings": "正在核对Ping统计", "check_experiment_goals": "正在核对实验目标与协议要求", "plan_diagnostic_checks": "正在比较候选检查并选择下一步", "submit_hypotheses": "正在整理结论与下一步"}
+                    tool_labels = {"read_source": "正在读取材料", "retrieve_reference": "正在检索参考资料", "compare_materials": "正在比较前后材料", "check_submitted_pings": "正在核对Ping统计", "check_experiment_goals": "正在核对实验目标与协议要求", "plan_diagnostic_checks": "正在比较候选检查并选择下一步", "inspect_operation_timeline": "正在回溯设备、配置视图与关键报错", "submit_hypotheses": "正在整理结论与下一步"}
                     label = tool_labels.get(name, "正在处理工具请求")
                     if name == "read_source" and isinstance(args, dict):
                         label += "：" + sources.get(args.get("source_id"), {}).get("device", "")
@@ -409,6 +431,9 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
     from .engine import fingerprint
     validate_open(payload)
     sources, warnings = source_bundle(payload, conversation)
+    operations = inspect_history(sources)
+    if operations["event_count"]:
+        emit_progress("timeline", f"已还原{operations['event_count']}步终端操作，正在核对关键时间点。")
     emit_progress("materials", f"已接收{len(payload['configs'])}份材料，正在结合本轮追问分析。")
     model = run_investigator(payload, sources, previous, completion, conversation=conversation, previous_materials=previous_materials)
     analysis = model.pop("investigation", {})
@@ -472,4 +497,6 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
             "knowledge_retrieval": {"warnings": warnings}, "planning_knowledge": [], "command_output_parsing": {},
             "next_steps": requests, "summary": {"faults": 0, "unknowns": 0, "static_checks_passed": 0}, "investigation": analysis,
             "source_manifest": manifest(sources), "llm": model, "interaction_checks": interaction_checks,
+            "operation_history": {**operations, "focus_id": analysis.get("operation_focus") or operations["first_issue_id"]},
+            "recordings": payload.get("recordings", []),
             "trace": [{"step": i, "component": "开放排查工具", "action": item["tool"], **item} for i, item in enumerate(model["tool_trace"], 1)]}

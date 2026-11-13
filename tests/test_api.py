@@ -104,6 +104,32 @@ class ApiTests(unittest.TestCase):
             self.assertNotIn("expected_result", stage)
             self.assertNotIn("hypotheses", stage)
 
+    def test_operation_history_preview_and_demo_video_ranges(self):
+        demo = self.request("/api/demos/operation_history")[1]
+        history = self.request("/api/operations/inspect", {"materials": demo["materials"]})[1]
+        self.assertEqual(history["error_count"], 1)
+        event = next(item for item in history["events"] if item["id"] == history["first_issue_id"])
+        self.assertEqual(event["seconds"], 3)
+        url = self.base + "/api/demos/operation_history/video"
+        with urlopen(Request(url, headers={"Range": "bytes=0-15"}), timeout=5) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(len(response.read()), 16)
+            self.assertTrue(response.headers["Content-Range"].startswith("bytes 0-15/"))
+        with self.assertRaises(HTTPError) as denied:
+            urlopen(Request(url, headers={"Range": "bytes=999999999-"}), timeout=5)
+        self.assertEqual(denied.exception.code, 416)
+
+    def test_recording_upload_and_status_use_the_same_saved_video(self):
+        from labagent.recordings import Recordings
+        with patch("labagent.recordings.available", return_value=True), patch.object(Recordings, "_process"):
+            with urlopen(Request(self.base + "/api/recordings", data=b"test-video", headers={"Content-Type": "video/mp4", "X-Recording-Name": "test.mp4"}), timeout=5) as response:
+                self.assertEqual(response.status, 202)
+                job = json.load(response)
+            status = self.request("/api/recordings/" + job["id"])[1]
+            self.assertEqual(status["status"], "queued")
+            with urlopen(Request(self.base + status["video_url"], headers={"Range": "bytes=-5"}), timeout=5) as response:
+                self.assertEqual(response.read(), b"video")
+
     def test_session_modes_cannot_be_mixed(self):
         first = self.request("/api/diagnose", case())[1]
         payload = {"session_id": first["session_id"], "diagnostic_mode": "open_network", "question": "网络排查", "configs": {"PC1": "test"}, "use_llm": False}

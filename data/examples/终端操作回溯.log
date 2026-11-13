@@ -1,0 +1,31 @@
+本材料为合成终端操作记录，时间与配套演示视频一致。
+[00:00.000] <R2>system-view
+[00:01.000] [R2]interface GigabitEthernet0/0/0
+[00:02.000] [R2-GigabitEthernet0/0/0]ip address 10.12.0.2 255.255.255.0
+[00:03.000] [R2-GigabitEthernet0/0/0]network 10.2.2.2 0.0.0.0
+[00:03.500]                                      ^
+[00:04.000] Error: Unrecognized command found at '^' position.
+[00:05.000] [R2-GigabitEthernet0/0/0]quit
+[00:06.000] [R2]ospf 1 router-id 2.2.2.2
+[00:07.000] [R2-ospf-1]area 0
+[00:08.000] [R2-ospf-1-area-0.0.0.0]network 10.12.0.2 0.0.0.0
+[00:09.000] [R2-ospf-1-area-0.0.0.0]return
+[00:10.000] <R2>display current-configuration
+[00:10.500] sysname R2
+[00:10.500] #
+[00:10.500] interface GigabitEthernet0/0/0
+[00:10.500]  ip address 10.12.0.2 255.255.255.0
+[00:10.500] #
+[00:10.500] interface LoopBack0
+[00:10.500]  ip address 10.2.2.2 255.255.255.255
+[00:10.500] #
+[00:10.500] ospf 1 router-id 2.2.2.2
+[00:10.500]  area 0.0.0.0
+[00:10.500]   network 10.12.0.2 0.0.0.0
+[00:10.500] #
+[00:10.500] return
+[00:11.000] <R1>ping 10.2.2.2
+[00:11.500] PING 10.2.2.2: 56 data bytes
+[00:12.000] 5 packet(s) transmitted
+[00:12.000] 0 packet(s) received
+[00:13.000] <R1>

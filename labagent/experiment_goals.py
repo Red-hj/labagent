@@ -9,6 +9,7 @@ import re
 
 from .connectivity import parse_ping_records
 from .runtime_parser import parse_routes
+from .operation_history import TIME
 
 
 KINDS = ("reachability", "route_protocol", "config_contains", "config_absent")
@@ -36,7 +37,7 @@ def evidence_blocks(sources, *, include_history=False):
             continue
         if source["kind"] == "user_message" and source_id != "message:current" and not include_history:
             continue
-        lines = source["lines"]
+        lines = [TIME.sub("", line) for line in source["lines"]]
         # A filename is only a fallback. Explicit device prompts take precedence.
         device = re.split(r"[-_\s]", Path(source["device"]).stem)[0]
         sysname = next((match for line in lines if (match := re.fullmatch(r"\s*sysname\s+(\S+)\s*", line, re.I))), None)
@@ -60,12 +61,13 @@ def evidence_blocks(sources, *, include_history=False):
 def _block(source, device, command, start, end):
     return {"source_id": source["source_id"], "device": device, "material": source["device"],
             "kind": source["kind"], "command": command, "start": start,
-            "lines": source["lines"][start:end]}
+            "lines": [TIME.sub("", line) for line in source["lines"][start:end]],
+            "raw_lines": source["lines"][start:end]}
 
 
 def citation(block, number):
     return {"source_id": block["source_id"], "device": block["material"],
-            "line": block["start"] + number, "quote": block["lines"][number - 1]}
+            "line": block["start"] + number, "quote": block["raw_lines"][number - 1]}
 
 
 def check_goals(criteria, sources, *, include_history=False):
