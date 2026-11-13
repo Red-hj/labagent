@@ -1,0 +1,22 @@
+{
+  "id": "ospf-loopback-advertisement",
+  "title": "R1到R3环回地址不可达：两种修复方案的实际对照",
+  "routers": {
+    "R1": {"router_id": "1.1.1.1", "loopback": "10.1.1.1/32", "networks": ["10.12.0.0/30", "10.1.1.1/32"]},
+    "R2": {"router_id": "2.2.2.2", "loopback": "10.2.2.2/32", "networks": ["10.12.0.0/30", "10.23.0.0/30", "10.2.2.2/32"]},
+    "R3": {"router_id": "3.3.3.3", "loopback": "10.3.3.3/32", "networks": ["10.23.0.0/30"]}
+  },
+  "links": [
+    {"left": ["R1", "eth1", "10.12.0.1/30"], "right": ["R2", "eth1", "10.12.0.2/30"]},
+    {"left": ["R2", "eth2", "10.23.0.1/30"], "right": ["R3", "eth1", "10.23.0.2/30"]}
+  ],
+  "goals": [
+    {"id": "reachability", "title": "R1到R3环回地址Ping全部成功", "kind": "ping", "device": "R1", "target": "10.3.3.3", "source_address": "10.1.1.1", "count": 3},
+    {"id": "route_protocol", "title": "R1通过OSPF学习目标路由", "kind": "route_protocol", "device": "R1", "target": "10.3.3.3/32", "expected": "ospf"},
+    {"id": "no_static", "title": "R1按实验要求使用动态路由配置", "kind": "config_absent", "device": "R1", "target": "ip route "}
+  ],
+  "candidates": [
+    {"id": "static", "title": "补充静态路由", "commands": {"R1": ["ip route 10.3.3.3/32 10.12.0.2"], "R2": ["ip route 10.3.3.3/32 10.23.0.2"]}},
+    {"id": "ospf", "title": "修复R3的OSPF发布", "commands": {"R3": ["router ospf", "network 10.3.3.3/32 area 0.0.0.0", "exit"]}}
+  ]
+}

@@ -1,0 +1,28 @@
+name: Run FRR repair comparison
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Run actual OSPF processes and independent repair candidates
+        env:
+          LABAGENT_ACTION_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: sudo --preserve-env=LABAGENT_ACTION_URL python3 -B scripts/run_repair_lab.py
+      - name: Upload raw commands and observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frr-repair-comparison-${{ github.sha }}
+          path: runtime/repair-lab/
+          retention-days: 14
+          if-no-files-found: error
