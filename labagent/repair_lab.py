@@ -6,6 +6,9 @@ import json
 from .connectivity import parse_ping_records
 
 RUN_KIND = "labagent_repair_run"
+REPAIR_TOOL = {"type":"function", "function": {"name":"compare_repair_candidates",
+    "description":"读取FRR实验运行记录，用共同实验目标重新核对故障基线与各候选修复，比较实际Ping、已安装路由来源和配置差异。返回全部目标满足的候选方案及原始观测。",
+    "parameters":{"type":"object","properties":{"source_id":{"type":"string"}},"required":["source_id"],"additionalProperties":False}}}
 
 
 def route_to(table, target):
@@ -27,7 +30,8 @@ def evaluate_phase(goals, phase):
             output = observed["pings"][goal["id"]]
             records = [row for row in parse_ping_records(output.splitlines()) if row["target"] == goal["target"]]
             passed = bool(records) and all(row["passed"] and row["sent"] == goal.get("count", 3) for row in records)
-            detail = f"{goal['device']} → {goal['target']}：" + (f"{records[-1]['sent']}发{records[-1]['received']}收" if records else "补充完整Ping统计")
+            failure = "内核返回Network unreachable，目标不可达" if "network unreachable" in output.lower() else "测试未返回完整收发统计"
+            detail = f"{goal['device']} → {goal['target']}：" + (f"{records[-1]['sent']}发{records[-1]['received']}收" if records else failure)
             evidence = output
         elif kind == "route_protocol":
             routes = route_to(observed["routes"], goal["target"])
@@ -48,7 +52,7 @@ def evaluate_phase(goals, phase):
     return checks
 
 
-def compare_run(run):
+def _compare_run(run):
     if not isinstance(run, dict) or run.get("kind") != RUN_KIND or run.get("schema_version") != 1:
         raise ValueError("请选择LabAgent实验运行记录JSON")
     goals, phases = run.get("goals"), run.get("phases")
@@ -75,3 +79,28 @@ def compare_run(run):
     recommended = min(successful, key=lambda row: sum(len(lines) for lines in row["commands"].values())) if successful else None
     return {"title": run["title"], "source": "FRR实验运行记录", "run_id": run["run_id"],
             "environment": run["environment"], "phases": results, "recommended": recommended["id"] if recommended else None}
+
+
+def compare_run(run):
+    try:
+        return _compare_run(run)
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError("运行记录字段不完整，请提供实验工具导出的run.json") from error
+
+
+def discover_runs(sources):
+    output = []
+    for source_id, source in sources.items():
+        if not source["text"].lstrip().startswith("{"):
+            continue
+        try:
+            run = json.loads(source["text"])
+        except ValueError:
+            continue
+        if not isinstance(run, dict) or run.get("kind") != RUN_KIND:
+            continue
+        try:
+            output.append({"source_id":source_id,"material":source["device"],**compare_run(run)})
+        except ValueError as error:
+            output.append({"source_id":source_id,"material":source["device"],"error":str(error)})
+    return output

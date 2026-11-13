@@ -148,7 +148,6 @@ def main():
             lab.close()
     comparison = compare_run(run)
     (folder / "comparison.json").write_text(json.dumps(comparison, ensure_ascii=False, indent=2), encoding="utf-8")
-    assert [phase["passed_count"] for phase in comparison["phases"]] == [1, 1, 3], comparison
     print(json.dumps({"run_id":run["run_id"],"phases":[{"id":p["id"],"passed":p["passed_count"],"total":p["total"]} for p in comparison["phases"]],"recommended":comparison["recommended"]},ensure_ascii=False))
 
 

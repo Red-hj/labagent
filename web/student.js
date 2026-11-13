@@ -94,6 +94,9 @@ function setBusy(value) {
   $("load-demo").disabled = busy || Boolean(sessionId);
   $("load-demo-repair").disabled = busy || !demoActive || !sessionId;
   $("load-demo-repair").hidden = $("demo-case").value === "operation_history";
+  if ($("demo-case").value === "repair_comparison") $("load-demo-repair").hidden = true;
+  $("load-demo").textContent = $("demo-case").value === "repair_comparison" ? "带入实际运行对照" : "① 带入故障材料";
+  $("demo-panel").querySelector(".tag").textContent = $("demo-case").value === "repair_comparison" ? "真实FRR运行记录 · 模型与工具实时分析" : "合成演示材料 · 模型与工具实时分析";
   $("load-demo-final").disabled = busy || !demoActive || !sessionId;
   $("load-demo-final").hidden = $("demo-case").value !== "ospf_goals";
   $("load-demo-repair").textContent = $("demo-case").value === "ospf_goals" ? "② 带入静态路由复测" : "② 带入修改与复测材料";
@@ -185,6 +188,14 @@ async function loadDemo(repaired = false, final = false) {
   try {
     const goalsDemo = $("demo-case").value === "ospf_goals";
     const demo = await api("/api/demos/" + $("demo-case").value);
+    if ($("demo-case").value === "repair_comparison") {
+      for (const [name,text] of Object.entries(demo.materials)) materials.set(name,text);
+      evidenceKind = "user_submitted"; demoActive = true;
+      $("problem").value = "比较这次实际实验中两种修复方案的效果：为什么Ping通了仍可能没有完成实验？推荐满足全部目标的方案，并解释配置改动。";
+      renderMaterials(); await previewOperations(); setBusy(false);
+      $("demo-status").textContent = "已载入FRR实际运行记录。右侧显示故障基线与独立候选修复，可继续让Agent解释差别。";
+      return materialChanged("实验运行记录已载入，右侧可查看实际对照结果。");
+    }
     if ($("demo-case").value === "operation_history") {
       for (const [name, text] of Object.entries(demo.materials)) materials.set(name, text);
       recordings.set("demo", {id:"demo", name:"合成终端演示录屏", video_url:"/api/demos/operation_history/video"});
@@ -211,6 +222,7 @@ function renderTools(result) {
   $("tool-records").replaceChildren();
   const names = {read_source:"读取材料", retrieve_reference:"检索参考资料", compare_materials:"比较材料改动", check_submitted_pings:"核对Ping结果", check_experiment_goals:"核对实验目标", plan_diagnostic_checks:"选择下一项检查", inspect_operation_timeline:"回溯操作与报错", submit_hypotheses:"整理分析与下一步"};
   for (const tool of tools) {
+    names.compare_repair_candidates = "比较实际修复结果";
     const row = element("li");
     row.append(element("strong", names[tool.tool] || tool.tool), element("span", tool.status === "ok" ? "已完成" : "需要调整", "tag"));
     const details = element("details"); details.append(element("summary", "查看调用参数与结果"), element("pre", JSON.stringify({parameters:tool.arguments, result:tool.result}, null, 2)));
@@ -248,7 +260,7 @@ async function addFiles(files) {
       materials.set(name, text); renderMaterials();
       } catch (error) { errors.push(file.name + "：" + error.message); }
     }
-    evidenceKind = demoActive ? "demo" : "user_submitted"; renderMaterials();
+    evidenceKind = demoActive && $("demo-case").value !== "repair_comparison" ? "demo" : "user_submitted"; renderMaterials();
     if (errors.length) { requestState("error", errors.join("；")); message("已保留成功读取的材料。" + errors.join("；"), true); }
     else materialChanged("材料已就绪，共 " + materials.size + " 份。点击“" + (sessionId ? "继续诊断" : "开始诊断") + "”提交分析。");
     await previewOperations();
@@ -265,11 +277,48 @@ function requestPayload() {
 
 async function previewOperations() {
   const number = ++previewNumber;
-  if (!materials.size) return renderOperationHistory({});
+  if (!materials.size) { renderRepairComparisons([]); return renderOperationHistory({}); }
   try {
-    const history = await api("/api/operations/inspect", {materials:Object.fromEntries(materials)});
-    if (number === previewNumber) renderOperationHistory(history);
+    const input = {materials:Object.fromEntries(materials)};
+    const [history, repairs] = await Promise.all([api("/api/operations/inspect",input),api("/api/repair-labs/inspect",input)]);
+    if (number === previewNumber) { renderOperationHistory(history); renderRepairComparisons(repairs.comparisons); }
   } catch (error) { message(error.message, true); }
+}
+
+function renderRepairComparisons(comparisons) {
+  $("repair-section").hidden = !comparisons?.length;
+  $("empty-result").hidden = Boolean(comparisons?.length) || Boolean(sessionId);
+  const container = $("repair-comparisons"); container.replaceChildren();
+  for (const comparison of comparisons || []) {
+    if (comparison.error) { container.append(element("p",comparison.material + "：" + comparison.error,"message error")); continue; }
+    container.append(element("h4",comparison.title),element("p",comparison.environment.image || "FRRouting实际运行记录","section-note"));
+    const grid = element("div",undefined,"repair-grid");
+    for (const phase of comparison.phases) {
+      const card = element("article",undefined,"repair-card " + (phase.status === "passed" ? "passed" : "incomplete"));
+      card.append(element("h4",phase.title),element("strong",phase.passed_count + " / " + phase.total + " 项目标满足","repair-score"));
+      for (const check of phase.checks) {
+        const row = element("div",undefined,"repair-check " + (check.passed ? "passed" : "failed"));
+        row.append(element("strong",(check.passed ? "✓ " : "○ ") + check.title),element("p",check.detail)); card.append(row);
+      }
+      if (Object.keys(phase.commands).length) {
+        const commands = element("details"); commands.append(element("summary","查看执行的修改命令"),element("pre",Object.entries(phase.commands).map(([device,lines])=>device + "\n" + lines.join("\n")).join("\n\n"))); card.append(commands);
+      }
+      const raw = element("details"); raw.append(element("summary","查看实际检查依据"));
+      for (const check of phase.checks) raw.append(element("p",check.title),element("pre",check.evidence)); card.append(raw);
+      if (phase.changes.length) {
+        const diffs = element("details"); diffs.append(element("summary","查看配置改动"));
+        for (const change of phase.changes) diffs.append(element("pre",change.diff)); card.append(diffs);
+      }
+      grid.append(card);
+    }
+    container.append(grid);
+    const recommended = comparison.phases.find(phase=>phase.id === comparison.recommended);
+    if (recommended) container.append(element("p","满足全部实验目标：" + recommended.title,"repair-recommendation"));
+    const action = comparison.environment.action_url;
+    if (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+$/.test(action || "")) {
+      const link = element("a","查看这次实际运行 ↗","text-button"); link.href = action; link.target = "_blank"; link.rel = "noopener"; container.append(link);
+    }
+  }
 }
 function renderRecordingChoices() {
   const select = $("replay-recording"), selected = select.value;
@@ -505,6 +554,7 @@ function showResult(result) {
   $("empty-result").hidden = true; $("analysis-result").hidden = false; $("save-report").hidden = false;
   const analysis = result.investigation || {};
   renderOperationHistory(result.operation_history || {});
+  renderRepairComparisons(result.repair_comparisons || []);
   const resolution = $("resolution-status"); resolution.replaceChildren();
   resolution.hidden = !["resolved_by_user_report", "verified_from_observations"].includes(result.status);
   if (!resolution.hidden) {
@@ -516,6 +566,9 @@ function showResult(result) {
   const ok = result.llm?.status === "ok";
   const intent = result.conversation?.at(-1)?.intent;
   $("result-state").textContent = ok ? (result.status === "verified_from_observations" && intent !== "ask" ? "本轮测试通过 · 排查完成" : {ask:"本次回复", repair:"修改步骤", verify:"本轮材料核对", update:"补充材料后的进展"}[intent] || "本次排查发现") : "本次分析尚未完成";
+  if (ok && result.status === "comparison_complete") $("result-state").textContent = "候选修复对照完成";
+  if (result.status === "comparison_complete") $("diagnosis-progress").hidden = true;
+  else $("diagnosis-progress").hidden = false;
   $("analysis-summary").textContent = ok ? analysis.summary || result.hint : result.llm?.message || result.hint;
   $("steps-section").hidden = !analysis.steps?.length;
   $("guidance-steps").replaceChildren();
@@ -551,7 +604,7 @@ function showResult(result) {
       if (!input.value.trim()) { input.focus(); return message("请先粘贴这项材料。", true); }
       if (materials.size >= 20 || input.value.length > 200000) return message("请精简这次补充的内容。", true);
       let name; do { name = request.device.slice(0, 60) + "-补充" + (++pasteNumber) + ".log"; } while (materials.has(name));
-      materials.set(name, input.value); evidenceKind = demoActive ? "demo" : "user_submitted"; renderMaterials();
+      materials.set(name, input.value); evidenceKind = demoActive && $("demo-case").value !== "repair_comparison" ? "demo" : "user_submitted"; renderMaterials();
       await performInteraction("update", "我已补充 " + request.device + " 的材料，请继续验证：" + request.information);
     });
     panel.append(label, input, submit); row.append(add, panel); $("evidence-requests").append(row);
@@ -598,7 +651,7 @@ $("add-pasted").addEventListener("click", () => {
   if (!text.trim()) return message("请先粘贴材料内容。", true);
   if (materials.size >= 20 || text.length > 200000) return message("请保留与本次问题相关的材料，每份200 KB以内，最多20份。", true);
   let name; do { name = "粘贴材料" + (++pasteNumber) + ".txt"; } while (materials.has(name));
-  materials.set(name, text); evidenceKind = demoActive ? "demo" : "user_submitted"; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false"); renderMaterials(); materialChanged(); previewOperations();
+  materials.set(name, text); evidenceKind = demoActive && $("demo-case").value !== "repair_comparison" ? "demo" : "user_submitted"; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false"); renderMaterials(); materialChanged(); previewOperations();
 });
 $("analyze").addEventListener("click", async () => {
   if (busy) return;
@@ -627,7 +680,7 @@ $("followup-message").addEventListener("keydown", event => {
 $("new-diagnosis").addEventListener("click", () => {
   sessionProblem = false; requestFailed = false;
   materials.clear(); sessionId = null; evidenceKind = "user_submitted"; knowledgeScope = "default"; demoActive = false;
-  recordings.clear(); screenshots.clear(); renderRecordingChoices(); renderOperationHistory({});
+  recordings.clear(); screenshots.clear(); renderRecordingChoices(); renderOperationHistory({}); renderRepairComparisons([]);
   $("demo-case").value = "network_access";
   $("demo-status").textContent = "先带入故障材料，再点击“开始诊断”。";
   $("problem").value = ""; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false");
@@ -693,7 +746,8 @@ async function start() {
       try { const media = await api("/api/recordings/" + id); (media.kind === "image" ? screenshots : recordings).set(id, media); } catch (error) { message(error.message, true); }
     }
     renderRecordingChoices();
-    demoActive = evidenceKind === "demo" && (materials.has("终端跨网段访问.txt") || materials.has("实验说明.txt") || materials.has("终端操作.log"));
+    demoActive = materials.has("FRR修复实验.json") || evidenceKind === "demo" && (materials.has("终端跨网段访问.txt") || materials.has("实验说明.txt") || materials.has("终端操作.log"));
+    if (materials.has("FRR修复实验.json")) $("demo-case").value = "repair_comparison";
     if (demoActive && materials.has("终端操作.log")) {
       $("demo-case").value = "operation_history";
       recordings.set("demo", {id:"demo", name:"合成终端演示录屏", video_url:"/api/demos/operation_history/video"}); renderRecordingChoices();

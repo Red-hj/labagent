@@ -2,6 +2,14 @@ name: Run FRR repair comparison
 
 on:
   workflow_dispatch:
+    inputs:
+      experiment:
+        description: Choose the reproducible experiment
+        type: choice
+        default: frr_three_routers
+        options:
+          - frr_three_routers
+          - frr_renamed
 
 permissions:
   contents: read
@@ -17,7 +25,18 @@ jobs:
       - name: Run actual OSPF processes and independent repair candidates
         env:
           LABAGENT_ACTION_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: sudo --preserve-env=LABAGENT_ACTION_URL python3 -B scripts/run_repair_lab.py
+          LABAGENT_EXPERIMENT: ${{ inputs.experiment }}
+        run: sudo --preserve-env=LABAGENT_ACTION_URL python3 -B scripts/run_repair_lab.py --case "data/lab/${LABAGENT_EXPERIMENT}.json"
+      - name: Check reference experiment outcomes
+        run: |
+          python3 -B - <<'PY'
+          import json
+          from pathlib import Path
+          from labagent.repair_lab import compare_run
+          result = compare_run(json.loads(Path('runtime/repair-lab/run.json').read_text()))
+          assert [phase['passed_count'] for phase in result['phases']] == [1, 1, 3], result
+          assert result['recommended'] == 'ospf'
+          PY
       - name: Upload raw commands and observations
         if: always()
         uses: actions/upload-artifact@v4

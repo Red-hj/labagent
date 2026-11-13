@@ -33,7 +33,7 @@ GOAL_TOOL = {"type": "function", "function": {
 def evidence_blocks(sources, *, include_history=False):
     blocks = []
     for source_id, source in sources.items():
-        if source["kind"] == "user_question":
+        if source["kind"] in {"user_question", "repair_run"}:
             continue
         if source["kind"] == "user_message" and source_id != "message:current" and not include_history:
             continue

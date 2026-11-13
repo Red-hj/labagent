@@ -90,6 +90,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"title": "找回未生效的network命令", "source": "合成演示材料", "materials": {
                 "终端操作.log": (ROOT / "data/examples/终端操作回溯.log").read_text(encoding="utf-8"),
                 "实验要求.txt": "实验目标：R1通过OSPF访问R2的Loopback0地址10.2.2.2，Ping全部成功。\n分析操作记录中哪一步影响了配置，并说明怎样继续。"}})
+        if path == "/api/demos/repair_comparison":
+            sample = ROOT / "data/examples/frr_repair_run.json"
+            if not sample.is_file():
+                return self.reply({"error":"FRR实验运行记录尚未导入"}, 404)
+            return self.reply({"title":"修复方案实际运行对照", "materials":{"FRR修复实验.json":sample.read_text(encoding="utf-8")}})
         if path == "/api/demos/operation_history/video":
             return self.send_video(ROOT / "data/examples/实验操作回放.webm", "video/webm")
         if match := re.fullmatch(r"/api/recordings/([a-f0-9]{32})(/video|/image)?", path):
@@ -171,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.reply({"error": "请使用 application/json"}, 415)
         path = urlparse(self.path).path
-        if path not in ("/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect"):
+        if path not in ("/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect", "/api/repair-labs/inspect"):
             return self.reply({"error": "未找到接口"}, 404)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -180,10 +185,13 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8-sig"))
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
-            if path == "/api/operations/inspect":
+            if path in {"/api/operations/inspect", "/api/repair-labs/inspect"}:
                 from .investigation import validate_open, source_bundle
                 material_input = {"configs": payload.get("materials"), "question": "回溯操作记录"}
                 validate_open(material_input)
+                if path == "/api/repair-labs/inspect":
+                    from .repair_lab import discover_runs
+                    return self.reply({"comparisons":discover_runs(source_bundle(material_input)[0])})
                 history = inspect_history(source_bundle(material_input)[0])
                 return self.reply(history)
             if path == "/api/knowledge/import":

@@ -1,0 +1,22 @@
+{
+  "id": "renamed-core-loopback",
+  "title": "更换设备名与地址后：排查Core环回地址发布",
+  "routers": {
+    "Edge": {"router_id": "192.0.2.1", "loopback": "172.31.1.1/32", "networks": ["10.51.0.0/30", "172.31.1.1/32"]},
+    "Core": {"router_id": "192.0.2.2", "loopback": "172.31.2.2/32", "networks": ["10.51.0.0/30", "10.52.0.0/30"]},
+    "Access": {"router_id": "192.0.2.3", "loopback": "172.31.3.3/32", "networks": ["10.52.0.0/30", "172.31.3.3/32"]}
+  },
+  "links": [
+    {"left": ["Edge", "eth1", "10.51.0.1/30"], "right": ["Core", "eth1", "10.51.0.2/30"]},
+    {"left": ["Core", "eth2", "10.52.0.1/30"], "right": ["Access", "eth1", "10.52.0.2/30"]}
+  ],
+  "goals": [
+    {"id": "reachability", "title": "Edge到Core环回地址Ping全部成功", "kind": "ping", "device": "Edge", "target": "172.31.2.2", "source_address": "172.31.1.1", "count": 3},
+    {"id": "route_protocol", "title": "Edge通过OSPF学习目标路由", "kind": "route_protocol", "device": "Edge", "target": "172.31.2.2/32", "expected": "ospf"},
+    {"id": "no_static", "title": "Edge使用动态路由配置", "kind": "config_absent", "device": "Edge", "target": "ip route "}
+  ],
+  "candidates": [
+    {"id": "static", "title": "Edge补充静态路由", "commands": {"Edge": ["ip route 172.31.2.2/32 10.51.0.2"]}},
+    {"id": "ospf", "title": "修复Core的OSPF发布", "commands": {"Core": ["router ospf", "network 172.31.2.2/32 area 0.0.0.0", "exit"]}}
+  ]
+}

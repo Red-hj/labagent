@@ -4,7 +4,7 @@ import re
 RESOLVED_OUTCOMES = {"user_reported_resolved", "observations_passed"}
 RESOLVED_STATUSES = {"resolved_by_user_report", "verified_from_observations"}
 STATUS_LABELS = {"needs_information": "继续排查", "resolved_by_user_report": "用户反馈已恢复",
-                 "verified_from_observations": "提交的测试输出核验通过", "goals_pending": "访问恢复反馈已记录，实验目标待完成"}
+                 "verified_from_observations": "提交的测试输出核验通过", "goals_pending": "访问恢复反馈已记录，实验目标待完成", "comparison_complete": "候选修复对照完成"}
 
 
 def experiment_goal(payload):

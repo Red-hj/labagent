@@ -119,6 +119,17 @@ class ApiTests(unittest.TestCase):
             urlopen(Request(url, headers={"Range": "bytes=999999999-"}), timeout=5)
         self.assertEqual(denied.exception.code, 416)
 
+    def test_actual_repair_demo_is_recomputed_and_saved_with_the_session(self):
+        demo=self.request("/api/demos/repair_comparison")[1]
+        compared=self.request("/api/repair-labs/inspect",{"materials":demo["materials"]})[1]["comparisons"][0]
+        self.assertEqual([row["passed_count"] for row in compared["phases"]],[1,1,3])
+        self.assertEqual(compared["recommended"],"ospf")
+        saved=self.request("/api/diagnose",{"diagnostic_mode":"open_network","configs":demo["materials"],"question":"比较修复结果","use_llm":False})[1]
+        restored=self.request("/api/sessions/"+saved["session_id"])[1]
+        self.assertEqual(restored["attempts"][-1]["result"]["repair_comparisons"][0]["run_id"],compared["run_id"])
+        report=self.request("/api/sessions/"+saved["session_id"]+"/report")[1]
+        self.assertIn("候选修复的运行对照",report["markdown"])
+
     def test_recording_upload_and_status_use_the_same_saved_video(self):
         from labagent.recordings import Recordings
         with patch("labagent.recordings.available", return_value=True), patch.object(Recordings, "_process"):

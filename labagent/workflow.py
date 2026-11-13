@@ -171,7 +171,7 @@ def run_open_workflow(payload, database=None, completion=None):
         builder.add_node("inspect_materials", inspect_materials)
         builder.add_node("wait_for_evidence", wait_for_evidence)
         builder.add_edge(START, "inspect_materials")
-        builder.add_conditional_edges("inspect_materials", lambda state: END if state["result"]["status"] in ("verified_from_observations", "resolved_by_user_report") else "wait_for_evidence", [END, "wait_for_evidence"])
+        builder.add_conditional_edges("inspect_materials", lambda state: END if state["result"]["status"] in ("verified_from_observations", "resolved_by_user_report", "comparison_complete") else "wait_for_evidence", [END, "wait_for_evidence"])
         graph = builder.compile(checkpointer=saver)
         snapshot = graph.get_state(config)
         resumed = bool(snapshot.next)

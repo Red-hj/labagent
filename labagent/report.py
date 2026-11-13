@@ -119,6 +119,22 @@ def generate_open_report(history):
     summary = analysis.get("resolution_summary") or closed_attempt["result"].get("investigation", {}).get("summary") or analysis.get("summary")
     if summary:
         rows += ["", clean(summary)]
+    for comparison in result.get("repair_comparisons", []):
+        if comparison.get("error"):
+            continue
+        rows += ["", "## 候选修复的运行对照", "", clean(comparison["title"]),
+                 "", "运行环境：" + clean(comparison["environment"].get("image", "FRRouting")),
+                 "运行记录：" + clean(comparison["environment"].get("action_url", comparison["run_id"])),
+                 "", "| 方案 | 满足目标 | 各项目标的实际结果 |", "| --- | --- | --- |"]
+        for phase in comparison["phases"]:
+            details = "；".join(item["title"] + "：" + ("通过" if item["passed"] else "未满足") + "（" + item["detail"] + "）" for item in phase["checks"])
+            rows.append(f"| {clean(phase['title'])} | {phase['passed_count']}/{phase['total']} | {clean(details)} |")
+        recommended = next((phase for phase in comparison["phases"] if phase["id"] == comparison["recommended"]), None)
+        if recommended:
+            rows += ["", "满足全部实验目标的方案：" + clean(recommended["title"])]
+        for phase in comparison["phases"][1:]:
+            for change in phase["changes"]:
+                rows += ["", clean(phase["title"]) + " · " + clean(change["device"]), "", "```diff", change["diff"], "```"]
     operations = result.get("operation_history", {})
     if operations.get("events"):
         focus = next((event for event in operations["events"] if event["id"] == operations.get("focus_id")), None)
