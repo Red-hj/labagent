@@ -40,6 +40,8 @@ def evidence_blocks(sources, *, include_history=False):
         lines = [TIME.sub("", line) for line in source["lines"]]
         # A filename is only a fallback. Explicit device prompts take precedence.
         device = re.split(r"[-_\s]", Path(source["device"]).stem)[0]
+        if source["kind"] == "screenshot_ocr" and not re.fullmatch(r"(?:R|SW|PC|AR|LSW|FW|SRV)\d+", device, re.I):
+            device = source["device"]
         sysname = next((match for line in lines if (match := re.fullmatch(r"\s*sysname\s+(\S+)\s*", line, re.I))), None)
         if sysname:
             device = sysname[1]
@@ -70,6 +72,34 @@ def citation(block, number):
             "line": block["start"] + number, "quote": block["raw_lines"][number - 1]}
 
 
+def ping_device(block, row):
+    named = re.match(r"\s*([A-Za-z][\w.-]*)\s*(?:执行)?\s+ping\b|\s*([A-Za-z][\w.-]*)执行ping\b", row["quote"], re.I)
+    return (named[1] or named[2]) if named else block["device"]
+
+
+def submitted_pings(sources):
+    """Newest device/target block is current; older captures remain traceable."""
+    current, reported, observations = {}, [], []
+    for block in evidence_blocks(sources):
+        grouped = {}
+        for row in parse_ping_records(block["lines"]):
+            device = ping_device(block, row)
+            evidence = [citation(block, item["line"]) for item in row["evidence"]]
+            item = {**row, "source_id":block["source_id"], "device":block["material"], "test_device":device,
+                    "line":evidence[0]["line"], "line_end":evidence[-1]["line"], "quote":evidence[0]["quote"], "evidence":evidence}
+            if block["kind"] == "user_message" and row["line_end"] == row["line"]:
+                reported.append(item)
+            else:
+                observations.append(item)
+                grouped.setdefault((device.casefold(), row["target"]), []).append(item)
+        current.update(grouped)
+    active = [item for items in current.values() for item in items]
+    # Current raw output pasted in chat replaces the same target's older upload.
+    targets = {item["target"] for item in active if item["source_id"] == "message:current"}
+    active = [item for item in active if item["source_id"] == "message:current" or item["target"] not in targets]
+    return active, reported, [item for item in observations if item not in active]
+
+
 def check_goals(criteria, sources, *, include_history=False):
     blocks = evidence_blocks(sources, include_history=include_history)
     checks = []
@@ -97,8 +127,7 @@ def _ping(goal, blocks):
         rows = [row for row in rows if block["kind"] != "user_message" or row["line_end"] > row["line"]]
         grouped = {}
         for row in rows:
-            named = re.match(r"\s*([A-Za-z][\w.-]*)\s*(?:执行)?\s+ping\b|\s*([A-Za-z][\w.-]*)执行ping\b", row["quote"], re.I)
-            device = (named[1] or named[2]) if named else block["device"]
+            device = ping_device(block, row)
             if not goal["device"] or goal["device"].casefold() == device.casefold():
                 grouped.setdefault(device.casefold(), []).append(row)
         records.extend((device, block, items) for device, items in grouped.items())

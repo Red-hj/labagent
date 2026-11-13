@@ -11,10 +11,9 @@ import time
 
 from .knowledge import search, validate_scope
 from .model import configured, chat_completion, ModelError, public_config, bounded_setting
-from .connectivity import parse_ping_records
 from .session_state import RESOLVED_OUTCOMES, experiment_goal
 from .progress import emit_progress
-from .experiment_goals import GOAL_TOOL, validate_goal_fields, check_goals
+from .experiment_goals import GOAL_TOOL, validate_goal_fields, check_goals, submitted_pings
 from .diagnostic_planner import PLAN_TOOL, validate_plan
 from .operation_history import HISTORY_TOOL, inspect_history, model_history
 
@@ -256,21 +255,12 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
         return {"has_previous": bool(old), "changed": bool(changes), "changes": changes}, False
     if name == "check_submitted_pings":
         exact_keys(args, ())
-        observations, reported = [], []
-        for source_id, source in sources.items():
-            if source["kind"] == "user_question":
-                continue
-            if source["kind"] == "user_message" and source_id != "message:current":
-                continue
-            for row in parse_ping_records(source["lines"]):
-                item = {"source_id": source_id, "device": source["device"], **row}
-                is_report = source["kind"] == "user_message" and row["line_end"] == row["line"]
-                (reported if is_report else observations).append(item)
-                seen.update((source_id, item["line"]) for item in row["evidence"])
-        current_targets = {row["target"] for row in observations if row["source_id"] == "message:current"}
-        observations = [row for row in observations if row["source_id"] == "message:current" or row["target"] not in current_targets]
+        observations, reported, superseded = submitted_pings(sources)
+        for row in observations + reported + superseded:
+            seen.update((row["source_id"], item["line"]) for item in row["evidence"])
         return {"source": "uploaded_text", "pings": observations[:100], "reported_pings": reported,
-                "note": "已读取本轮材料与追问；pings为可核对统计，reported_pings为用户口述统计。"}, False
+                "superseded_pings": superseded[:100],
+                "note": "pings为同设备同目标的最新输出，superseded_pings为已被新输出替代的历史记录；reported_pings为用户口述统计。"}, False
     if name == "read_source":
         exact_keys(args, ("source_id", "start_line", "end_line"))
         source_id, first, last = args["source_id"], args["start_line"], args["end_line"]

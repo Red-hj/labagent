@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from labagent.investigation import source_bundle, validate_open
+from labagent.investigation import source_bundle, validate_open, execute_tool
 from labagent.operation_history import inspect_history
 from labagent.recordings import Recordings, MAX_IMAGE_BYTES
 from scripts.extract_recording import image_regions, extract_image
@@ -15,6 +15,38 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ScreenshotTests(unittest.TestCase):
+    def test_new_retest_screenshot_replaces_the_same_devices_old_failure(self):
+        old = "<R1>ping 10.0.0.2\n5 packets transmitted, 0 received\n<R1>"
+        new = "<R1>ping 10.0.0.2\n5 packets transmitted, 5 received\n<R1>"
+        payload = {"configs":{"初次-a11111-截图识别.log":old,"复测-b22222-截图识别.log":new},"question":"复测完成"}
+        sources = source_bundle(payload)[0]
+        result, _ = execute_tool("check_submitted_pings", {}, payload, sources, set())
+        self.assertEqual([row["passed"] for row in result["pings"]], [True])
+        self.assertEqual(result["pings"][0]["test_device"], "R1")
+        self.assertEqual(len(result["superseded_pings"]), 1)
+        self.assertEqual(result["pings"][0]["source_id"], "config:2")
+
+    def test_retest_keeps_other_devices_failures_and_original_line_locations(self):
+        payload = {"configs":{"R2.log":"<R2>ping 10.0.0.2\n5 packets transmitted, 0 received", "截图-c33333-截图识别.log":"[00:01] <R1>ping 10.0.0.2\n[00:02] 5 packets transmitted, 5 received"},"question":"检查结果"}
+        sources = source_bundle(payload)[0]
+        result, _ = execute_tool("check_submitted_pings", {}, payload, sources, set())
+        self.assertEqual([row["passed"] for row in result["pings"]], [False, True])
+        for row in result["pings"]:
+            for cite in row["evidence"]:
+                self.assertEqual(sources[cite["source_id"]]["lines"][cite["line"]-1], cite["quote"])
+
+    def test_later_ping_in_a_prompt_delimited_log_is_the_current_test(self):
+        text="<R1>ping 10.0.0.2\n5 packets transmitted, 0 received\n<R1>ping 10.0.0.2\n5 packets transmitted, 5 received"
+        payload={"configs":{"操作.log":text},"question":"检查复测"}
+        result,_=execute_tool("check_submitted_pings",{},payload,source_bundle(payload)[0],set())
+        self.assertEqual([row["passed"] for row in result["pings"]], [True])
+
+    def test_unidentified_screenshots_keep_separate_device_origins(self):
+        payload={"configs":{"粘贴截图-a11111-截图识别.log":"Ping 10.0.0.2\n5 packets transmitted, 0 received", "粘贴截图-b22222-截图识别.log":"Ping 10.0.0.2\n5 packets transmitted, 5 received"},"question":"检查复测"}
+        result,_=execute_tool("check_submitted_pings",{},payload,source_bundle(payload)[0],set())
+        self.assertEqual([row["passed"] for row in result["pings"]], [False,True])
+        self.assertEqual(result["superseded_pings"], [])
+
     def test_columns_form_one_citable_line_with_union_coordinates(self):
         result = SimpleNamespace(txts=["4 packets transmitted,", "4 received", "<R1>ping 10.0.0.2", "noise"],
             boxes=[[[10,50],[190,50],[190,70],[10,70]], [[200,51],[290,51],[290,71],[200,71]],
