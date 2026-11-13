@@ -137,6 +137,26 @@ class ApiTests(unittest.TestCase):
             self.request("/api/diagnose", payload)
         self.assertEqual(caught.exception.code, 400)
 
+    def test_screenshot_upload_status_and_preview_share_the_same_media_id(self):
+        from labagent.recordings import Recordings, write_status
+        with patch("labagent.recordings.available", return_value=True), patch.object(Recordings, "_process"):
+            with urlopen(Request(self.base + "/api/recordings", data=b"image-bytes", headers={"Content-Type":"image/png", "X-Recording-Name":"error.png"}), timeout=5) as response:
+                job = json.load(response)
+            self.assertEqual(job["kind"], "image")
+            folder = self.server.recordings.folder(job["id"])
+            (folder / "preview.jpg").write_bytes(b"normalized-preview")
+            (folder / "transcript.log").write_text("Error: failed\n", encoding="utf-8")
+            write_status(folder, {**job, "status":"ready", "regions":[{"line":1,"text":"Error: failed","box":[1,2,30,15]}]})
+            status = self.request("/api/recordings/" + job["id"])[1]
+            self.assertEqual(status["regions"][0]["line"], 1)
+            self.assertEqual(status["transcript"], "Error: failed\n")
+            with urlopen(self.base + job["image_url"], timeout=5) as response:
+                self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+                self.assertEqual(response.read(), b"normalized-preview")
+            with self.assertRaises(HTTPError) as error:
+                urlopen(self.base + "/api/recordings/" + job["id"] + "/video", timeout=5)
+            self.assertEqual(error.exception.code, 404)
+
     def test_session_repair_cycle_and_learning_record(self):
         result = self.request("/api/diagnose", case("01_area_mismatch"))[1]
         self.assertEqual(result["status"], "fault_found")

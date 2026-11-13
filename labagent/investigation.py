@@ -59,8 +59,8 @@ def validate_open(payload):
     if payload.get("evidence_kind", "user_submitted") not in ("demo", "user_submitted"):
         raise ValueError("evidence_kind 无效")
     recordings = payload.get("recordings", [])
-    if not isinstance(recordings, list) or len(recordings) > 5 or not all(isinstance(item, str) and re.fullmatch(r"[a-f0-9]{32}", item) for item in recordings):
-        raise ValueError("recordings须为最多5个录屏编号")
+    if not isinstance(recordings, list) or len(recordings) > 15 or not all(isinstance(item, str) and re.fullmatch(r"[a-f0-9]{32}", item) for item in recordings):
+        raise ValueError("recordings须为最多15个截图或录屏编号")
     interaction = payload.get("interaction")
     if interaction is not None:
         exact_keys(interaction, ("type", "message"))
@@ -73,7 +73,7 @@ def source_bundle(payload, conversation=None):
     from .engine import fingerprint
     sources, warnings = {}, []
     for index, (device, text) in enumerate(payload["configs"].items(), 1):
-        sources[f"config:{index}"] = {"device": device, "kind": "submitted_material", "text": text}
+        sources[f"config:{index}"] = {"device": device, "kind": "screenshot_ocr" if "-截图识别.log" in device else "submitted_material", "text": text}
     if payload.get("question"):
         sources["question:initial"] = {"device": "实验问题与要求", "kind": "user_question", "text": payload["question"]}
     for index, output in enumerate(payload.get("command_outputs", []), 1):
@@ -360,7 +360,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
     messages[0]["content"] += " 读取实验说明后，使用check_experiment_goals提取可检查的目标：访问目标用reachability，指定路由来源用route_protocol，明确配置要求用config_contains/config_absent。仅提取原文要求，instruction引用要求原文。路由目标指定源设备、目的地址、要求协议；配置目标填写命令前缀。后续调用空对象沿用目标，不能只检查Ping就宣布协议实验完成。saved_goals为已保存目标。根据工具返回的checks回答满足了什么、还差哪项；观测全部通过才能提交observations_passed。若仅为概念追问，直接回答概念。"
     messages[0]["content"] += " 有多个合理原因时，调用plan_diagnostic_checks：用自由命名的候选原因和本轮引用更新active/supported/ruled_out状态；提出1～3项检查，填写每个原因下的预期结果标签，同一结果使用相同标签，无法预测写unknown。工具会按区分原因的能力与采集成本选择一项。下一步优先采用工具selected，用户补充后重新规划，不重复索要已有输出。预测是待检验的解释，排除原因需要本轮实际材料依据。"
     messages[0]["content"] += " 每轮最多8项工具调用；submit_hypotheses单独调用。目标编号留在工具字段，正文直接写‘连通性已满足，OSPF路由来源还需修正’等具体结果。"
-    messages[0]["content"] += " 有终端操作记录时，优先调用inspect_operation_timeline读取时间线，联系当前配置、实验要求与测试输出解释关键步骤，使用operation_focus标记相关事件。命令输入、终端返回、明确报错、后续重试分别叙述；已成功重试的旧报错用作过程记录。关键时间点用MM:SS表达，正文先解释具体操作与影响。事件时间来自日志或录屏采样，引用保持原文行。"
+    messages[0]["content"] += " 有终端操作记录时，优先调用inspect_operation_timeline读取时间线，联系当前配置、实验要求与测试输出解释关键步骤，使用operation_focus标记相关事件。命令输入、终端返回、明确报错、后续重试分别叙述；已成功重试的旧报错用作过程记录。关键时间点用MM:SS表达，正文先解释具体操作与影响。事件时间来自日志或录屏采样，引用保持原文行。截图识别材料kind为screenshot_ocr，内容为画面中可见文字；引用对应实际识别行。先围绕可见报错、命令和运行结果解释，必要时请用户补一张包含具体输出的截图。界面会将引用定位到原图；出现疑似OCR字符混淆时请核对具体字符。截图中的设备位置和连线关系需结合实验说明分析。执行视图或语法出错时，先给出最小修正，保留原命令其余参数；参数修改需要对应目标或接口的实际证据。OSPF network可匹配任一参与接口，包括Loopback；截图中另一个接口的地址不能作为改写network目标的依据。"
     messages[0]["content"] += " OSPF语义：network地址与反掩码用于选择参与OSPF的接口。反掩码0.0.0.0表示精确匹配接口主IP，不能据此判断通告/32；通告前缀由接口掩码、OSPF网络类型等决定。例如普通以太网接口10.12.0.2/24使用network 10.12.0.2 0.0.0.0参与OSPF时，通告的接口网段仍为10.12.0.0/24。回答是否宣告/32时明确区分接口匹配与路由前缀；历史回答中的错误以此更正。"
     messages[0]["content"] += " 表达风格：直接、自然、简洁的技术说明，不扮演老师、助教或导师，不称呼同学，不用鼓励、训导和角色开场。先回答问题，再说明关键原因与下一步；reply通常2～4句，用户要求一句话就只写一句。正文用设备名和关键参数解释，不堆砌第几行，行号留在evidence字段供界面展开。概念追问只回答概念，不重新复述整份诊断，summary也概括本次回答。材料相同时也直接回答本次问题，界面已经显示材料变化，不反复声明结论不变。不要添加‘未在设备上验证’‘仅为推断’‘不代表真实设备或全网已验证’等固定免责声明。确有缺项时直接写缺什么、补什么；不要编造设备操作或测试结果。合成案例的来源保留在材料来源中，不在每次回复重复。面向用户的功能介绍直接说明支持什么、需要提供什么、下一步怎样操作。例如：上传配置和测试输出后，可分析原因、给出修改步骤并核对复测结果。省去能力排除清单及“不连接设备、不执行命令、不做什么”等旁白；围绕当前任务给出有用信息。"
     if payload.get("interaction"):

@@ -13,9 +13,9 @@
         <div class="card-heading"><h2 id="input-heading"><span class="section-index">01</span>诊断材料</h2><button id="new-diagnosis" class="text-button">新的排查</button></div>
         <div id="drop-zone" class="drop-zone">
           <svg width="34" height="34" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M10 22H8a6 6 0 0 1-1-12 9 9 0 0 1 17 1 5.5 5.5 0 0 1 0 11h-2M16 26V13m-5 5 5-5 5 5"/></svg>
-          <strong>拖入文件，或点击添加</strong><p>配置、设备输出、终端信息、实验说明都可以</p>
-          <button id="choose-files" class="upload-button">添加诊断材料或录屏</button><input id="material-files" type="file" multiple accept=".txt,.cfg,.conf,.log,.md,.json,.mp4,.webm,.mov,.mkv" hidden>
-          <small>文本材料 · 终端操作日志 · 10分钟以内录屏</small>
+          <strong>把出错的画面发过来</strong><p>直接粘贴截图，或添加配置、日志、实验说明与录屏</p>
+          <button id="choose-files" class="upload-button">添加截图或诊断材料</button><input id="material-files" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.txt,.cfg,.conf,.log,.md,.json,.mp4,.webm,.mov,.mkv" hidden>
+          <small>Ctrl+V 粘贴截图 · PNG/JPG/WebP · 文本 · 10分钟以内录屏</small>
         </div>
         <details id="demo-panel" class="demo-panel"><summary>用示例体验一次完整排查</summary><label for="demo-case">选择实验</label><select id="demo-case"><option value="network_access">DHCP网关排查</option><option value="ospf_goals">OSPF：连通性与实验目标</option><option value="operation_history">实验回放：找到未生效的命令</option></select><p>带入实验说明与运行记录，按阶段分析原因、补充材料并核对实验目标。</p><span class="tag">合成演示材料 · 模型与工具实时分析</span><div class="demo-actions"><button id="load-demo" class="secondary-button">① 带入故障材料</button><button id="load-demo-repair" class="secondary-button" disabled>② 带入修改与复测材料</button><button id="load-demo-final" class="secondary-button" hidden disabled>③ 带入OSPF修复材料</button></div><p id="demo-status" class="section-note">先带入故障材料，再点击“开始诊断”。</p></details>
         <div class="materials-heading"><span id="material-count">尚未添加材料</span><button id="paste-toggle" class="text-button" aria-expanded="false" aria-controls="paste-panel">直接粘贴内容</button></div>
@@ -55,6 +55,8 @@
       </section>
     </div>
     <footer><span>LabAgent / 从读懂问题开始</span><span>材料与过程保存在项目文件夹内</span></footer>
-  </main><div id="feedback-toast" class="feedback-toast" role="status" aria-live="polite" hidden></div><script src="/vendor/tsparticles.slim.bundle.min.js"></script><script src="/ambient-network.js"></script><script src="/student.js"></script>
+  </main>
+  <dialog id="screenshot-dialog" class="screenshot-dialog" aria-labelledby="screenshot-title"><div class="dialogue-heading"><h3 id="screenshot-title">截图原文</h3><button id="close-screenshot" class="secondary-button">关闭</button></div><p id="screenshot-location" class="section-note"></p><div class="screenshot-canvas"><svg id="screenshot-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="诊断截图与引用位置"><image id="screenshot-image"></image><rect id="screenshot-highlight" hidden></rect></svg></div><a id="open-screenshot" target="_blank" rel="noopener">打开完整尺寸图片 ↗</a></dialog>
+  <div id="feedback-toast" class="feedback-toast" role="status" aria-live="polite" hidden></div><script src="/vendor/tsparticles.slim.bundle.min.js"></script><script src="/ambient-network.js"></script><script src="/student.js"></script>
 </body>
 </html>

@@ -35,6 +35,8 @@ def main():
             visible = [text for moment, text in entries if moment <= seconds][-18:]
             for row, text in enumerate(visible):
                 draw.text((24, 75 + row * 33), text, fill="#ffca82" if "Error:" in text else "#f1f5ff", font=font)
+            if index == 16:
+                image.save(ROOT / "data/examples/终端报错截图.png")
             writer.write(cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR))
     finally:
         writer.release()

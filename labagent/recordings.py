@@ -11,7 +11,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VIDEO_SUFFIXES = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".mkv": "video/x-matroska"}
+IMAGE_SUFFIXES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
 MAX_VIDEO_BYTES = 80 * 1024 * 1024
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 def write_status(folder, value):
@@ -40,7 +42,7 @@ class Recordings:
 
     def folder(self, recording_id):
         if not re.fullmatch(r"[a-f0-9]{32}", recording_id):
-            raise ValueError("录屏编号无效")
+            raise ValueError("媒体编号无效")
         return self.root / recording_id
 
     def status(self, recording_id):
@@ -54,25 +56,29 @@ class Recordings:
 
     def upload(self, stream, length, filename):
         suffix = Path(filename).suffix.lower()
-        if suffix not in VIDEO_SUFFIXES:
-            raise ValueError("录屏支持mp4、webm、mov、mkv")
-        if not 0 < length <= MAX_VIDEO_BYTES:
-            raise ValueError("单份录屏请保持在80MB以内")
+        image = suffix in IMAGE_SUFFIXES
+        if suffix not in VIDEO_SUFFIXES and not image:
+            raise ValueError("支持png、jpg、webp截图与mp4、webm、mov、mkv录屏")
+        limit = MAX_IMAGE_BYTES if image else MAX_VIDEO_BYTES
+        label = "截图" if image else "录屏"
+        if not 0 < length <= limit:
+            raise ValueError("单份" + label + ("请保持在20MB以内" if image else "请保持在80MB以内"))
         if not available():
             raise ValueError("请先安装requirements-replay.txt中的录屏识别组件")
         recording_id = uuid.uuid4().hex
         folder = self.folder(recording_id)
         folder.mkdir()
         remaining = length
-        with (folder / ("video" + suffix)).open("wb") as target:
+        with (folder / (("image" if image else "video") + suffix)).open("wb") as target:
             while remaining:
                 chunk = stream.read(min(1024 * 1024, remaining))
                 if not chunk:
-                    raise ValueError("录屏上传中断，请重新选择文件")
+                    raise ValueError(label + "上传中断，请重新选择文件")
                 target.write(chunk)
                 remaining -= len(chunk)
-        value = {"id": recording_id, "name": Path(filename).name[:160], "suffix": suffix, "status": "queued", "progress": 0,
-                 "message": "录屏已上传，等待识别", "video_url": f"/api/recordings/{recording_id}/video"}
+        value = {"id": recording_id, "name": Path(filename).name[:160], "suffix": suffix, "kind": "image" if image else "video",
+                 "status": "queued", "progress": 0, "message": label + "已上传，等待识别"}
+        value["image_url" if image else "video_url"] = f"/api/recordings/{recording_id}/" + ("image" if image else "video")
         write_status(folder, value)
         threading.Thread(target=self._process, args=(folder,), daemon=True).start()
         return value
@@ -85,7 +91,7 @@ class Recordings:
                                              cwd=ROOT, stdout=log, stderr=log, timeout=1800)
                 status = self.status(folder.name)
                 if process.returncode and status["status"] != "error":
-                    raise RuntimeError("录屏识别进程退出，请查看项目内worker.log")
+                    raise RuntimeError("文字识别进程退出，请查看项目内worker.log")
             except Exception as error:
                 status = json.loads((folder / "status.json").read_text(encoding="utf-8"))
                 write_status(folder, {**status, "status": "error", "message": str(error)[:200]})

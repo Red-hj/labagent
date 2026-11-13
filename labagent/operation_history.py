@@ -102,7 +102,7 @@ def parse_source(source):
             pending["response_evidence"].append(quote)
             pending["error"] = text.strip()
             if pending["dialect"] == "vrp" and re.match(r"(?:undo\s+)?network\s+", pending["command"], re.I) and pending["view"] != "ospf_area":
-                pending["explanation"] = f"network命令在{pending['view_label']}输入，终端返回报错。进入实验规定的OSPF区域视图后重新输入。"
+                pending["explanation"] = f"network命令在{pending['view_label']}输入，终端返回报错。进入实验规定的OSPF区域视图后重新输入“{pending['command']}”；目标接口以实验要求为准。"
             else:
                 pending["explanation"] = "这条命令收到终端报错，后续操作应先处理该报错。"
         elif pending and text.strip() and len(pending["response_evidence"]) < 6 and text.strip() != "^":
@@ -151,4 +151,5 @@ def model_history(history):
     notes = []
     if any(re.match(r"(?:undo\s+)?network\s+", event["command"], re.I) for event in history["events"]):
         notes.append("OSPF network的地址与反掩码用于匹配参与OSPF的接口。0.0.0.0表示精确匹配接口主IP，通告路由前缀还取决于接口掩码与OSPF网络类型；不能将它直接解释为通告/32。")
+        notes.append("视图错误的最小修正是进入实验指定的OSPF区域后重输原命令。network可用于Loopback等其他接口；保留原地址，只有目标接口或实验要求明确指向另一个地址时才修改参数。")
     return {key: history[key] for key in ("event_count", "error_count", "unresolved_error_count", "first_issue_id", "devices")} | {"events": selected, "protocol_notes": notes}

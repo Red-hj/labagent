@@ -170,6 +170,16 @@ pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#f4f7fb; padding:
 .chat-failed { border:1px solid #efd2c6; background:#fff6f1; color:#a56249; }
 @keyframes status-spin { to { transform:rotate(360deg); } }
 @media(prefers-reduced-motion:reduce) { .request-status.pending .status-indicator { animation:none; } }
+.screenshot-thumbnail { display:flex; align-items:center; gap:12px; width:100%; padding:8px; border:1px solid #dce5f3; border-radius:7px; background:#f6f8fc; color:#526c98; text-align:left; font-size:11px; margin:0 0 10px; }
+.screenshot-thumbnail img { width:92px; height:60px; object-fit:contain; border-radius:4px; background:#e7ecf4; }
+.material-item textarea { width:100%; box-sizing:border-box; margin:9px 0; font-family:monospace; font-size:12px; }
+.screenshot-dialog { width:min(1120px,94vw); max-width:94vw; max-height:92vh; box-sizing:border-box; padding:20px; border:1px solid #cbd9f0; border-radius:12px; color:#345482; background:#fff; overflow:auto; }
+.screenshot-dialog::backdrop { background:#13244299; }
+.screenshot-dialog .dialogue-heading { position:sticky; top:-20px; background:#fff; padding:8px 0; z-index:1; }
+.screenshot-dialog a { display:inline-block; margin-top:10px; font-size:12px; }
+.screenshot-canvas { overflow:auto; background:#edf1f7; border-radius:6px; }
+#screenshot-svg { display:block; width:100%; height:auto; }
+#screenshot-highlight { fill:#ffc34d38; stroke:#ffb52e; stroke-width:3px; vector-effect:non-scaling-stroke; }
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0; }
 footer { display:flex; justify-content:space-between; gap:15px; font-size:9px; color:#9aa8be; margin-top:25px; padding:0 3px; }
 [hidden] { display:none!important; }

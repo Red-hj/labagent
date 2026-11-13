@@ -92,11 +92,18 @@ class Handler(BaseHTTPRequestHandler):
                 "实验要求.txt": "实验目标：R1通过OSPF访问R2的Loopback0地址10.2.2.2，Ping全部成功。\n分析操作记录中哪一步影响了配置，并说明怎样继续。"}})
         if path == "/api/demos/operation_history/video":
             return self.send_video(ROOT / "data/examples/实验操作回放.webm", "video/webm")
-        if match := re.fullmatch(r"/api/recordings/([a-f0-9]{32})(/video)?", path):
+        if match := re.fullmatch(r"/api/recordings/([a-f0-9]{32})(/video|/image)?", path):
             status = self.server.recordings.status(match[1])
             if status is None:
-                return self.reply({"error": "录屏不存在，请重新添加"}, 404)
-            if match[2]:
+                return self.reply({"error": "图片或录屏不存在，请重新添加"}, 404)
+            if match[2] == "/image":
+                image = self.server.recordings.folder(match[1]) / "preview.jpg"
+                if status.get("kind") != "image" or not image.is_file():
+                    return self.reply({"error": "截图正在准备，请等待识别完成"}, 404)
+                return self.send_video(image, "image/jpeg")
+            if match[2] == "/video":
+                if status.get("kind") == "image":
+                    return self.reply({"error": "这份材料为截图，请使用image地址"}, 404)
                 return self.send_recording(match[1], status)
             return self.reply(status)
         if path == "/api/knowledge/scopes":
@@ -268,7 +275,7 @@ class Handler(BaseHTTPRequestHandler):
                     chunk = stream.read(min(65536, remaining))
                     self.wfile.write(chunk)
                     remaining -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
     def stream_diagnosis(self, payload, session):
