@@ -2,9 +2,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import threading
+import tempfile
 import unittest
 
 from labagent.agentarts_client import AgentArtsClient, SESSION_HEADER
+from labagent.monitoring import record_invocation, summarize
 
 
 class AgentArtsClientTests(unittest.TestCase):
@@ -98,3 +100,40 @@ class AgentArtsClientTests(unittest.TestCase):
             AgentArtsClient(self.url, access_key="example-ak")
         with self.assertRaisesRegex(ValueError, "一种认证"):
             AgentArtsClient(self.url, "api-key", access_key="ak", secret_key="sk")
+
+    def test_monitor_records_success_and_failure_without_request_content(self):
+        folder = Path(__file__).resolve().parents[1] / "runtime/tests"
+        folder.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=folder) as directory:
+            path = Path(directory) / "calls.jsonl"
+            AgentArtsClient(self.url, "private-key", monitor_path=path).invoke({"materials":{"private.cfg":"private-material"}})
+            with self.assertRaisesRegex(ValueError, "HTTP 401"):
+                AgentArtsClient(self.url + "/denied", "private-key", monitor_path=path).invoke({})
+            text = path.read_text(encoding="utf-8")
+            for private in ("private-key", "private-material", "private.cfg", "private-provider-error"):
+                self.assertNotIn(private, text)
+            rows = [json.loads(line) for line in text.splitlines()]
+            self.assertEqual([row["http_status"] for row in rows], [200, 401])
+            summary = summarize(rows)
+            self.assertEqual(summary["requests"], 2)
+            self.assertEqual(summary["transport_successes"], 1)
+            self.assertEqual(summary["failures"], {"http_error":1})
+
+    def test_monitor_totals_model_usage_and_tool_results(self):
+        folder = Path(__file__).resolve().parents[1] / "runtime/tests"
+        folder.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=folder) as directory:
+            path = Path(directory) / "calls.jsonl"
+            result = {"status":"success", "reply":"private-answer", "result":{"llm":{
+                "status":"ok", "calls":[{"elapsed_ms":12,"usage":{"total_tokens":30}},
+                                             {"elapsed_ms":8,"usage":{"total_tokens":20}}],
+                "tool_trace":[{"tool":"read_source","status":"ok","result":"private-config"}]}}}
+            record_invocation(path, elapsed_ms=40, http_status=200, result=result)
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("private-",text)
+            summary = summarize([json.loads(text)])
+            self.assertEqual(summary["model_calls"],2)
+            self.assertEqual(summary["total_tokens"],50)
+            self.assertEqual(summary["tools"],{"read_source":1})
+            self.assertEqual(summary["average_ms"],40)
+            self.assertEqual(summary["p95_ms"],40)
