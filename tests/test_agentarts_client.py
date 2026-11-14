@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
 import threading
 import unittest
 
@@ -67,3 +68,31 @@ class AgentArtsClientTests(unittest.TestCase):
             AgentArtsClient(self.url + "/denied", "test-key").invoke({})
         self.assertNotIn("private-provider-error", str(error.exception))
         self.assertNotIn("test-key", str(error.exception))
+
+    @unittest.skipUnless((Path(__file__).resolve().parents[1] / "runtime/agentarts-signing-sdk/apig_sdk/signer.py").exists(),
+                         "需要先安装华为官方IAM签名SDK")
+    def test_iam_signature_covers_session_and_version_route(self):
+        client = AgentArtsClient(self.url + "/runtimes/labagent/invocations?endpoint=Latest",
+                                 platform_session_id="iam-session", access_key="example-ak",
+                                 secret_key="example-sk", security_token="temporary-token")
+        client.invoke({"materials": {"R1.cfg": "接口配置"}})
+        client.invoke({"message": "继续检查"})
+        sdk = client.iam_module
+        for path, headers, payload in self.requests:
+            self.assertEqual(headers["X-Sdk-Content-Sha256"], "UNSIGNED-PAYLOAD")
+            self.assertEqual(headers["X-Security-Token"], "temporary-token")
+            self.assertTrue(headers["Authorization"].startswith("V11-HMAC-SHA256 Credential=example-ak/"))
+            request = sdk.HttpRequest("POST", self.url + path, dict(headers),
+                                      json.dumps(payload, ensure_ascii=False))
+            self.assertTrue(client.iam_signer.Verify(request, headers["Authorization"]))
+            request.uri += "/another-runtime"
+            self.assertFalse(client.iam_signer.Verify(request, headers["Authorization"]))
+        self.assertEqual(self.requests[0][1][SESSION_HEADER], "iam-session")
+        self.assertEqual(self.requests[1][1][SESSION_HEADER], "iam-session")
+        self.assertEqual(self.requests[0][2]["materials"]["R1.cfg"], "接口配置")
+
+    def test_incomplete_or_mixed_credentials_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "AK和SK"):
+            AgentArtsClient(self.url, access_key="example-ak")
+        with self.assertRaisesRegex(ValueError, "一种认证"):
+            AgentArtsClient(self.url, "api-key", access_key="ak", secret_key="sk")

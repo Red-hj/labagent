@@ -73,7 +73,7 @@ runtime/agentarts-env/Scripts/python.exe -B agentarts_app.py
 
 GitHub的Actions页面提供“Build AgentArts ARM64 image”：手动运行后在ARM64环境构建镜像，检查SDK协议、会话续接和随项目加载的知识资料，并生成可下载的镜像压缩包。镜像标签使用本次提交编号，适合上传华为云SWR后创建AgentArts运行时。构建使用公开仓库的[标准ARM64运行器](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
 
-取得云端调用地址后，在项目内`runtime/agentarts-client.env`填写`LABAGENT_AGENTARTS_URL`与API Key认证对应的`LABAGENT_AGENTARTS_KEY`。用以下入口上传材料、继续追问；记录保存在`runtime/agentarts-client/`：
+当前华为云部署选择IAM认证。先运行`python scripts/setup_agentarts_iam.py`准备官方签名SDK，在项目内`runtime/agentarts-client.env`填写调用地址、`LABAGENT_AGENTARTS_AUTH=iam`及华为云AK/SK，配置步骤见`docs/接口说明.md`。客户端也兼容API Key认证。用以下入口上传材料、继续追问；记录保存在`runtime/agentarts-client/`：
 
 ```powershell
 python -B scripts/call_agentarts.py "data/examples/实验诊断材料_终端跨网段访问.txt"

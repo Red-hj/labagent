@@ -43,7 +43,19 @@ def main():
                 payload[key] = getattr(args, key)
         if args.no_model:
             payload["use_llm"] = False
-        client = AgentArtsClient(url, os.environ.get("LABAGENT_AGENTARTS_KEY", ""), args.session)
+        auth = os.environ.get("LABAGENT_AGENTARTS_AUTH", "api_key").lower()
+        if auth not in ("iam", "api_key"):
+            raise ValueError("LABAGENT_AGENTARTS_AUTH应为iam或api_key")
+        credentials = {}
+        if auth == "iam":
+            credentials = {"access_key": os.environ.get("HUAWEICLOUD_SDK_AK", ""),
+                           "secret_key": os.environ.get("HUAWEICLOUD_SDK_SK", ""),
+                           "security_token": os.environ.get("HUAWEICLOUD_SDK_SECURITY_TOKEN", ""),
+                           "region": os.environ.get("LABAGENT_AGENTARTS_REGION", "cn-southwest-2")}
+            if not credentials["access_key"] or not credentials["secret_key"]:
+                raise ValueError("请在 runtime/agentarts-client.env 配置HUAWEICLOUD_SDK_AK和HUAWEICLOUD_SDK_SK")
+        client = AgentArtsClient(url, os.environ.get("LABAGENT_AGENTARTS_KEY", "") if auth == "api_key" else "",
+                                 args.session, **credentials)
         result = client.invoke(payload)
     except (ValueError, OSError) as error:
         parser.exit(1, str(error) + "\n")
