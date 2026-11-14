@@ -2,6 +2,7 @@ from functools import partial
 from queue import Empty, Queue
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import base64
 import hmac
 from pathlib import Path
@@ -79,7 +80,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"error": "请使用当前网站地址访问"}, 403)
         path = urlparse(self.path).path
         if path == "/api/health":
-            return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "llm_configured": configured(), "llm": public_config(), "replay_available": replay_available()})
+            return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "diagnosis_backend": self.server.diagnosis_backend, "diagnosis_configured": self.server.cloud_configured if self.server.diagnosis_backend == "agentarts" else configured(), "llm_configured": configured(), "llm": public_config(), "replay_available": replay_available()})
         if not self.team_access():
             return
         if path == "/api/demos/network_access":
@@ -232,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 key = session or "new"
                 with self.server.session_locks[hash(key) % len(self.server.session_locks)]:
-                    result = run_workflow(payload, self.server.workflow_database)
+                    result = self.server.run_diagnosis(payload)
                     self.reply(self.store.save(payload, result))
             finally:
                 self.server.diagnosis_slots.release()
@@ -294,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
                 with progress_to(events.put):
                     emit_progress("received", "请求已收到，正在准备本轮诊断。")
                     with self.server.session_locks[hash(session or "new") % len(self.server.session_locks)]:
-                        result = run_workflow(payload, self.server.workflow_database)
+                        result = self.server.run_diagnosis(payload)
                         emit_progress("saving", "正在保存本轮结论与会话记录…")
                         saved = self.store.save(payload, result)
                     events.put({"type": "result", "result": saved})
@@ -330,7 +331,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
 
-def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None, team_password=""):
+def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None, team_password="",
+                  diagnosis_backend=None, cloud_client_factory=None):
     if public_url:
         parsed = urlparse(public_url)
         if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
@@ -349,6 +351,38 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
     server.diagnosis_slots = threading.BoundedSemaphore(4)
     server.session_locks = [threading.Lock() for _ in range(32)]
     server.workflow_database = store.path.with_name("workflow-" + store.path.name)
+    server.diagnosis_backend = diagnosis_backend or os.environ.get("LABAGENT_DIAGNOSIS_BACKEND", "local")
+    if server.diagnosis_backend not in ("local", "agentarts"):
+        server.server_close()
+        raise ValueError("LABAGENT_DIAGNOSIS_BACKEND应为local或agentarts")
+    cloud_workflow = None
+    server.cloud_configured = False
+    if server.diagnosis_backend == "agentarts":
+        from .cloud_workflow import CloudWorkflow
+        from .model import load_env
+        if cloud_client_factory is None:
+            load_env(ROOT / "runtime/agentarts-client.env")
+        cloud_workflow = CloudWorkflow(store, cloud_client_factory)
+        if cloud_client_factory is not None:
+            server.cloud_configured = True
+        else:
+            from .agentarts_client import AgentArtsClient
+            try:
+                AgentArtsClient.from_environment()
+                server.cloud_configured = True
+            except ValueError:
+                pass
+
+    def run_diagnosis(payload):
+        if cloud_workflow and payload.get("diagnostic_mode") == "open_network":
+            return cloud_workflow.run(payload)
+        if payload.get("session_id"):
+            history = store.history(payload["session_id"])
+            if history and history["attempts"][-1]["result"].get("agentarts"):
+                raise ValueError("这个会话在华为云运行，请连接华为云服务后继续。")
+        return run_workflow(payload, server.workflow_database)
+
+    server.run_diagnosis = run_diagnosis
     server.recordings = Recordings(store.path.parent / "recordings")
     log_lock = threading.Lock()
     def write_log(message, error=False):

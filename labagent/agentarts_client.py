@@ -1,5 +1,6 @@
 """HTTP client for local SDK and deployed AgentArts runtimes."""
 import json
+import os
 import re
 import sys
 import uuid
@@ -45,6 +46,26 @@ class AgentArtsClient:
         self.platform_session_id = platform_session_id or uuid.uuid4().hex
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.platform_session_id):
             raise ValueError("平台会话编号须为1～64位字母、数字、短横线或下划线")
+
+    @classmethod
+    def from_environment(cls, *, url=None, platform_session_id=None):
+        url = url or os.environ.get("LABAGENT_AGENTARTS_URL", "")
+        if not url:
+            raise ValueError("请配置LABAGENT_AGENTARTS_URL云端调用地址")
+        auth = os.environ.get("LABAGENT_AGENTARTS_AUTH", "api_key").lower()
+        if auth == "api_key":
+            api_key = os.environ.get("LABAGENT_AGENTARTS_KEY", "")
+            if urlparse(url).scheme == "https" and not api_key:
+                raise ValueError("请配置LABAGENT_AGENTARTS_KEY调用密钥")
+            return cls(url, api_key, platform_session_id)
+        if auth != "iam":
+            raise ValueError("LABAGENT_AGENTARTS_AUTH应为iam或api_key")
+        access_key, secret_key = os.environ.get("HUAWEICLOUD_SDK_AK", ""), os.environ.get("HUAWEICLOUD_SDK_SK", "")
+        if not access_key or not secret_key:
+            raise ValueError("请配置HUAWEICLOUD_SDK_AK和HUAWEICLOUD_SDK_SK")
+        return cls(url, platform_session_id=platform_session_id, access_key=access_key, secret_key=secret_key,
+                   security_token=os.environ.get("HUAWEICLOUD_SDK_SECURITY_TOKEN", ""),
+                   region=os.environ.get("LABAGENT_AGENTARTS_REGION", "cn-southwest-2"))
 
     def invoke(self, payload):
         headers = {"Content-Type": "application/json", SESSION_HEADER: self.platform_session_id}

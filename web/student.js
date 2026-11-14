@@ -8,6 +8,7 @@ let previewNumber = 0;
 let videoReady = false;
 let sessionId = null;
 let modelReady = false;
+let diagnosisBackend = "local";
 let online = false;
 let busy = false;
 let evidenceKind = "user_submitted";
@@ -50,7 +51,7 @@ async function api(path, body, options = {}) {
 }
 function serviceStatus() {
   $("service-status").textContent = busy ? "正在处理请求" : sessionProblem ? "会话已失效 · 可新建排查" : requestFailed ? "本次诊断失败 · 可重试" :
-    serviceState === "starting" ? "服务启动中…" : serviceState === "connecting" ? "正在连接服务…" : serviceState === "unavailable" ? "服务暂时不可用" : modelReady ? "服务已就绪" : "等待模型配置";
+    serviceState === "starting" ? "服务启动中…" : serviceState === "connecting" ? "正在连接服务…" : serviceState === "unavailable" ? "服务暂时不可用" : modelReady ? (diagnosisBackend === "agentarts" ? "华为云诊断" : "服务已就绪") : diagnosisBackend === "agentarts" ? "等待云端连接配置" : "等待模型配置";
 }
 function receiveProgress(event) {
   if (event.type !== "progress") return;
@@ -721,7 +722,7 @@ async function connectService() {
   } finally { clearTimeout(wakeup); }
 }
 async function start() {
-  const health = await connectService(); serviceState = "ready"; modelReady = health.llm_configured; online = health.online; videoReady = health.replay_available; setBusy(false);
+  const health = await connectService(); serviceState = "ready"; diagnosisBackend = health.diagnosis_backend || "local"; modelReady = health.diagnosis_configured ?? health.llm_configured; online = health.online; videoReady = health.replay_available; setBusy(false);
   if (online) {
     $("save-report").textContent = "下载实验报告";
     document.querySelector("footer span:last-child").textContent = "测试过程保存在当前在线服务";
@@ -764,6 +765,6 @@ async function start() {
     catch (error) { requestState("error", error.message); message(error.message, true); }
     finally { setBusy(false); }
   }
-  if (!modelReady) message("请由项目维护者先配置模型服务，配置完成后刷新页面即可。", true);
+  if (!modelReady) message(diagnosisBackend === "agentarts" ? "请由项目维护者配置华为云调用地址和认证凭证，完成后刷新页面即可。" : "请由项目维护者先配置模型服务，配置完成后刷新页面即可。", true);
 }
 start().catch(error => { serviceState = "unavailable"; modelReady = false; setBusy(false); message("暂时无法连接服务：" + error.message, true); });
