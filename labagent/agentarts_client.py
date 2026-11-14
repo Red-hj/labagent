@@ -56,6 +56,9 @@ class AgentArtsClient:
             if self.security_token:
                 headers["X-Security-Token"] = self.security_token
             signed = self.iam_module.HttpRequest("POST", self.url, headers, body.decode("utf-8"))
+            # AgentArts data-plane SDK signs an empty query line; the gateway
+            # may rewrite queries. Keep the original URL on the HTTP request.
+            signed.query = {}
             self.iam_signer.Sign(signed)
             headers = signed.headers
         request = Request(self.url, data=body, headers=headers, method="POST")

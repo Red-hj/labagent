@@ -84,6 +84,8 @@ class AgentArtsClientTests(unittest.TestCase):
             self.assertTrue(headers["Authorization"].startswith("V11-HMAC-SHA256 Credential=example-ak/"))
             request = sdk.HttpRequest("POST", self.url + path, dict(headers),
                                       json.dumps(payload, ensure_ascii=False))
+            self.assertFalse(client.iam_signer.Verify(request, headers["Authorization"]))
+            request.query = {}
             self.assertTrue(client.iam_signer.Verify(request, headers["Authorization"]))
             request.uri += "/another-runtime"
             self.assertFalse(client.iam_signer.Verify(request, headers["Authorization"]))
