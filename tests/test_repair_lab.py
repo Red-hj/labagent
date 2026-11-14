@@ -69,6 +69,14 @@ class RepairLabTests(unittest.TestCase):
         self.assertEqual([row["passed_count"] for row in result["phases"]],[1,1,3])
         self.assertEqual(result["recommended"],"ospf")
         self.assertIn("quay.io/frrouting/frr@sha256:",result["environment"]["image_digest"])
+
+    def test_changed_devices_addresses_and_fault_location_reuse_the_evaluator(self):
+        path=Path(__file__).resolve().parents[1]/"data/examples/frr_repair_variant.json"
+        record=json.loads(path.read_text(encoding="utf-8"));result=compare_run(record)
+        self.assertEqual(set(record["phases"][0]["observations"]),{"Edge","Core","Access"})
+        self.assertEqual([row["passed_count"] for row in result["phases"]],[1,1,3])
+        self.assertEqual(result["recommended"],"ospf")
+        self.assertIn("Core",result["phases"][2]["commands"])
     def test_connectivity_recovery_does_not_complete_ospf_requirements(self):
         result=compare_run(recording())
         self.assertEqual([row["passed_count"] for row in result["phases"]],[1,1,3])
