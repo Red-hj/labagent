@@ -90,11 +90,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"title": "找回未生效的network命令", "source": "合成演示材料", "materials": {
                 "终端操作.log": (ROOT / "data/examples/终端操作回溯.log").read_text(encoding="utf-8"),
                 "实验要求.txt": "实验目标：R1通过OSPF访问R2的Loopback0地址10.2.2.2，Ping全部成功。\n分析操作记录中哪一步影响了配置，并说明怎样继续。"}})
-        if path == "/api/demos/repair_comparison":
-            sample = ROOT / "data/examples/frr_repair_run.json"
+        if path in {"/api/demos/repair_comparison", "/api/demos/ospf_area_measured"}:
+            if path.endswith("ospf_area_measured"):
+                filename, material, title = "frr_lab02_area.json", "FRR区域复测.json", "OSPF 区域不匹配实测"
+            else:
+                filename, material, title = "frr_repair_run.json", "FRR修复实验.json", "修复方案实际运行对照"
+            sample = ROOT / "data/examples" / filename
             if not sample.is_file():
                 return self.reply({"error":"FRR实验运行记录尚未导入"}, 404)
-            return self.reply({"title":"修复方案实际运行对照", "materials":{"FRR修复实验.json":sample.read_text(encoding="utf-8")}})
+            return self.reply({"title": title, "materials": {material: sample.read_text(encoding="utf-8")}})
         if path == "/api/demos/operation_history/video":
             return self.send_video(ROOT / "data/examples/实验操作回放.webm", "video/webm")
         if match := re.fullmatch(r"/api/recordings/([a-f0-9]{32})(/video|/image)?", path):

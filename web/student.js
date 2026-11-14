@@ -22,6 +22,10 @@ let serviceState = "connecting";
 let sessionProblem = false;
 let requestFailed = false;
 const defaultQuestion = "请根据上传的实验材料分析问题，给出有原文依据的排查方向，并说明下一步需要补充哪些材料。";
+const measuredDemos = new Map([
+  ["repair_comparison", "FRR修复实验.json"],
+  ["ospf_area_measured", "FRR区域复测.json"],
+]);
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -94,9 +98,10 @@ function setBusy(value) {
   $("load-demo").disabled = busy || Boolean(sessionId);
   $("load-demo-repair").disabled = busy || !demoActive || !sessionId;
   $("load-demo-repair").hidden = $("demo-case").value === "operation_history";
-  if ($("demo-case").value === "repair_comparison") $("load-demo-repair").hidden = true;
-  $("load-demo").textContent = $("demo-case").value === "repair_comparison" ? "带入实际运行对照" : "① 带入故障材料";
-  $("demo-panel").querySelector(".tag").textContent = $("demo-case").value === "repair_comparison" ? "真实FRR运行记录 · 模型与工具实时分析" : "合成演示材料 · 模型与工具实时分析";
+  const measured = measuredDemos.has($("demo-case").value);
+  if (measured) $("load-demo-repair").hidden = true;
+  $("load-demo").textContent = measured ? "带入实际运行对照" : "① 带入故障材料";
+  $("demo-panel").querySelector(".tag").textContent = measured ? "FRRouting 实测记录 · 工具重新核对" : "合成演示材料 · 模型与工具实时分析";
   $("load-demo-final").disabled = busy || !demoActive || !sessionId;
   $("load-demo-final").hidden = $("demo-case").value !== "ospf_goals";
   $("load-demo-repair").textContent = $("demo-case").value === "ospf_goals" ? "② 带入静态路由复测" : "② 带入修改与复测材料";
@@ -188,12 +193,14 @@ async function loadDemo(repaired = false, final = false) {
   try {
     const goalsDemo = $("demo-case").value === "ospf_goals";
     const demo = await api("/api/demos/" + $("demo-case").value);
-    if ($("demo-case").value === "repair_comparison") {
+    if (measuredDemos.has($("demo-case").value)) {
       for (const [name,text] of Object.entries(demo.materials)) materials.set(name,text);
       evidenceKind = "user_submitted"; demoActive = true;
-      $("problem").value = "比较这次实际实验中两种修复方案的效果：为什么Ping通了仍可能没有完成实验？推荐满足全部目标的方案，并解释配置改动。";
+      $("problem").value = $("demo-case").value === "ospf_area_measured"
+        ? "根据两阶段 FRRouting 记录，解释 R2 的区域改动怎样影响邻接、远端路由和双向 Ping。为什么直连 Ping 在故障阶段仍然成功？"
+        : "比较这次实际实验中两种修复方案的效果：为什么Ping通了仍可能没有完成实验？推荐满足全部目标的方案，并解释配置改动。";
       renderMaterials(); await previewOperations(); setBusy(false);
-      $("demo-status").textContent = "已载入FRR实际运行记录。右侧显示故障基线与独立候选修复，可继续让Agent解释差别。";
+      $("demo-status").textContent = "已载入 FRRouting 实测记录。右侧重新核对故障与修复结果，可展开查看依据。";
       return materialChanged("实验运行记录已载入，右侧可查看实际对照结果。");
     }
     if ($("demo-case").value === "operation_history") {
@@ -260,7 +267,7 @@ async function addFiles(files) {
       materials.set(name, text); renderMaterials();
       } catch (error) { errors.push(file.name + "：" + error.message); }
     }
-    evidenceKind = demoActive && $("demo-case").value !== "repair_comparison" ? "demo" : "user_submitted"; renderMaterials();
+    evidenceKind = demoActive && !measuredDemos.has($("demo-case").value) ? "demo" : "user_submitted"; renderMaterials();
     if (errors.length) { requestState("error", errors.join("；")); message("已保留成功读取的材料。" + errors.join("；"), true); }
     else materialChanged("材料已就绪，共 " + materials.size + " 份。点击“" + (sessionId ? "继续诊断" : "开始诊断") + "”提交分析。");
     await previewOperations();
@@ -291,7 +298,8 @@ function renderRepairComparisons(comparisons) {
   const container = $("repair-comparisons"); container.replaceChildren();
   for (const comparison of comparisons || []) {
     if (comparison.error) { container.append(element("p",comparison.material + "：" + comparison.error,"message error")); continue; }
-    container.append(element("h4",comparison.title),element("p",comparison.environment.image || "FRRouting实际运行记录","section-note"));
+    const source = comparison.environment.image || [comparison.environment.engine, comparison.environment.platform].filter(Boolean).join(" · ");
+    container.append(element("h4",comparison.title),element("p",source || "FRRouting 实际运行记录","section-note"));
     const grid = element("div",undefined,"repair-grid");
     for (const phase of comparison.phases) {
       const card = element("article",undefined,"repair-card " + (phase.status === "passed" ? "passed" : "incomplete"));
@@ -604,7 +612,7 @@ function showResult(result) {
       if (!input.value.trim()) { input.focus(); return message("请先粘贴这项材料。", true); }
       if (materials.size >= 20 || input.value.length > 200000) return message("请精简这次补充的内容。", true);
       let name; do { name = request.device.slice(0, 60) + "-补充" + (++pasteNumber) + ".log"; } while (materials.has(name));
-      materials.set(name, input.value); evidenceKind = demoActive && $("demo-case").value !== "repair_comparison" ? "demo" : "user_submitted"; renderMaterials();
+      materials.set(name, input.value); evidenceKind = demoActive && !measuredDemos.has($("demo-case").value) ? "demo" : "user_submitted"; renderMaterials();
       await performInteraction("update", "我已补充 " + request.device + " 的材料，请继续验证：" + request.information);
     });
     panel.append(label, input, submit); row.append(add, panel); $("evidence-requests").append(row);
@@ -651,7 +659,7 @@ $("add-pasted").addEventListener("click", () => {
   if (!text.trim()) return message("请先粘贴材料内容。", true);
   if (materials.size >= 20 || text.length > 200000) return message("请保留与本次问题相关的材料，每份200 KB以内，最多20份。", true);
   let name; do { name = "粘贴材料" + (++pasteNumber) + ".txt"; } while (materials.has(name));
-  materials.set(name, text); evidenceKind = demoActive && $("demo-case").value !== "repair_comparison" ? "demo" : "user_submitted"; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false"); renderMaterials(); materialChanged(); previewOperations();
+  materials.set(name, text); evidenceKind = demoActive && !measuredDemos.has($("demo-case").value) ? "demo" : "user_submitted"; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false"); renderMaterials(); materialChanged(); previewOperations();
 });
 $("analyze").addEventListener("click", async () => {
   if (busy) return;
@@ -746,8 +754,9 @@ async function start() {
       try { const media = await api("/api/recordings/" + id); (media.kind === "image" ? screenshots : recordings).set(id, media); } catch (error) { message(error.message, true); }
     }
     renderRecordingChoices();
-    demoActive = materials.has("FRR修复实验.json") || evidenceKind === "demo" && (materials.has("终端跨网段访问.txt") || materials.has("实验说明.txt") || materials.has("终端操作.log"));
-    if (materials.has("FRR修复实验.json")) $("demo-case").value = "repair_comparison";
+    const measuredDemo = [...measuredDemos].find(([, name]) => materials.has(name));
+    demoActive = Boolean(measuredDemo) || evidenceKind === "demo" && (materials.has("终端跨网段访问.txt") || materials.has("实验说明.txt") || materials.has("终端操作.log"));
+    if (measuredDemo) $("demo-case").value = measuredDemo[0];
     if (demoActive && materials.has("终端操作.log")) {
       $("demo-case").value = "operation_history";
       recordings.set("demo", {id:"demo", name:"合成终端演示录屏", video_url:"/api/demos/operation_history/video"}); renderRecordingChoices();
