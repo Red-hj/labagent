@@ -130,6 +130,25 @@ class ApiTests(unittest.TestCase):
         report=self.request("/api/sessions/"+saved["session_id"]+"/report")[1]
         self.assertIn("候选修复的运行对照",report["markdown"])
 
+    def test_measured_area_demo_rechecks_bidirectional_observations_and_restores_session(self):
+        demo = self.request("/api/demos/ospf_area_measured")[1]
+        materials = demo["materials"]
+        compared = self.request("/api/repair-labs/inspect", {"materials": materials})[1]["comparisons"][0]
+        fault, repaired = compared["phases"]
+        self.assertEqual([fault["passed_count"], repaired["passed_count"]], [1, 7])
+        self.assertEqual(compared["recommended"], "area0")
+        self.assertEqual([check["id"] for check in fault["checks"] if check["passed"]], ["ping_R1"])
+        self.assertIn("1发0收", fault["checks"][0]["detail"])
+        self.assertIn("5发5收", repaired["checks"][1]["detail"])
+        self.assertEqual([change["device"] for change in repaired["changes"]], ["R2"])
+        self.assertIn("+ ip ospf area 0.0.0.0", repaired["changes"][0]["diff"])
+        result = self.request("/api/diagnose", {"diagnostic_mode": "open_network", "configs": materials,
+                                                "question": "根据记录比较 OSPF 故障与恢复", "use_llm": False})[1]
+        session = "/api/sessions/" + result["session_id"]
+        saved = self.request(session)[1]["attempts"][-1]
+        self.assertEqual(saved["result"]["repair_comparisons"][0]["run_id"], compared["run_id"])
+        self.assertIn("FRRouting", self.request(session + "/report")[1]["markdown"])
+
     def test_recording_upload_and_status_use_the_same_saved_video(self):
         from labagent.recordings import Recordings
         with patch("labagent.recordings.available", return_value=True), patch.object(Recordings, "_process"):
