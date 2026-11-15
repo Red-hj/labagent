@@ -39,7 +39,14 @@ def evaluate_phase(goals, phase):
             protocols = sorted({str(row.get("protocol", "")).lower() for row in installed})
             passed = bool(protocols) and all(protocol == goal["expected"].lower() for protocol in protocols)
             detail = "实际路由来源：" + ("、".join(protocols) or "目标路由尚未安装")
-            evidence = json.dumps(routes, ensure_ascii=False)
+            evidence = observed.get("route_output") or json.dumps(routes, ensure_ascii=False)
+        elif kind == "ospf_neighbor":
+            neighbors = observed["neighbors"]["neighbors"]
+            rows = neighbors.get(goal["target"], [])
+            passed = len(rows) == 1 and rows[0].get("converged") == "Full" and rows[0].get("ifaceAddress") == goal["peer_address"]
+            detail = (f"{goal['device']}：对端 {goal['target']} 已达 Full。" if passed else
+                      f"{goal['device']}：没有匹配对端地址 {goal['peer_address']} 的 Full 邻接。")
+            evidence = json.dumps(observed["neighbors"], ensure_ascii=False, indent=2)
         elif kind in {"config_absent", "config_contains"}:
             matching = [line for line in observed["config"].splitlines() if line.strip().startswith(goal["target"])]
             passed = bool(matching) if kind == "config_contains" else not matching
