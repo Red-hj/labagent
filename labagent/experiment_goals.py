@@ -14,6 +14,10 @@ from .operation_history import TIME
 
 KINDS = ("reachability", "route_protocol", "config_contains", "config_absent")
 LABELS = {"passed": "已满足", "failed": "未满足", "needs_evidence": "待补充输出"}
+SECTION_NUMBER = r"(?:(?:[一二三四五六七八九十百]+[、．.]|\d+[、．.]\s+)\s*)?"
+DEVICE_SECTION = re.compile(r"^\s*" + SECTION_NUMBER + r"([A-Za-z][A-Za-z0-9_.-]*)\s*(?:的)?(?:相关|当前|最新)?\s*"
+                            r"(配置(?:节选|摘录|片段)?|完整配置|地址信息|运行记录|运行结果|输出)\s*[:：]?\s*$")
+DOCUMENT_SECTION = re.compile(r"^\s*(?:[一二三四五六七八九十百]+[、．.]|\d+[、．.]\s+)\s*\S.{0,65}$")
 
 GOAL_TOOL = {"type": "function", "function": {
     "name": "check_experiment_goals",
@@ -48,21 +52,31 @@ def evidence_blocks(sources, *, include_history=False):
         heading = next((match for line in lines[:3] if (match := re.match(r"\s*([A-Za-z][\w.-]*)\s*(?:的)?(?:最新)?(?:输出|运行结果)[：:]", line))), None)
         if heading:
             device = heading[1]
-        start, command = 0, source.get("command", "")
+        default_device = device
+        start, command, section = 0, source.get("command", ""), ""
         for index, line in enumerate(lines):
             prompt = re.match(r"^\s*<([\w.-]+)>\s*(.*)$", line)
-            if prompt:
+            heading = DEVICE_SECTION.fullmatch(line)
+            boundary = DOCUMENT_SECTION.fullmatch(line)
+            if prompt or heading or boundary:
                 if index > start:
-                    blocks.append(_block(source, device, command, start, index))
-                start, device, command = index, prompt[1], prompt[2]
+                    blocks.append(_block(source, device, command, start, index, section))
+                start = index
+                if prompt:
+                    device, command, section = prompt[1], prompt[2], ""
+                elif heading:
+                    device, command = heading[1], ""
+                    section = "configuration" if "配置" in heading[2] else ""
+                else:
+                    device, command, section = default_device, "", ""
         if len(lines) > start:
-            blocks.append(_block(source, device, command, start, len(lines)))
+            blocks.append(_block(source, device, command, start, len(lines), section))
     return blocks
 
 
-def _block(source, device, command, start, end):
+def _block(source, device, command, start, end, section=""):
     return {"source_id": source["source_id"], "device": device, "material": source["device"],
-            "kind": source["kind"], "command": command, "start": start,
+            "kind": source["kind"], "command": command, "section": section, "start": start,
             "lines": [TIME.sub("", line) for line in source["lines"][start:end]],
             "raw_lines": source["lines"][start:end]}
 
@@ -171,7 +185,7 @@ def _route(goal, blocks):
 
 
 def _config(goal, blocks):
-    candidates = [block for block in blocks if "current-configuration" in block["command"].lower()
+    candidates = [block for block in blocks if block.get("section") == "configuration" or "current-configuration" in block["command"].lower()
                   or any(re.match(r"\s*sysname\s+", line, re.I) for line in block["lines"])
                   or Path(block["material"]).suffix.lower() in {".cfg", ".conf"} and not block["command"]]
     if not candidates:

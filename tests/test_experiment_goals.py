@@ -54,6 +54,32 @@ def scripted_completion(stage, *, falsely_pass=False):
 
 
 class ExperimentGoalTests(unittest.TestCase):
+    def test_device_config_section_in_combined_material_is_cited_and_checked(self):
+        text = (ROOT / "data/examples/实验诊断材料_终端跨网段访问.txt").read_text(encoding="utf-8")
+        criterion = {"id":"gateway","title":"R1网关配置","kind":"config_contains","device":"R1",
+                     "target":"gateway-list 10.20.0.1","expected":"",
+                     "instruction":{"source_id":"config:1","line":7,"quote":text.splitlines()[6]}}
+        current = {"configs":{"综合材料.txt":text.replace("10.20.0.254","10.20.0.1")}}
+        sources = source_bundle(current)[0]
+        result = check_goals([criterion],sources)["checks"][0]
+        self.assertEqual(result["status"],"passed")
+        self.assertEqual(result["evidence"][0]["line"],28)
+        self.assertEqual(result["evidence"][0]["quote"],sources["config:1"]["lines"][27])
+
+    def test_config_excerpt_does_not_prove_absence_or_another_devices_config(self):
+        goal = {"id":"c","title":"检查网关","kind":"config_absent","device":"R1",
+                "target":"gateway-list 10.20.0.254","expected":"","instruction":{}}
+        for text in ("三、R1相关配置节选\ngateway-list 10.20.0.1\n四、PC1当前地址信息\nDefault Gateway: 10.20.0.1",
+                     "三、R2相关配置节选\ngateway-list 10.20.0.1\nreturn"):
+            sources=source_bundle({"configs":{"材料.txt":text}})[0]
+            self.assertEqual(check_goals([goal],sources)["checks"][0]["status"],"needs_evidence")
+
+    def test_config_section_ends_at_next_document_section(self):
+        goal = {"id":"c","title":"检查网关","kind":"config_contains","device":"R1",
+                "target":"gateway-list 10.20.0.1","expected":"","instruction":{}}
+        text="三、R1相关配置节选\ngateway-list 10.20.0.254\n四、修改建议\ngateway-list 10.20.0.1"
+        self.assertEqual(check_goals([goal],source_bundle({"configs":{"材料.txt":text}})[0])["checks"][0]["status"],"needs_evidence")
+
     def test_three_stage_demo_distinguishes_connectivity_from_course_requirements(self):
         self.assertEqual([item["status"] for item in checked(0)["checks"]], ["failed", "needs_evidence", "passed"])
         static = checked(1)
