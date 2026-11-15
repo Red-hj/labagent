@@ -5,7 +5,7 @@
   "use strict";
   const root = document.getElementById("ambient-network");
   if (!root) return;
-  const color = "rgb(145, 155, 140)";
+  const color = "rgb(153, 168, 184)";
   const grabDistance = 140;
   const options = {
     autoPlay:true,

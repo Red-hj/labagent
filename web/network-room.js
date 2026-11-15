@@ -252,7 +252,7 @@ window.LabWorkspace = (() => {
     form.append(source,el("span", "→"),input,targets,send); form.addEventListener("submit", event => { event.preventDefault(); run(trace); }); section.append(form);
     const layout = el("div", undefined, "map-layout"), graph = el("div", undefined, "map-graph"); graph.id = "map-graph";
     const detail = el("div", undefined, "map-detail"); detail.id = "map-detail"; detail.append(el("p", "点击设备，查看接口地址和对应材料。", "section-note")); layout.append(graph,detail); section.append(layout,el("p","左右滑动地图，查看其他设备。","map-pan-hint"));
-    section.append(el("p", "实线：材料中的拓扑连线　虚线：接口同网段关系　深绿：所选路径", "map-legend"));
+    section.append(el("p", "实线：材料中的拓扑连线　虚线：接口同网段关系　加粗：所选路径", "map-legend"));
     const steps = el("div"); steps.id = "map-steps"; section.append(steps); draw(); renderExplanation(); if (selectedNode) detailNode(selectedNode);
   }
   function init(adapter) {

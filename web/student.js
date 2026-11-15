@@ -34,15 +34,21 @@ function element(tag, text, className) {
   if (className) node.className = className;
   return node;
 }
+function dismissToast() {
+  clearTimeout(toastTimer); toastTimer = null;
+  $("feedback-toast").hidden = true;
+}
 function message(text, error = false) {
   $("message").textContent = text;
   $("message").className = "message" + (error ? " error" : "");
   const toast = $("feedback-toast");
   clearTimeout(toastTimer);
-  toast.textContent = text; toast.hidden = !text;
+  $("feedback-toast-text").textContent = text; toast.hidden = !text;
   toast.className = "feedback-toast" + (error ? " error" : "");
-  if (!busy && !error) toastTimer = setTimeout(() => { toast.hidden = true; }, 6000);
+  if (text) toastTimer = setTimeout(dismissToast, error ? 8000 : 4500);
 }
+$("close-feedback").addEventListener("click", dismissToast);
+document.addEventListener("keydown", event => { if (event.key === "Escape") dismissToast(); });
 async function api(path, body, options = {}) {
   const response = await fetch(path, {...(body === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}), ...options});
   const data = (response.headers.get("Content-Type") || "").includes("application/json") ? await response.json() : {};
