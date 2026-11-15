@@ -8,7 +8,11 @@
   <div id="ambient-network" aria-hidden="true"></div>
   <header><a class="brand" href="/"><span class="logo">L<span class="logo-dot"></span></span><span>LabAgent<small>网络实验排障</small></span></a><div class="header-actions"><span id="service-status" class="service-status" role="status">正在连接服务…</span><button id="motion-toggle" class="motion-toggle" aria-pressed="false">暂停背景动效</button></div></header>
   <main>
-    <nav class="workspace-nav" aria-label="实验功能"><button data-workspace="diagnosis" aria-current="page"><span class="nav-icon">⌘</span>排障工作台<small>材料与对话</small></button><button data-workspace="map"><span class="nav-icon">◇</span>网络地图<span id="map-count" class="nav-count" hidden></span><small>沿路径找问题</small></button><button data-workspace="team"><span class="nav-icon">◎</span>团队协作<span id="team-count" class="nav-count" hidden></span><small>共享材料与分工</small></button></nav>
+    <nav class="workspace-nav" aria-label="实验功能">
+      <button data-workspace="diagnosis" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M9 9v11"/></svg></span>排障工作台<small>材料与对话</small></button>
+      <button data-workspace="map"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="3" width="6" height="5" rx="1.5"/><rect x="2" y="16" width="6" height="5" rx="1.5"/><rect x="16" y="16" width="6" height="5" rx="1.5"/><path d="M12 8v4M5 16v-4h14v4"/></svg></span>网络地图<span id="map-count" class="nav-count" hidden></span><small>沿路径找问题</small></button>
+      <button data-workspace="team"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 5v1"/></svg></span>团队协作<span id="team-count" class="nav-count" hidden></span><small>共享材料与分工</small></button>
+    </nav>
     <div id="room-summary" class="room-summary" hidden></div>
     <section id="collaboration" class="card collaboration" aria-label="协作排障室" hidden></section>
     <section id="network-map" class="card network-map" aria-label="会解释的网络地图" hidden></section>
