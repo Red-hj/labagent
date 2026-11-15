@@ -206,6 +206,8 @@ def generate_open_report(history):
         stamp = datetime.fromisoformat(attempt["created_at"]).astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
         item = attempt["result"]
         request = attempt["input"].get("interaction", {}).get("message") or "提交实验材料"
+        if attempt["input"].get("room_actor"):
+            request = attempt["input"]["room_actor"] + " · " + request + "（共享材料第" + str(attempt["input"]["room_revision"]) + "版）"
         rows.append(f"| {index} | {stamp} | {clean(request)} | {STATUS_LABELS.get(item['status'], item['status'])} |")
     if result.get("conversation"):
         rows += ["", "## 交互排查记录", ""]

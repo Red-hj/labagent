@@ -68,6 +68,7 @@ function receiveProgress(event) {
   else if (!sessionId) $("empty-result").querySelector("p").textContent = event.message;
 }
 async function diagnose(input) {
+  await window.LabWorkspace.prepareDiagnosis(input);
   const response = await fetch("/api/diagnose/stream", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(input)});
   if (!response.ok) {
     const data = (response.headers.get("Content-Type") || "").includes("application/json") ? await response.json() : {};
@@ -115,6 +116,7 @@ function setBusy(value) {
   for (const control of document.querySelectorAll(".interaction-actions button,.request button,.request textarea,.chat-retry,.operation-analyze")) control.disabled = busy;
 }
 function materialChanged(detail) {
+  window.LabWorkspace.changed();
   message(detail || (sessionId ? "材料已更新，点击继续诊断即可。" : "材料已添加，可以开始诊断。"));
   if (sessionId) $("result-state").textContent = "材料已更新 · 下方为上一次分析";
 }
@@ -128,6 +130,7 @@ function renderMaterials() {
     const info = element("div", undefined, "file-info");
     info.append(element("div", name, "file-name"), element("div", text.trimEnd().split(/\r?\n/).length + " 行内容", "file-size"));
     const remove = element("button", "移除", "remove-material");
+    remove.disabled = busy;
     remove.setAttribute("aria-label", "移除 " + name);
     remove.addEventListener("click", () => { if (busy) return; materials.delete(name); for (const collection of [recordings, screenshots]) for (const [id, media] of collection) if (media.material_name === name) collection.delete(id); renderRecordingChoices(); renderMaterials(); materialChanged(); previewOperations(); });
     const screenshot = [...screenshots.values()].find(item => item.material_name === name);
@@ -153,6 +156,7 @@ function renderMaterials() {
     materialViews.set(name, {preview, source, text});
     item.append(row, preview); $("material-list").append(item);
   }
+  window.LabWorkspace.preview();
 }
 function locateCitation(citation) {
   if (citation.source_id.startsWith("message:")) {
@@ -228,7 +232,7 @@ function renderTools(result) {
   $("tools-section").hidden = !tools.length;
   $("tools-heading").textContent = "本轮工具记录 · " + tools.length + " 次调用";
   $("tool-records").replaceChildren();
-  const names = {read_source:"读取材料", retrieve_reference:"检索参考资料", compare_materials:"比较材料改动", check_submitted_pings:"核对Ping结果", check_experiment_goals:"核对实验目标", plan_diagnostic_checks:"选择下一项检查", inspect_operation_timeline:"回溯操作与报错", submit_hypotheses:"整理分析与下一步"};
+  const names = {read_source:"读取材料", retrieve_reference:"检索参考资料", compare_materials:"比较材料改动", check_submitted_pings:"核对Ping结果", check_experiment_goals:"核对实验目标", plan_diagnostic_checks:"选择下一项检查", explain_network_path:"解释通信路径", inspect_operation_timeline:"回溯操作与报错", submit_hypotheses:"整理分析与下一步"};
   for (const tool of tools) {
     names.compare_repair_candidates = "比较实际修复结果";
     const row = element("li");
@@ -295,7 +299,8 @@ async function previewOperations() {
 
 function renderRepairComparisons(comparisons) {
   $("repair-section").hidden = !comparisons?.length;
-  $("empty-result").hidden = Boolean(comparisons?.length) || Boolean(sessionId);
+  $("empty-result").hidden = Boolean(sessionId);
+  window.LabWorkspace.resultsAvailable(Boolean(comparisons?.length) && !sessionId);
   const container = $("repair-comparisons"); container.replaceChildren();
   for (const comparison of comparisons || []) {
     if (comparison.error) { container.append(element("p",comparison.material + "：" + comparison.error,"message error")); continue; }
@@ -446,6 +451,7 @@ function pendingTurn(text) {
   $("conversation").scrollTop = $("conversation").scrollHeight;
 }
 function beginRequest(type, text) {
+  window.LabWorkspace.showDiagnosis();
   requestFailed = false;
   activeRequest = {type, text, started:Date.now()}; setBusy(true);
   const status = {analyze:"材料已提交，正在生成诊断…", ask:"追问已发送，正在生成回复…", repair:"请求已提交，正在整理修改步骤…", update:"补充材料已提交，正在继续分析…", verify:"复测材料已提交，正在比较改动与测试结果…"}[type];
@@ -559,7 +565,7 @@ function renderGoalsAndPlan(analysis, status) {
 }
 function showResult(result) {
   sessionId = result.session_id;
-  window.history.replaceState(null, "", "/?session=" + sessionId);
+  window.history.replaceState(null, "", window.LabWorkspace.sessionUrl(sessionId));
   $("empty-result").hidden = true; $("analysis-result").hidden = false; $("save-report").hidden = false;
   const analysis = result.investigation || {};
   renderOperationHistory(result.operation_history || {});
@@ -687,6 +693,7 @@ $("followup-message").addEventListener("keydown", event => {
   if (!busy && !event.repeat) $("followup-form").requestSubmit();
 });
 $("new-diagnosis").addEventListener("click", () => {
+  window.LabWorkspace.leave();
   sessionProblem = false; requestFailed = false;
   materials.clear(); sessionId = null; evidenceKind = "user_submitted"; knowledgeScope = "default"; demoActive = false;
   recordings.clear(); screenshots.clear(); renderRecordingChoices(); renderOperationHistory({}); renderRepairComparisons([]);
@@ -700,6 +707,7 @@ $("new-diagnosis").addEventListener("click", () => {
   $("request-status").hidden = true;
   $("processing-progress").hidden = true; $("processing-events").replaceChildren();
   window.history.replaceState(null, "", "/"); renderMaterials(); setBusy(false); message("已开始新的诊断，请添加材料。");
+  window.LabWorkspace.preview();
 });
 $("save-report").addEventListener("click", async () => {
   $("save-report").disabled = true;
@@ -735,6 +743,7 @@ async function start() {
     $("save-report").textContent = "下载实验报告";
     document.querySelector("footer span:last-child").textContent = "测试过程保存在当前在线服务";
   }
+  if (await window.LabWorkspace.start()) return;
   const savedSession = new URLSearchParams(window.location.search).get("session");
   if (savedSession && /^[a-f0-9]{32}$/.test(savedSession)) {
     let saved;
@@ -764,6 +773,7 @@ async function start() {
     }
     if (demoActive && materials.has("实验说明.txt")) $("demo-case").value = "ospf_goals";
     renderMaterials();
+    window.LabWorkspace.preview();
     if (latest.result.mode === "open_network") { showResult({...latest.result, session_id:savedSession}); setBusy(false); message("已恢复这次诊断，可以继续交流或补充材料。"); }
     else { message("已带入保存的材料，可以开始诊断。"); }
   }
@@ -776,4 +786,34 @@ async function start() {
   }
   if (!modelReady) message(diagnosisBackend === "agentarts" ? "请由项目维护者配置华为云调用地址和认证凭证，完成后刷新页面即可。" : "请由项目维护者先配置模型服务，配置完成后刷新页面即可。", true);
 }
+window.LabWorkspace.init({api, element, message, materials, recordings, screenshots,
+  busy:() => busy, question:() => $("problem").value, session:() => sessionId,
+  apply:(room, replace = true) => {
+    if (replace) { materials.clear(); for (const [name, entry] of Object.entries(room.materials)) materials.set(name, entry.content); $("problem").value = room.question; }
+    renderMaterials(); previewOperations();
+  },
+  restore:async room => {
+    recordings.clear(); screenshots.clear();
+    for (const id of room.recordings) {
+      try {
+        const media = await api("/api/recordings/" + id);
+        if (!room.materials[media.material_name]) continue;
+        const collection = media.kind === "image" ? screenshots : recordings;
+        for (const [oldId, old] of collection) if (old.material_name === media.material_name) collection.delete(oldId);
+        collection.set(id, media);
+      } catch {}
+    }
+    renderMaterials(); renderRecordingChoices();
+    if (!room.session) { sessionId = null; $("analysis-result").hidden = true; $("empty-result").hidden = false; $("save-report").hidden = true; return; }
+    const saved = await api("/api/sessions/" + room.session.session_id);
+    showResult({...saved.attempts.at(-1).result, session_id:room.session.session_id}); setBusy(false);
+    if (room.session.revision !== room.revision) $("result-state").textContent = "队友已补充材料 · 下方为上一次分析";
+  },
+  locate:locateCitation,
+  ask:text => { if (sessionId) performInteraction("ask", text); else { $("problem").value = text; message("已带入路径问题，点击开始诊断即可。"); } },
+  challenge:demo => {
+    if (busy || sessionId || materials.size) return message("点击“新的排查”后，可载入找错练习。", true), false;
+    for (const [name,text] of Object.entries(demo.materials)) materials.set(name,text);
+    $("problem").value = demo.question; evidenceKind = "demo"; renderMaterials(); previewOperations(); return true;
+  }});
 start().catch(error => { serviceState = "unavailable"; modelReady = false; setBusy(false); message("暂时无法连接服务：" + error.message, true); });

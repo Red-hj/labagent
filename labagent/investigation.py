@@ -17,6 +17,7 @@ from .experiment_goals import GOAL_TOOL, validate_goal_fields, check_goals, subm
 from .diagnostic_planner import PLAN_TOOL, validate_plan
 from .operation_history import HISTORY_TOOL, inspect_history, model_history
 from .repair_lab import REPAIR_TOOL, compare_run, discover_runs
+from .network_map import PATH_TOOL, build_map, explain_path
 
 SENSITIVE = re.compile(r"authentication|password|passwd|cipher|community|secret|pre-shared|api[_-]?key|authorization|bearer|sk-[a-z0-9]{12,}|BEGIN.*PRIVATE KEY", re.I)
 
@@ -105,7 +106,7 @@ def manifest(sources):
 
 
 TOOLS = [
-    GOAL_TOOL, PLAN_TOOL, HISTORY_TOOL, REPAIR_TOOL,
+    GOAL_TOOL, PLAN_TOOL, HISTORY_TOOL, REPAIR_TOOL, PATH_TOOL,
     {"type": "function", "function": {"name": "read_source", "description": "按原文行号读取一份已上传材料，每次最多60行。", "parameters": {
         "type": "object", "properties": {"source_id": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}},
         "required": ["source_id", "start_line", "end_line"], "additionalProperties": False}}},
@@ -217,6 +218,12 @@ def validate_submission(args, sources, seen, *, conversational=False, checked_pi
 
 def execute_tool(name, args, payload, sources, seen, *, previous_materials=None, checked_pings=None, required_targets=None, diagnostic_context=None):
     context = diagnostic_context if diagnostic_context is not None else {}
+    if name == "explain_network_path":
+        exact_keys(args, ("source", "target"))
+        result = explain_path(build_map(sources), args["source"], args["target"])
+        for step in result["steps"]:
+            seen.update((ref["source_id"], ref["line"]) for ref in step["evidence"])
+        return result, False
     if name == "compare_repair_candidates":
         exact_keys(args, ("source_id",))
         source = sources.get(args["source_id"])
@@ -373,6 +380,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
     messages[0]["content"] += " 首次从材料提取具体experiment_goal和verification_targets，后续沿用实验目标。追问中的配置、测试输出和用户反馈同样是本轮证据，使用read_source读取message:current。用户明确反馈修改后目标已恢复或Ping全部成功时，提交user_reported_resolved，resolution_evidence引用本轮反馈，结束排查；summary/reply直接说明用户反馈的恢复情况。用户在追问粘贴多行Ping原始输出时，用check_submitted_pings核对，可以提交observations_passed。用户口述成功与工具核验统计分别记录；已恢复时材料请求置空，不额外索要NAT、路由或其他无关输出。概念追问保留已完成状态；用户明确报告再次失败时，引用本轮失败反馈并重新排查。"
     messages[0]["content"] += " 读取实验说明后，使用check_experiment_goals提取可检查的目标：访问目标用reachability，指定路由来源用route_protocol，明确配置要求用config_contains/config_absent。仅提取原文要求，instruction引用要求原文。路由目标指定源设备、目的地址、要求协议；配置目标填写命令前缀。后续调用空对象沿用目标，不能只检查Ping就宣布协议实验完成。saved_goals为已保存目标。根据工具返回的checks回答满足了什么、还差哪项；观测全部通过才能提交observations_passed。若仅为概念追问，直接回答概念。"
     messages[0]["content"] += " 有多个合理原因时，调用plan_diagnostic_checks：用自由命名的候选原因和本轮引用更新active/supported/ruled_out状态；提出1～3项检查，填写每个原因下的预期结果标签，同一结果使用相同标签，无法预测写unknown。工具会按区分原因的能力与采集成本选择一项。下一步优先采用工具selected，用户补充后重新规划，不重复索要已有输出。预测是待检验的解释，排除原因需要本轮实际材料依据。"
+    messages[0]["content"] += " 用户询问通信路径、网关或数据包在哪一步遇阻时，可调用explain_network_path，参数使用材料中的源设备名和目标IP。工具将配置推导的步骤与实际Ping结果分别返回，结合具体步骤和原文解释。实际路径描述在失败步骤停止；后续设备用计划拓扑说明，避免把未到达的设备写进实际转发路径。"
     messages[0]["content"] += " 每轮最多8项工具调用；submit_hypotheses单独调用。目标编号留在工具字段，正文直接写‘连通性已满足，OSPF路由来源还需修正’等具体结果。"
     messages[0]["content"] += " 有终端操作记录时，优先调用inspect_operation_timeline读取时间线，联系当前配置、实验要求与测试输出解释关键步骤，使用operation_focus标记相关事件。命令输入、终端返回、明确报错、后续重试分别叙述；已成功重试的旧报错用作过程记录。关键时间点用MM:SS表达，正文先解释具体操作与影响。事件时间来自日志或录屏采样，引用保持原文行。截图识别材料kind为screenshot_ocr，内容为画面中可见文字；引用对应实际识别行。先围绕可见报错、命令和运行结果解释，必要时请用户补一张包含具体输出的截图。界面会将引用定位到原图；出现疑似OCR字符混淆时请核对具体字符。截图中的设备位置和连线关系需结合实验说明分析。执行视图或语法出错时，先给出最小修正，保留原命令其余参数；参数修改需要对应目标或接口的实际证据。OSPF network可匹配任一参与接口，包括Loopback；截图中另一个接口的地址不能作为改写network目标的依据。"
     messages[0]["content"] += " OSPF语义：network地址与反掩码用于选择参与OSPF的接口。反掩码0.0.0.0表示精确匹配接口主IP，不能据此判断通告/32；通告前缀由接口掩码、OSPF网络类型等决定。例如普通以太网接口10.12.0.2/24使用network 10.12.0.2 0.0.0.0参与OSPF时，通告的接口网段仍为10.12.0.0/24。回答是否宣告/32时明确区分接口匹配与路由前缀；历史回答中的错误以此更正。"
@@ -418,6 +426,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
                         raise ValueError("提交假设时必须单独调用此工具")
                     tool_labels = {"read_source": "正在读取材料", "retrieve_reference": "正在检索参考资料", "compare_materials": "正在比较前后材料", "check_submitted_pings": "正在核对Ping统计", "check_experiment_goals": "正在核对实验目标与协议要求", "plan_diagnostic_checks": "正在比较候选检查并选择下一步", "inspect_operation_timeline": "正在回溯设备、配置视图与关键报错", "submit_hypotheses": "正在整理结论与下一步"}
                     tool_labels["compare_repair_candidates"] = "正在核对候选修复的实际运行结果"
+                    tool_labels["explain_network_path"] = "正在沿接口、网关和路由解释通信路径"
                     label = tool_labels.get(name, "正在处理工具请求")
                     if name == "read_source" and isinstance(args, dict):
                         label += "：" + sources.get(args.get("source_id"), {}).get("device", "")

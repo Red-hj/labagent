@@ -24,6 +24,7 @@ from .demos import network_access_demo, ospf_goals_demo
 from .progress import emit_progress, progress_to
 from .recordings import Recordings, VIDEO_SUFFIXES, available as replay_available
 from .operation_history import inspect_history
+from .rooms import Rooms, RoomConflict
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,6 +84,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "diagnosis_backend": self.server.diagnosis_backend, "diagnosis_configured": self.server.cloud_configured if self.server.diagnosis_backend == "agentarts" else configured(), "llm_configured": configured(), "llm": public_config(), "replay_available": replay_available()})
         if not self.team_access():
             return
+        if match := re.fullmatch(r"/api/rooms/([a-f0-9]{32})", path):
+            room = self.server.rooms.get(match[1])
+            return self.reply(room if room else {"error": "协作实验不存在，请检查邀请链接"}, 200 if room else 404)
+        if path == "/api/challenges/new":
+            from .challenges import new_challenge
+            return self.reply(new_challenge())
         if path == "/api/demos/network_access":
             return self.reply(network_access_demo())
         if path == "/api/demos/ospf_goals":
@@ -148,6 +155,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(history, download=bool(match[2]))
             return self.reply({"code": "session_not_found", "error": "这次会话已不存在，请开始新的排查并重新提供材料。"}, 404)
         assets = {"/": ("student.html", "text/html; charset=utf-8"), "/student.js": ("student.js", "text/javascript; charset=utf-8"), "/student.css": ("student.css", "text/css; charset=utf-8"),
+                  "/network-room.js": ("network-room.js", "text/javascript; charset=utf-8"), "/network-room.css": ("network-room.css", "text/css; charset=utf-8"),
                   "/ambient-network.js": ("ambient-network.js", "text/javascript; charset=utf-8"),
                   "/vendor/tsparticles.slim.bundle.min.js": ("vendor/tsparticles.slim.bundle.min.js", "text/javascript; charset=utf-8"),
                   "/workbench": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8"), "/knowledge.css": ("knowledge.css", "text/css; charset=utf-8")}
@@ -181,7 +189,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.reply({"error": "请使用 application/json"}, 415)
         path = urlparse(self.path).path
-        if path not in ("/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect", "/api/repair-labs/inspect"):
+        room_match = re.fullmatch(r"/api/rooms/([a-f0-9]{32})", path)
+        if not room_match and path not in ("/api/rooms", "/api/network/inspect", "/api/challenges/check", "/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect", "/api/repair-labs/inspect"):
             return self.reply({"error": "未找到接口"}, 404)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -190,6 +199,22 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8-sig"))
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
+            if path == "/api/rooms":
+                return self.reply(self.server.rooms.create(payload.get("name"), payload.get("actor")), 201)
+            if room_match:
+                return self.reply(self.server.rooms.update(room_match[1], payload))
+            if path == "/api/challenges/check":
+                from .challenges import check_answer
+                return self.reply(check_answer(payload.get("id"), payload.get("choice")))
+            if path == "/api/network/inspect":
+                from .investigation import validate_open, source_bundle
+                from .network_map import build_map, explain_path
+                material_input = {"configs": payload.get("materials"), "question": "重建实验网络"}
+                validate_open(material_input)
+                network = build_map(source_bundle(material_input)[0])
+                if payload.get("source") and payload.get("target"):
+                    network["explanation"] = explain_path(network, payload["source"], payload["target"])
+                return self.reply(network)
             if path in {"/api/operations/inspect", "/api/repair-labs/inspect"}:
                 from .investigation import validate_open, source_bundle
                 material_input = {"configs": payload.get("materials"), "question": "回溯操作记录"}
@@ -221,6 +246,8 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.public_url:
                     result.update(markdown=report_path.read_text(encoding="utf-8"), filename="labagent-" + session[:8] + ".md")
                 return self.reply(result)
+            if payload.get("room_id"):
+                payload = self.server.rooms.prepare_diagnosis(payload)
             validate(payload)
             if path == "/api/fingerprint":
                 return self.reply({"config_fingerprint": fingerprint(payload)})
@@ -235,12 +262,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/diagnose/stream":
                 return self.stream_diagnosis(payload, session)
             try:
-                key = session or "new"
+                key = payload.get("room_id") or session or "new"
                 with self.server.session_locks[hash(key) % len(self.server.session_locks)]:
                     result = self.server.run_diagnosis(payload)
-                    self.reply(self.store.save(payload, result))
+                    self.reply(self.save_result(payload, result))
             finally:
                 self.server.diagnosis_slots.release()
+        except RoomConflict as error:
+            self.reply({"error": str(error), "code": "room_conflict"}, 409)
         except (ValueError, KeyError, TypeError, UnicodeError) as error:
             self.reply({"error": str(error)}, 400)
         except Exception:
@@ -248,6 +277,11 @@ class Handler(BaseHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self.server.write_log(traceback.format_exc(), error=True)
+
+    def save_result(self, payload, result):
+        saved = self.store.save(payload, result)
+        self.server.rooms.record_diagnosis(payload, saved)
+        return saved
 
     def send_recording(self, recording_id, status):
         path = self.server.recordings.folder(recording_id) / ("video" + status["suffix"])
@@ -298,10 +332,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 with progress_to(events.put):
                     emit_progress("received", "请求已收到，正在准备本轮诊断。")
-                    with self.server.session_locks[hash(session or "new") % len(self.server.session_locks)]:
+                    with self.server.session_locks[hash(payload.get("room_id") or session or "new") % len(self.server.session_locks)]:
                         result = self.server.run_diagnosis(payload)
                         emit_progress("saving", "正在保存本轮结论与会话记录…")
-                        saved = self.store.save(payload, result)
+                        saved = self.save_result(payload, result)
                     events.put({"type": "result", "result": saved})
             except (ValueError, KeyError, TypeError) as error:
                 events.put({"type": "error", "message": str(error)})
@@ -346,6 +380,7 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
             raise ValueError("请设置LABAGENT_TEAM_PASSWORD作为三人测试访问口令")
     store = Store(database)
     server = ThreadingHTTPServer((host, port), partial(Handler, store=store))
+    server.rooms = Rooms(store)
     server.public_url, server.team_password = public_url, team_password
     server.allowed_hosts = {f"127.0.0.1:{server.server_port}", f"localhost:{server.server_port}"}
     server.allowed_origins = {"http://" + item for item in server.allowed_hosts}
@@ -378,6 +413,8 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
                 pass
 
     def run_diagnosis(payload):
+        if payload.get("room_id"):
+            payload.update(server.rooms.prepare_diagnosis(payload))
         if cloud_workflow and payload.get("diagnostic_mode") == "open_network":
             return cloud_workflow.run(payload)
         if payload.get("session_id"):
