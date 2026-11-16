@@ -161,7 +161,12 @@ class Handler(BaseHTTPRequestHandler):
             if data is not None:
                 return self.reply(data)
         if path == "/api/sessions":
-            return self.reply(self.store.sessions())
+            try:
+                query = parse_qs(urlparse(self.path).query)
+                return self.reply(self.store.sessions(limit=int(query.get("limit", ["30"])[0]),
+                    before=int(query["before"][0]) if "before" in query else None, query=query.get("q", [""])[0]))
+            except ValueError as error:
+                return self.reply({"error": str(error)}, 400)
         if match := re.fullmatch(r"/api/sessions/([a-f0-9]{32})(/export|/report)?", path):
             history = self.store.history(match[1])
             if history:
@@ -171,6 +176,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"code": "session_not_found", "error": "这次会话已不存在，请开始新的排查并重新提供材料。"}, 404)
         assets = {"/": ("student.html", "text/html; charset=utf-8"), "/student.js": ("student.js", "text/javascript; charset=utf-8"), "/student.css": ("student.css", "text/css; charset=utf-8"),
                   "/network-room.js": ("network-room.js", "text/javascript; charset=utf-8"), "/network-room.css": ("network-room.css", "text/css; charset=utf-8"),
+                  "/session-history.js": ("session-history.js", "text/javascript; charset=utf-8"), "/session-history.css": ("session-history.css", "text/css; charset=utf-8"),
                   "/ambient-network.js": ("ambient-network.js", "text/javascript; charset=utf-8"),
                   "/vendor/tsparticles.slim.bundle.min.js": ("vendor/tsparticles.slim.bundle.min.js", "text/javascript; charset=utf-8"),
                   "/workbench": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8"), "/knowledge.css": ("knowledge.css", "text/css; charset=utf-8")}

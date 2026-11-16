@@ -5,6 +5,7 @@ import json
 import sqlite3
 import uuid
 from .storage import data_directory
+from .conversations import conversation_title, dialogue
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,6 +16,7 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, result TEXT NOT NULL)")
+            db.execute("CREATE INDEX IF NOT EXISTS attempts_session ON attempts(session_id, id)")
 
     @contextmanager
     def connect(self):
@@ -31,10 +33,12 @@ class Store:
             if payload.get("session_id") and not db.execute("SELECT 1 FROM attempts WHERE session_id=?", (session_id,)).fetchone():
                 raise ValueError("会话不存在，请开始新实验")
             db.execute("INSERT INTO attempts(session_id, created_at, payload, result) VALUES (?, ?, ?, ?)",
-                       (session_id, result["created_at"], json.dumps(payload, ensure_ascii=False), json.dumps(result, ensure_ascii=False)))
+                       (session_id, result["created_at"], json.dumps(payload, ensure_ascii=False),
+                        json.dumps({key: value for key, value in result.items() if key != "dialogue"}, ensure_ascii=False)))
         history = self.history(session_id)
         result["session_id"] = session_id
         result["learning_record"] = history["learning_record"]
+        result["dialogue"] = history["dialogue"]
         return result
 
     def history(self, session_id):
@@ -44,7 +48,7 @@ class Store:
         if not attempts:
             return None
         fingerprints = [attempt["result"]["config_fingerprint"] for attempt in attempts]
-        return {"session_id": session_id, "attempts": attempts, "learning_record": {
+        return {"session_id": session_id, "attempts": attempts, "dialogue": dialogue(attempts), "learning_record": {
             "requests": len(attempts),
             "config_revisions": sum(before != after for before, after in zip(fingerprints, fingerprints[1:])),
             "max_hint_level": max(attempt["result"]["hint_level"] for attempt in attempts),
@@ -53,7 +57,31 @@ class Store:
             "assessment": "仅记录本地提交、配置变化和提示等级，不推断独立完成程度，不自动给分。",
         }}
 
-    def sessions(self):
+    def sessions(self, *, limit=30, before=None, query=""):
+        if type(limit) is not int or not 1 <= limit <= 100 or (before is not None and (type(before) is not int or not 1 <= before <= 2**63 - 1)):
+            raise ValueError("历史列表每页须为1～100条，游标须为正整数")
+        if not isinstance(query, str) or len(query) > 200:
+            raise ValueError("历史搜索不超过200字")
+        fields = """SELECT g.session_id, last.created_at, g.requests, last.id,
+            json_extract(first.payload,'$.question') AS question,
+            json_extract(first.result,'$.investigation.experiment_goal') AS goal,
+            (SELECT key FROM json_each(first.payload,'$.configs') LIMIT 1) AS material,
+            CASE WHEN json_extract(last.result,'$.llm.status') IS NOT NULL AND json_extract(last.result,'$.llm.status')!='ok'
+                 THEN COALESCE(json_extract(last.result,'$.llm.message'),json_extract(last.result,'$.hint'),'')
+                 ELSE COALESCE(json_extract(last.result,'$.investigation.reply'),json_extract(last.result,'$.investigation.summary'),
+                               json_extract(last.result,'$.hint'),'') END AS preview,
+            json_extract(last.result,'$.status') AS status,
+            COALESCE(json_extract(first.payload,'$.diagnostic_mode'),'ospf_rules') AS mode,
+            json_extract(last.payload,'$.room_id') AS room_id,
+            (SELECT group_concat(key,' ') FROM json_each(first.payload,'$.configs')) AS material_names
+            FROM grouped g JOIN attempts first ON first.id=g.first_id JOIN attempts last ON last.id=g.last_id"""
         with self.connect() as db:
-            rows = db.execute("SELECT session_id, MAX(created_at), COUNT(*) FROM attempts GROUP BY session_id ORDER BY MAX(id) DESC LIMIT 30").fetchall()
-        return [{"session_id": row[0], "updated_at": row[1], "requests": row[2]} for row in rows]
+            rows = db.execute("""WITH grouped AS (SELECT session_id, MIN(id) AS first_id, MAX(id) AS last_id,
+                              COUNT(*) AS requests FROM attempts GROUP BY session_id), summaries AS (""" + fields + """)
+                              SELECT * FROM summaries WHERE (? IS NULL OR id<?) AND
+                              (?='' OR instr(lower(COALESCE(question,'') || ' ' || COALESCE(goal,'') || ' ' ||
+                                                  COALESCE(material_names,'') || ' ' || preview), lower(?))>0)
+                              ORDER BY id DESC LIMIT ?""", (before, before, query.strip(), query.strip(), limit)).fetchall()
+        return [{"session_id": row[0], "updated_at": row[1], "requests": row[2], "cursor": row[3],
+                 "title": conversation_title(row[4], row[5], row[6]), "preview": " ".join(row[7].split())[:160],
+                 "status": row[8], "mode": row[9], "room_id": row[10]} for row in rows]
