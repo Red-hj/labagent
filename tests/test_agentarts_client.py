@@ -5,7 +5,7 @@ import threading
 import tempfile
 import unittest
 
-from labagent.agentarts_client import AgentArtsClient, SESSION_HEADER
+from labagent.agentarts_client import AgentArtsClient, AgentArtsError, SESSION_HEADER
 from labagent.monitoring import record_invocation, summarize
 
 
@@ -30,6 +30,11 @@ class AgentArtsClientTests(unittest.TestCase):
                     self.send_response(401)
                     self.end_headers()
                     self.wfile.write(b"private-provider-error")
+                    return
+                if self.path in ("/missing", "/failed"):
+                    self.send_response(400 if self.path == "/missing" else 500)
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"code": "session_not_found", "message": "private-provider-error"}).encode())
                     return
                 body = json.dumps({"status": "success", "session_id": "a" * 32, "reply": "已接收材料"}).encode()
                 self.send_response(200)
@@ -70,6 +75,14 @@ class AgentArtsClientTests(unittest.TestCase):
             AgentArtsClient(self.url + "/denied", "test-key").invoke({})
         self.assertNotIn("private-provider-error", str(error.exception))
         self.assertNotIn("test-key", str(error.exception))
+
+    def test_session_error_exposes_only_status_and_known_code(self):
+        for path, status in (("/missing", 400), ("/failed", 500), ("/denied", 401)):
+            with self.subTest(path=path), self.assertRaises(AgentArtsError) as failed:
+                AgentArtsClient(self.url + path, "private-key").invoke({})
+            self.assertEqual(failed.exception.http_status, status)
+            self.assertEqual(failed.exception.code, "session_not_found" if status in (400, 500) else None)
+            self.assertNotIn("private-", str(failed.exception))
 
     @unittest.skipUnless((Path(__file__).resolve().parents[1] / "runtime/agentarts-signing-sdk/apig_sdk/signer.py").exists(),
                          "需要先安装华为官方IAM签名SDK")

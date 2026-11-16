@@ -2,11 +2,14 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LabAgent · 实验诊断</title><link rel="stylesheet" href="/student.css"><link rel="stylesheet" href="/network-room.css">
+  <title>LabAgent · 实验诊断</title><link rel="stylesheet" href="/student.css"><link rel="stylesheet" href="/network-room.css"><link rel="stylesheet" href="/session-history.css">
 </head>
 <body>
   <div id="ambient-network" aria-hidden="true"></div>
-  <header><a class="brand" href="/"><span class="logo">L<span class="logo-dot"></span></span><span>LabAgent<small>网络实验排障</small></span></a><div class="header-actions"><span id="service-status" class="service-status" role="status">正在连接服务…</span><button id="motion-toggle" class="motion-toggle" aria-pressed="false">暂停背景动效</button></div></header>
+  <header><a class="brand" href="/"><span class="logo">L<span class="logo-dot"></span></span><span>LabAgent<small>网络实验排障</small></span></a><div class="header-actions"><button id="toggle-session-history" class="history-toggle" aria-controls="session-sidebar" aria-expanded="false">历史对话</button><span id="service-status" class="service-status" role="status">正在连接服务…</span><button id="motion-toggle" class="motion-toggle" aria-pressed="false">暂停背景动效</button></div></header>
+  <div class="app-layout">
+  <aside id="session-sidebar" class="session-sidebar" aria-labelledby="history-heading"><div class="history-heading"><h2 id="history-heading">历史对话</h2><button id="close-session-history" class="text-button" type="button">关闭</button></div><button id="new-conversation" class="new-conversation" type="button">＋ 新对话</button><label for="history-search" class="sr-only">搜索历史对话</label><input id="history-search" type="search" placeholder="搜索对话…" maxlength="200" autocomplete="off"><div class="history-list-heading"><span>最近的排查</span><button id="refresh-session-history" class="text-button" type="button">刷新</button></div><p id="history-status" class="history-status" role="status" aria-live="polite">正在读取历史记录…</p><nav id="session-list" class="session-list" aria-label="历史排查会话"></nav><button id="more-session-history" class="text-button" type="button" hidden>加载更早的对话</button></aside>
+  <button id="history-backdrop" class="history-backdrop" aria-label="关闭历史对话" tabindex="-1" hidden></button>
   <main>
     <nav class="workspace-nav" aria-label="实验功能">
       <button data-workspace="diagnosis" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M9 9v11"/></svg></span>排障工作台<small>材料与对话</small></button>
@@ -53,6 +56,8 @@
         <div id="diagnosis-panel" role="tabpanel" aria-labelledby="diagnosis-tab">
         <div id="empty-result" class="empty-result"><span class="empty-symbol" aria-hidden="true">⌁</span><h3>准备好材料，就可以开始。</h3><p>这里会显示问题原因、材料依据和下一步操作。</p><div class="flow"><span>提供材料</span><b>→</b><span>分析问题</span><b>→</b><span>补充验证</span></div></div>
         <div id="analysis-result" hidden>
+          <section id="dialogue-section" class="dialogue-section"><div class="dialogue-heading"><h3>对话记录</h3><span id="conversation-count">保留本次排查上下文</span></div><div id="conversation" class="conversation" aria-live="polite" aria-label="完整对话记录"></div><form id="followup-form"><label for="followup-message" class="sr-only">继续追问</label><textarea id="followup-message" rows="2" aria-describedby="followup-shortcuts" placeholder="继续追问，或粘贴新的复测输出…"></textarea><div class="composer-footer"><span id="followup-shortcuts">Enter 发送 · Shift+Enter 换行</span><button id="send-followup" class="send-button" type="submit">发送追问 ↗</button></div></form></section>
+          <details id="analysis-details" class="analysis-details"><summary>本轮诊断详情与实验目标</summary>
           <ol id="diagnosis-progress" class="diagnosis-progress" aria-label="排查进度"><li>材料</li><li>分析</li><li>修改</li><li>复测</li></ol>
           <div class="interaction-actions"><button data-intent="ask">解释一下原因</button><button data-intent="repair">给我修改步骤</button><button data-intent="verify">核对修改结果</button></div>
           <div class="analysis-summary"><span id="result-state" class="eyebrow">本次分析</span><p id="analysis-summary"></p></div>
@@ -64,14 +69,17 @@
           <div id="hypotheses"></div><section id="requests-section" class="requests-section" hidden><h3>还需要这些材料</h3><p class="section-note">可以直接粘贴对应输出，也可以在左侧上传文件。</p><div id="evidence-requests"></div></section>
           <details id="references-section" class="references-section" hidden><summary>参考资料</summary><div id="references"></div></details>
           <details id="tools-section" class="references-section" hidden><summary id="tools-heading">本轮工具记录</summary><ol id="tool-records" class="tool-records"></ol></details>
-          <section class="dialogue-section"><div class="dialogue-heading"><h3>继续交流</h3><span>保留本次排查上下文</span></div><div id="conversation" class="conversation" aria-live="polite"></div><form id="followup-form"><label for="followup-message" class="sr-only">继续追问</label><textarea id="followup-message" rows="2" aria-describedby="followup-shortcuts" placeholder="为什么这里不对？我已经修改了，还需要验证什么？"></textarea><div class="composer-footer"><span id="followup-shortcuts">Enter 发送 · Shift+Enter 换行</span><button id="send-followup" class="send-button" type="submit">发送追问 ↗</button></div></form></section>
+          </details>
         </div>
         </div>
       </section>
     </div>
+    <details id="workspace-backup" class="workspace-backup"><summary>工作区备份与恢复</summary><p class="section-note">备份包含全站会话、协作任务、原图、录屏和导入的课程资料。更新网站前请下载保存；恢复须在空工作区进行。</p><div class="backup-actions"><button id="download-workspace" class="secondary-button" type="button">下载工作区备份</button><button id="restore-workspace" class="secondary-button" type="button">选择备份恢复</button><input id="workspace-file" type="file" accept=".zip,application/zip" hidden></div><p id="workspace-status" class="section-note" role="status" aria-live="polite"></p><div id="restored-sessions" class="restored-sessions" hidden></div></details>
     <footer><span>LabAgent / 从读懂问题开始</span><span>材料与过程保存在项目文件夹内</span></footer>
   </main>
+  </div>
+  <dialog id="history-material-dialog" class="history-material-dialog" aria-labelledby="history-material-title"><div class="dialogue-heading"><h3 id="history-material-title">本轮材料与依据</h3><button id="close-history-materials" class="secondary-button" type="button">关闭</button></div><p id="history-material-note" class="section-note"></p><div id="history-material-content"></div></dialog>
   <dialog id="screenshot-dialog" class="screenshot-dialog" aria-labelledby="screenshot-title"><div class="dialogue-heading"><h3 id="screenshot-title">截图原文</h3><button id="close-screenshot" class="secondary-button">关闭</button></div><p id="screenshot-location" class="section-note"></p><div class="screenshot-canvas"><svg id="screenshot-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="诊断截图与引用位置"><image id="screenshot-image"></image><rect id="screenshot-highlight" hidden></rect></svg></div><a id="open-screenshot" target="_blank" rel="noopener">打开完整尺寸图片 ↗</a></dialog>
-  <div id="feedback-toast" class="feedback-toast" role="status" aria-live="polite" hidden><span id="feedback-toast-text"></span><button id="close-feedback" type="button" aria-label="关闭提示">×</button></div><script src="/vendor/tsparticles.slim.bundle.min.js"></script><script src="/ambient-network.js"></script><script src="/network-room.js"></script><script src="/student.js"></script>
+  <div id="feedback-toast" class="feedback-toast" role="status" aria-live="polite" hidden><span id="feedback-toast-text"></span><button id="close-feedback" type="button" aria-label="关闭提示">×</button></div><script src="/vendor/tsparticles.slim.bundle.min.js"></script><script src="/ambient-network.js"></script><script src="/network-room.js"></script><script src="/session-history.js"></script><script src="/student.js"></script>
 </body>
 </html>

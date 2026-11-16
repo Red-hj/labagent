@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 import threading
 import time
+import shutil
+import tempfile
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -17,6 +19,8 @@ from .model import configured, public_config
 from . import __version__
 from .store import Store
 from .workflow import run_workflow, available
+from .workflow import run_open_workflow
+from .workspace_archive import WorkspaceArchive, WorkspaceBusy, MAX_ARCHIVE_BYTES
 from .report import generate_report
 from .knowledge import import_document, list_documents, list_scopes, search
 from .cases import demo_cases
@@ -77,6 +81,15 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self):
+        if urlparse(self.path).path == "/api/health":
+            return self.handle_GET()
+        try:
+            with self.server.workspace.gate.activity():
+                return self.handle_GET()
+        except WorkspaceBusy as error:
+            return self.reply({"error": str(error)}, 409)
+
+    def handle_GET(self):
         if not self.safe_host():
             return self.reply({"error": "请使用当前网站地址访问"}, 403)
         path = urlparse(self.path).path
@@ -84,6 +97,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "diagnosis_backend": self.server.diagnosis_backend, "diagnosis_configured": self.server.cloud_configured if self.server.diagnosis_backend == "agentarts" else configured(), "llm_configured": configured(), "llm": public_config(), "replay_available": replay_available()})
         if not self.team_access():
             return
+        if path == "/api/workspace":
+            return self.reply(self.server.workspace.summary())
         if match := re.fullmatch(r"/api/rooms/([a-f0-9]{32})", path):
             room = self.server.rooms.get(match[1])
             return self.reply(room if room else {"error": "协作实验不存在，请检查邀请链接"}, 200 if room else 404)
@@ -146,7 +161,12 @@ class Handler(BaseHTTPRequestHandler):
             if data is not None:
                 return self.reply(data)
         if path == "/api/sessions":
-            return self.reply(self.store.sessions())
+            try:
+                query = parse_qs(urlparse(self.path).query)
+                return self.reply(self.store.sessions(limit=int(query.get("limit", ["30"])[0]),
+                    before=int(query["before"][0]) if "before" in query else None, query=query.get("q", [""])[0]))
+            except ValueError as error:
+                return self.reply({"error": str(error)}, 400)
         if match := re.fullmatch(r"/api/sessions/([a-f0-9]{32})(/export|/report)?", path):
             history = self.store.history(match[1])
             if history:
@@ -156,6 +176,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"code": "session_not_found", "error": "这次会话已不存在，请开始新的排查并重新提供材料。"}, 404)
         assets = {"/": ("student.html", "text/html; charset=utf-8"), "/student.js": ("student.js", "text/javascript; charset=utf-8"), "/student.css": ("student.css", "text/css; charset=utf-8"),
                   "/network-room.js": ("network-room.js", "text/javascript; charset=utf-8"), "/network-room.css": ("network-room.css", "text/css; charset=utf-8"),
+                  "/session-history.js": ("session-history.js", "text/javascript; charset=utf-8"), "/session-history.css": ("session-history.css", "text/css; charset=utf-8"),
                   "/ambient-network.js": ("ambient-network.js", "text/javascript; charset=utf-8"),
                   "/vendor/tsparticles.slim.bundle.min.js": ("vendor/tsparticles.slim.bundle.min.js", "text/javascript; charset=utf-8"),
                   "/workbench": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8"), "/knowledge.css": ("knowledge.css", "text/css; charset=utf-8")}
@@ -173,11 +194,22 @@ class Handler(BaseHTTPRequestHandler):
         self.reply({"error": "未找到内容"}, 404)
 
     def do_POST(self):
+        try:
+            if urlparse(self.path).path in ("/api/workspace/backup", "/api/workspace/restore"):
+                return self.handle_POST()
+            with self.server.workspace.gate.activity():
+                return self.handle_POST()
+        except WorkspaceBusy as error:
+            return self.reply({"error": str(error)}, 409)
+
+    def handle_POST(self):
         origin = self.headers.get("Origin")
         if not self.safe_host() or (origin and origin not in self.server.allowed_origins):
             return self.reply({"error": "请从当前网站提交请求"}, 403)
         if not self.team_access():
             return
+        if urlparse(self.path).path in ("/api/workspace/backup", "/api/workspace/restore"):
+            return self.workspace_transfer()
         if urlparse(self.path).path == "/api/recordings":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -237,7 +269,7 @@ class Handler(BaseHTTPRequestHandler):
                 history = self.store.history(session)
                 if not history:
                     return self.reply({"error": "会话不存在"}, 404)
-                target = ROOT / "runtime" / "exports" / (session + ".json")
+                target = self.store.path.parent / "exports" / (session + ".json")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
                 report_path = target.with_suffix(".md")
@@ -282,6 +314,42 @@ class Handler(BaseHTTPRequestHandler):
         saved = self.store.save(payload, result)
         self.server.rooms.record_diagnosis(payload, saved)
         return saved
+
+    def workspace_transfer(self):
+        try:
+            if urlparse(self.path).path.endswith("/backup"):
+                with self.server.workspace.export() as archive, archive.open("rb") as content:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header("Content-Length", str(archive.stat().st_size))
+                    self.send_header("Content-Disposition", 'attachment; filename="labagent-workspace.zip"')
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    shutil.copyfileobj(content, self.wfile, 1024 * 1024)
+                return
+            if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/zip":
+                return self.reply({"error": "请选择下载的ZIP工作区备份"}, 415)
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= MAX_ARCHIVE_BYTES:
+                self.close_connection = True
+                return self.reply({"error": "工作区备份须在512MB以内"}, 413)
+            with tempfile.TemporaryDirectory(dir=self.server.workspace.temporary) as directory:
+                archive = Path(directory) / "upload.zip"
+                with archive.open("wb") as output:
+                    remaining = length
+                    while remaining:
+                        chunk = self.rfile.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise ValueError("备份上传中断，请重新选择文件")
+                        output.write(chunk)
+                        remaining -= len(chunk)
+                return self.reply(self.server.workspace.restore(archive))
+        except WorkspaceBusy as error:
+            return self.reply({"error": str(error)}, 409)
+        except ValueError as error:
+            self.close_connection = True
+            return self.reply({"error": str(error)}, 400)
 
     def send_recording(self, recording_id, status):
         path = self.server.recordings.folder(recording_id) / ("video" + status["suffix"])
@@ -330,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
 
         def process():
             try:
-                with progress_to(events.put):
+                with self.server.workspace.gate.activity(), progress_to(events.put):
                     emit_progress("received", "请求已收到，正在准备本轮诊断。")
                     with self.server.session_locks[hash(payload.get("room_id") or session or "new") % len(self.server.session_locks)]:
                         result = self.server.run_diagnosis(payload)
@@ -421,10 +489,16 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
             history = store.history(payload["session_id"])
             if history and history["attempts"][-1]["result"].get("agentarts"):
                 raise ValueError("这个会话在华为云运行，请连接华为云服务后继续。")
+        if payload.get("diagnostic_mode") == "open_network":
+            history = store.history(payload["session_id"]) if payload.get("session_id") else None
+            return run_open_workflow(payload, server.workflow_database,
+                                     previous_attempt=history["attempts"][-1] if history else None)
         return run_workflow(payload, server.workflow_database)
 
     server.run_diagnosis = run_diagnosis
     server.recordings = Recordings(store.path.parent / "recordings")
+    from .knowledge import notes_directory
+    server.workspace = WorkspaceArchive(store, server.recordings, notes_directory(), server.workflow_database)
     log_lock = threading.Lock()
     def write_log(message, error=False):
         path = store.path.parent / ("server-error.log" if error else "server.log")

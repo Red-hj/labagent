@@ -13,6 +13,15 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 SESSION_HEADER = "x-hw-agentarts-session-id"
 
 
+class AgentArtsError(ValueError):
+    """Public transport failure; provider response bodies stay private."""
+
+    def __init__(self, message, *, http_status, code=None):
+        super().__init__(message)
+        self.http_status = http_status
+        self.code = code
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise ValueError("调用地址发生重定向，请使用运行时详情页的完整调用地址")
@@ -108,7 +117,17 @@ class AgentArtsClient:
         except HTTPError as error:
             if outcome is not None:
                 outcome.update(http_status=error.code, error_code="http_error")
-            raise ValueError(f"运行时返回 HTTP {error.code}，请检查调用地址、入站认证和请求材料") from None
+            code = None
+            try:
+                detail = json.loads(error.read(4096))
+                if isinstance(detail, dict) and detail.get("code") == "session_not_found":
+                    code = "session_not_found"
+            except (ValueError, OSError):
+                pass
+            finally:
+                error.close()
+            raise AgentArtsError(f"运行时返回 HTTP {error.code}，请检查调用地址、入站认证和请求材料",
+                                 http_status=error.code, code=code) from None
         except (URLError, TimeoutError) as error:
             if outcome is not None:
                 outcome["error_code"] = "timeout" if isinstance(error, TimeoutError) else "network_error"

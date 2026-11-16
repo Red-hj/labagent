@@ -5,15 +5,21 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import threading
 import uuid
 from urllib.parse import urlparse
+from .storage import data_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTES_DIR = ROOT / "data" / "course_notes"
 IMPORT_LOCK = threading.Lock()
+
+
+def notes_directory():
+    return data_directory() / "course_notes" if os.environ.get("LABAGENT_DATA_DIR") else NOTES_DIR
 
 
 def validate_scope(value):
@@ -48,14 +54,15 @@ def make_document(payload):
 
 def import_document(payload):
     document = {**make_document(payload), "imported_at": datetime.now(timezone.utc).isoformat()}
-    NOTES_DIR.mkdir(parents=True, exist_ok=True)
-    path = NOTES_DIR / (document["id"].removeprefix("course-") + ".json")
+    folder = notes_directory()
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / (document["id"].removeprefix("course-") + ".json")
     with IMPORT_LOCK:
         if path.exists():
             document = json.loads(path.read_text(encoding="utf-8"))
             created = False
         else:
-            temporary = NOTES_DIR / (uuid.uuid4().hex + ".tmp")
+            temporary = folder / (uuid.uuid4().hex + ".tmp")
             try:
                 temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
                 temporary.replace(path)
@@ -91,7 +98,7 @@ def corpus(scope="default"):
                           "content_hash": hashlib.sha256(original["content"].encode()).hexdigest()})
     documents.extend(doc for doc in bundled_documents() if scope in ("default", doc["scope"]))
     seen = {doc["id"] for doc in documents}
-    for file in sorted(NOTES_DIR.glob("*.json")):
+    for file in sorted(notes_directory().glob("*.json")):
         try:
             if file.stat().st_size > 1_000_000:
                 raise ValueError("too large")
@@ -122,7 +129,7 @@ def list_documents(scope="default"):
 
 def list_scopes():
     scopes = {"default", *(doc["scope"] for doc in bundled_documents())}
-    for file in NOTES_DIR.glob("*.json"):
+    for file in notes_directory().glob("*.json"):
         try:
             if file.stat().st_size <= 1_000_000:
                 scopes.add(validate_scope(json.loads(file.read_text(encoding="utf-8"))["scope"]))
