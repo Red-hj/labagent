@@ -78,6 +78,7 @@ def bundled_documents():
                                   "scope": source["scope"], "version": source["version"],
                                   "content": (folder / row["file"]).read_text(encoding="utf-8")})
         document["source_type"] = source["source_type"]
+        document["sectioned"] = True
         documents.append(document)
     return documents
 
@@ -134,22 +135,29 @@ def list_scopes():
 def chunks(document, size=600):
     text = document["content"]
     newlines = [match.start() for match in re.finditer("\n", text)]
+    sectioned = document.get("sectioned", False)
+    # Keep the document title at the start of the first section.
+    section_ends = [match.start() for match in re.finditer(r"(?m)^## ", text)][1:] if sectioned else []
+    section_ends.append(len(text))
+    metadata = {key: value for key, value in document.items() if key not in ("content", "sectioned")}
     start, number = 0, 0
     while start < len(text):
         while start < len(text) and text[start].isspace():
             start += 1
         if start >= len(text):
             break
-        end = min(start + size, len(text))
-        if end < len(text):
+        section_end = section_ends[bisect_right(section_ends, start)]
+        end = min(start + size, section_end)
+        if end < section_end:
             boundary = text.rfind("\n", start + size // 2, end)
             if boundary > start:
                 end = boundary
         while end > start and text[end - 1].isspace():
             end -= 1
         number += 1
-        yield {**{key: value for key, value in document.items() if key != "content"}, "content": text[start:end],
-               "chunk_id": f"{document['id']}:{number}", "char_start": start, "char_end": end,
+        chunk = f"section-{number}" if sectioned else str(number)
+        yield {**metadata, "content": text[start:end],
+               "chunk_id": f"{document['id']}:{chunk}", "char_start": start, "char_end": end,
                "line_start": bisect_right(newlines, start - 1) + 1, "line_end": bisect_right(newlines, end - 2) + 1}
         start = end
 
