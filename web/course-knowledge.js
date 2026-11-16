@@ -29,6 +29,7 @@ window.LabKnowledge = (() => {
   async function load(scope = $("course-scope").value || c.scope()) {
     const mine = ++request; ++sourceRequest;
     loading = true; sync(); note("正在读取资料库…");
+    $("knowledge-documents").replaceChildren(); $("knowledge-document-count").textContent = "本范围的资料";
     $("knowledge-source").hidden = true; $("knowledge-results").replaceChildren();
     try {
       const [scopes, listing] = await Promise.all([c.api("/api/knowledge/scopes"), c.api("/api/knowledge/documents?" + new URLSearchParams({scope}))]);
