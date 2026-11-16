@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import Mock, patch
 
 from labagent.engine import diagnose
 
@@ -12,6 +13,34 @@ SPEC.loader.exec_module(b)
 
 
 class BEvaluationTests(unittest.TestCase):
+    def test_knowledge_uses_per_case_materials_with_same_base_prompt(self):
+        inputs = {'b001': {'question': '检查地址', 'configs': {'R1': 'interface GE0/0/0\n ip address 10.1.1.1 24'}},
+                  'b002': {'question': '检查区域', 'configs': {'R2': 'ospf 1\n area 1\n authentication cipher dont-index'}}}
+        query = Mock(return_value={'results': []})
+        with patch.object(b.knowledge, 'search', query):
+            direct = list(b.model_requests(inputs, 'model-direct'))
+            enhanced = list(b.model_requests(inputs, 'model-knowledge'))
+        queries = [call.args[0] for call in query.call_args_list]
+        self.assertIn('10.1.1.1', queries[0])
+        self.assertIn('area 1', queries[1])
+        self.assertNotIn('dont-index', queries[1])
+        for a, k in zip(direct, enhanced):
+            self.assertEqual(b.make_messages(a)[0], b.make_messages(k)[0])
+            self.assertEqual(a['input'], k['input'])
+            self.assertNotIn('retrieval_query', b.make_messages(k)[1]['content'])
+
+    def test_model_row_and_missing_usage(self):
+        record = {'case_id': 'b001', 'instruction': 'JSON', 'input': {}}
+        raw = '{"case_id":"b001","status":"fault_found","findings":[],"unknowns":[]}'
+        call = Mock(return_value={'content': '```json\n' + raw + '\n```', '_meta': {'usage': {'total_tokens': 122}}})
+        row = b.predict(record, 800, call)
+        self.assertEqual(row['status'], 'fault_found')
+        self.assertEqual(call.call_args.kwargs, {'max_tokens': 800})
+        bad = b.predict(record, 800, Mock(return_value={'content': raw.replace('b001', 'b002')}))
+        self.assertEqual(bad['request_error'], 'invalid_json_or_case_id')
+        stats = b.summarize_runtime({str(i): {'result': r, 'elapsed_ms': r['elapsed_ms']} for i, r in enumerate((row, bad))})
+        self.assertEqual(stats['usage']['total_tokens'], {'total': 122, 'reported_calls': 1})
+
     def test_comparison_keeps_unrun_modes_pending_and_rejects_mixed_labels(self):
         fields = ('state_agreement', 'strict_case_agreement', 'fault_location', 'normal_false_alarm', 'unknown_handling')
         rule = {'mode': 'rules', 'version': 'v1', 'manifest_sha256': 'inputs', 'labels_sha256': 'labels',
