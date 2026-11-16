@@ -5,15 +5,21 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import threading
 import uuid
 from urllib.parse import urlparse
+from .storage import data_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTES_DIR = ROOT / "data" / "course_notes"
 IMPORT_LOCK = threading.Lock()
+
+
+def notes_directory():
+    return data_directory() / "course_notes" if os.environ.get("LABAGENT_DATA_DIR") else NOTES_DIR
 
 
 def validate_scope(value):
@@ -48,14 +54,15 @@ def make_document(payload):
 
 def import_document(payload):
     document = {**make_document(payload), "imported_at": datetime.now(timezone.utc).isoformat()}
-    NOTES_DIR.mkdir(parents=True, exist_ok=True)
-    path = NOTES_DIR / (document["id"].removeprefix("course-") + ".json")
+    folder = notes_directory()
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / (document["id"].removeprefix("course-") + ".json")
     with IMPORT_LOCK:
         if path.exists():
             document = json.loads(path.read_text(encoding="utf-8"))
             created = False
         else:
-            temporary = NOTES_DIR / (uuid.uuid4().hex + ".tmp")
+            temporary = folder / (uuid.uuid4().hex + ".tmp")
             try:
                 temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
                 temporary.replace(path)
@@ -78,6 +85,7 @@ def bundled_documents():
                                   "scope": source["scope"], "version": source["version"],
                                   "content": (folder / row["file"]).read_text(encoding="utf-8")})
         document["source_type"] = source["source_type"]
+        document["sectioned"] = True
         documents.append(document)
     return documents
 
@@ -91,7 +99,7 @@ def corpus(scope="default"):
                           "content_hash": hashlib.sha256(original["content"].encode()).hexdigest()})
     documents.extend(doc for doc in bundled_documents() if scope in ("default", doc["scope"]))
     seen = {doc["id"] for doc in documents}
-    for file in sorted(NOTES_DIR.glob("*.json")):
+    for file in sorted(notes_directory().glob("*.json")):
         try:
             if file.stat().st_size > 1_000_000:
                 raise ValueError("too large")
@@ -122,7 +130,7 @@ def list_documents(scope="default"):
 
 def list_scopes():
     scopes = {"default", *(doc["scope"] for doc in bundled_documents())}
-    for file in NOTES_DIR.glob("*.json"):
+    for file in notes_directory().glob("*.json"):
         try:
             if file.stat().st_size <= 1_000_000:
                 scopes.add(validate_scope(json.loads(file.read_text(encoding="utf-8"))["scope"]))
@@ -134,22 +142,29 @@ def list_scopes():
 def chunks(document, size=600):
     text = document["content"]
     newlines = [match.start() for match in re.finditer("\n", text)]
+    sectioned = document.get("sectioned", False)
+    # Keep the document title at the start of the first section.
+    section_ends = [match.start() for match in re.finditer(r"(?m)^## ", text)][1:] if sectioned else []
+    section_ends.append(len(text))
+    metadata = {key: value for key, value in document.items() if key not in ("content", "sectioned")}
     start, number = 0, 0
     while start < len(text):
         while start < len(text) and text[start].isspace():
             start += 1
         if start >= len(text):
             break
-        end = min(start + size, len(text))
-        if end < len(text):
+        section_end = section_ends[bisect_right(section_ends, start)]
+        end = min(start + size, section_end)
+        if end < section_end:
             boundary = text.rfind("\n", start + size // 2, end)
             if boundary > start:
                 end = boundary
         while end > start and text[end - 1].isspace():
             end -= 1
         number += 1
-        yield {**{key: value for key, value in document.items() if key != "content"}, "content": text[start:end],
-               "chunk_id": f"{document['id']}:{number}", "char_start": start, "char_end": end,
+        chunk = f"section-{number}" if sectioned else str(number)
+        yield {**metadata, "content": text[start:end],
+               "chunk_id": f"{document['id']}:{chunk}", "char_start": start, "char_end": end,
                "line_start": bisect_right(newlines, start - 1) + 1, "line_end": bisect_right(newlines, end - 2) + 1}
         start = end
 
