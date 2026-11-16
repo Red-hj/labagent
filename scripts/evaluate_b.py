@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
 import json
+import os
 import re
 from statistics import median
 import sys
@@ -380,6 +381,32 @@ def run_model(output, mode, *, limit, max_tokens, execute, completion=model.chat
                 raise ValueError(f"批次提前停止：{row['request_error']}；已写入的结果保存在 {output}。")
 
 
+def load_model_settings(path=None):
+    if path is None:
+        model.load_env(ROOT / '.env')
+        return
+    if not path.is_file():
+        raise ValueError(f'当前电脑找不到模型配置文件：{path}。请在持有该文件的电脑运行。')
+    fields = {key: value for key, value in model.read_env(path).items() if key.startswith('LABAGENT_LLM_')}
+    required = ('LABAGENT_LLM_URL', 'LABAGENT_LLM_MODEL', 'LABAGENT_LLM_KEY')
+    missing = [key for key in required if not fields.get(key, '').strip()]
+    if missing:
+        raise ValueError('指定配置文件缺少字段：' + ', '.join(missing))
+    for key in list(os.environ):
+        if key.startswith('LABAGENT_LLM_'):
+            del os.environ[key]
+    os.environ.update(fields)
+
+
+def probe_model(completion=model.chat_completion):
+    """One request using no benchmark or coursework material."""
+    result = completion([{'role': 'user', 'content': 'Connectivity check. Reply only: OK'}], max_tokens=128)
+    if not isinstance(result.get('content'), str) or not result['content'].strip():
+        raise model.ModelError('invalid_response')
+    metadata = result.get('_meta') or {}
+    return {'status': 'ok', **{key: metadata.get(key) for key in ('provider', 'model', 'elapsed_ms', 'usage')}}
+
+
 def comparison(reports):
     modes = ('rules', 'model-direct', 'model-knowledge')
     reference = None
@@ -423,7 +450,7 @@ def comparison(reports):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('task', choices=('labs', 'benchmark', 'knowledge', 'import-knowledge', 'prepare-model', 'run-model', 'compare'))
+    parser.add_argument('task', choices=('labs', 'benchmark', 'knowledge', 'import-knowledge', 'prepare-model', 'probe-model', 'run-model', 'compare'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--mode', choices=('rules', 'model-direct', 'model-knowledge'), default='rules')
     parser.add_argument('--predictions', type=Path)
@@ -431,14 +458,28 @@ def main():
     parser.add_argument('--limit', type=int, default=2, help='run-model: number of candidate cases, from 1 to 60')
     parser.add_argument('--max-tokens', type=int, default=800, help='run-model: per-request completion budget')
     parser.add_argument('--execute', action='store_true', help='run-model: actually call the configured model; otherwise print plan only')
+    parser.add_argument('--env-file', type=Path, help='probe-model / run-model --execute: use a local .env without copying it')
     args = parser.parse_args()
+    if args.task == 'probe-model':
+        try:
+            load_model_settings(args.env_file)
+            print(json.dumps(probe_model(), ensure_ascii=False))
+        except model.ModelError as error:
+            print(json.dumps({'status': 'failed', **error.as_dict()}, ensure_ascii=False), file=sys.stderr)
+            return 1
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+        return 0
     if args.task == 'run-model':
         if args.mode == 'rules' or not 1 <= args.limit <= 60 or not 128 <= args.max_tokens <= 2048:
             parser.error('run-model 需要模型模式、1～60 个样本及每条 128～2048 个输出 token。')
         if args.execute:
             if args.output is None:
                 parser.error('--execute 需要指定 runtime/ 下的 --output .jsonl')
-            model.load_env(ROOT / '.env')
+            try:
+                load_model_settings(args.env_file)
+            except (OSError, ValueError) as error:
+                parser.error(str(error))
         run_model(args.output, args.mode, limit=args.limit, max_tokens=args.max_tokens, execute=args.execute)
         return 0
     if args.task == 'import-knowledge':

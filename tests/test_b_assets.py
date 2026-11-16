@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
@@ -13,6 +14,28 @@ SPEC.loader.exec_module(b)
 
 
 class BEvaluationTests(unittest.TestCase):
+    def test_explicit_env_uses_only_its_model_settings_without_copying(self):
+        path = Mock()
+        overrides = {'LABAGENT_LLM_URL': 'https://example.invalid/chat', 'LABAGENT_LLM_MODEL': 'demo-model',
+                     'LABAGENT_LLM_KEY': 'test-value', 'PORT': '9999'}
+        with patch.dict(os.environ, {'LABAGENT_LLM_KEY': 'old', 'LABAGENT_LLM_THINKING': 'old', 'PORT': '8120'}, clear=True), \
+                patch.object(b.model, 'read_env', return_value=overrides):
+            b.load_model_settings(path)
+            self.assertEqual(os.environ['LABAGENT_LLM_KEY'], 'test-value')
+            self.assertEqual(os.environ['PORT'], '8120')
+            self.assertNotIn('LABAGENT_LLM_THINKING', os.environ)
+        with patch.object(b.model, 'read_env', return_value={'LABAGENT_LLM_MODEL': 'demo-model'}):
+            with self.assertRaisesRegex(ValueError, 'LABAGENT_LLM_KEY'):
+                b.load_model_settings(path)
+
+    def test_single_model_probe_excludes_content_and_benchmark_data(self):
+        completion = Mock(return_value={'content': 'unused provider text', '_meta': {
+            'provider': 'DeepSeek', 'model': 'deepseek-flash', 'elapsed_ms': 19, 'usage': {'total_tokens': 9}}})
+        result = b.probe_model(completion)
+        self.assertEqual(result, {'status': 'ok', 'provider': 'DeepSeek', 'model': 'deepseek-flash',
+                                  'elapsed_ms': 19, 'usage': {'total_tokens': 9}})
+        completion.assert_called_once_with([{'role': 'user', 'content': 'Connectivity check. Reply only: OK'}], max_tokens=128)
+
     def test_knowledge_uses_per_case_materials_with_same_base_prompt(self):
         inputs = {'b001': {'question': '检查地址', 'configs': {'R1': 'interface GE0/0/0\n ip address 10.1.1.1 24'}},
                   'b002': {'question': '检查区域', 'configs': {'R2': 'ospf 1\n area 1\n authentication cipher dont-index'}}}
