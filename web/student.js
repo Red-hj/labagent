@@ -102,6 +102,10 @@ async function diagnose(input) {
     }
   } finally { reader.releaseLock(); }
 }
+function syncWorkspaceLayout() {
+  const hasOutput = sessionId || busy || sessionProblem || !$("request-status").hidden || !$("process-section").hidden || !$("repair-section").hidden;
+  $("diagnosis-workspace").classList.toggle("is-start", !hasOutput);
+}
 function setBusy(value) {
   busy = value;
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "followup-message", "send-followup", "load-demo"]) $(id).disabled = busy;
@@ -126,6 +130,7 @@ function setBusy(value) {
   $("analysis-result").setAttribute("aria-busy", String(busy));
   for (const button of $("material-list").querySelectorAll("button")) button.disabled = busy;
   for (const control of document.querySelectorAll(".interaction-actions button,.request button,.request textarea,.chat-retry,.operation-analyze")) control.disabled = busy || legacySession;
+  syncWorkspaceLayout();
 }
 function materialChanged(detail) {
   window.LabWorkspace.changed();
@@ -310,6 +315,7 @@ async function previewOperations() {
 
 function renderRepairComparisons(comparisons) {
   $("repair-section").hidden = !comparisons?.length;
+  syncWorkspaceLayout();
   $("empty-result").hidden = Boolean(sessionId);
   window.LabWorkspace.resultsAvailable(Boolean(comparisons?.length) && !sessionId);
   const container = $("repair-comparisons"); container.replaceChildren();
@@ -358,6 +364,7 @@ function renderRecordingChoices() {
   if (recording && $("replay-video").getAttribute("src") !== recording.video_url) $("replay-video").src = recording.video_url;
   if (!recording) { $("replay-video").removeAttribute("src"); $("replay-video").load(); }
   $("process-section").hidden = !recordings.size && !operationHistory?.event_count;
+  syncWorkspaceLayout();
 }
 function locateOperation(event) {
   const recording = [...recordings.values()].find(item => item.material_name === event.material);
@@ -376,6 +383,7 @@ function locateOperation(event) {
 function renderOperationHistory(history) {
   operationHistory = history;
   $("process-section").hidden = !history.event_count && !recordings.size;
+  syncWorkspaceLayout();
   $("operation-count").textContent = history.event_count ? history.event_count + " 步 · " + history.error_count + " 处报错" : "正在准备操作时间线";
   const focus = (history.events || []).find(item => item.id === (history.focus_id || history.first_issue_id));
   const container = $("operation-focus"); container.replaceChildren(); container.hidden = !focus;
