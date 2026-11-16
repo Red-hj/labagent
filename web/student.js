@@ -26,8 +26,9 @@ let sessionProblem = false;
 let requestFailed = false;
 const defaultQuestion = "请根据上传的实验材料分析问题，给出有原文依据的排查方向，并说明下一步需要补充哪些材料。";
 const measuredDemos = new Map([
-  ["repair_comparison", "FRR修复实验.json"],
-  ["ospf_area_measured", "FRR区域复测.json"],
+  ["repair_comparison", {name: "FRR修复实验.json", question: "比较这次实际实验中两种修复方案的效果：为什么Ping通了仍可能没有完成实验？推荐满足全部目标的方案，并解释配置改动。"}],
+  ["ospf_area_measured", {name: "FRR区域复测.json", question: "根据两阶段 FRRouting 记录，解释 R2 的区域改动怎样影响邻接、远端路由和双向 Ping。为什么直连 Ping 在故障阶段仍然成功？"}],
+  ["ospf_shutdown_measured", {name: "FRR接口复测.json", question: "根据 FRRouting 实测记录，说明 R2 的接口管理状态如何影响直连 Ping、OSPF 邻接和两端的远端路由。用哪些证据确认接口重新启用后已经恢复？"}],
 ]);
 
 function element(tag, text, className) {
@@ -209,12 +210,11 @@ async function loadDemo(repaired = false, final = false) {
   try {
     const goalsDemo = $("demo-case").value === "ospf_goals";
     const demo = await api("/api/demos/" + $("demo-case").value);
-    if (measuredDemos.has($("demo-case").value)) {
+    const measuredDemo = measuredDemos.get($("demo-case").value);
+    if (measuredDemo) {
       for (const [name,text] of Object.entries(demo.materials)) materials.set(name,text);
       evidenceKind = "user_submitted"; demoActive = true;
-      $("problem").value = $("demo-case").value === "ospf_area_measured"
-        ? "根据两阶段 FRRouting 记录，解释 R2 的区域改动怎样影响邻接、远端路由和双向 Ping。为什么直连 Ping 在故障阶段仍然成功？"
-        : "比较这次实际实验中两种修复方案的效果：为什么Ping通了仍可能没有完成实验？推荐满足全部目标的方案，并解释配置改动。";
+      $("problem").value = measuredDemo.question;
       renderMaterials(); await previewOperations(); setBusy(false);
       $("demo-status").textContent = "已载入 FRRouting 实测记录。右侧重新核对故障与修复结果，可展开查看依据。";
       return materialChanged("实验运行记录已载入，右侧可查看实际对照结果。");
@@ -777,7 +777,7 @@ async function start() {
       try { const media = await api("/api/recordings/" + id); (media.kind === "image" ? screenshots : recordings).set(id, media); } catch (error) { message(error.message, true); }
     }
     renderRecordingChoices();
-    const measuredDemo = [...measuredDemos].find(([, name]) => materials.has(name));
+    const measuredDemo = [...measuredDemos].find(([, {name}]) => materials.has(name));
     demoActive = Boolean(measuredDemo) || evidenceKind === "demo" && (materials.has("终端跨网段访问.txt") || materials.has("实验说明.txt") || materials.has("终端操作.log"));
     if (measuredDemo) $("demo-case").value = measuredDemo[0];
     if (demoActive && materials.has("终端操作.log")) {

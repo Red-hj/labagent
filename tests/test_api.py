@@ -149,6 +149,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(saved["result"]["repair_comparisons"][0]["run_id"], compared["run_id"])
         self.assertIn("FRRouting", self.request(session + "/report")[1]["markdown"])
 
+    def test_measured_shutdown_demo_rechecks_interface_and_connectivity(self):
+        demo = self.request("/api/demos/ospf_shutdown_measured")[1]
+        comparison = self.request("/api/repair-labs/inspect", {"materials": demo["materials"]})[1]["comparisons"][0]
+        fault, repaired = comparison["phases"]
+        self.assertEqual((fault["passed_count"], repaired["passed_count"], repaired["total"]), (0, 8, 8))
+        self.assertEqual(comparison["recommended"], "restore")
+        before, after = (next(check for check in phase["checks"] if check["kind"] == "interface_admin_up")
+                         for phase in (fault, repaired))
+        self.assertFalse(before["passed"])
+        self.assertIn("state DOWN", before["evidence"])
+        self.assertTrue(after["passed"])
+        self.assertIn("state UP", after["evidence"])
+        self.assertEqual(repaired["commands"], {"R2": ["ip link set dev transit up"]})
+
     def test_recording_upload_and_status_use_the_same_saved_video(self):
         from labagent.recordings import Recordings
         with patch("labagent.recordings.available", return_value=True), patch.object(Recordings, "_process"):

@@ -2,6 +2,7 @@
 import difflib
 import ipaddress
 import json
+import re
 
 from .connectivity import parse_ping_records
 
@@ -18,6 +19,14 @@ def route_to(table, target):
     if not choices:
         return []
     return max(choices, key=lambda item: item[0].prefixlen)[1]
+
+
+def interface_admin_up(output, name):
+    pattern = rf"(?m)^\d+:\s+{re.escape(name)}(?:@[^:\s]+)?:\s+<([^>\n]+)>"
+    matches = re.findall(pattern, output)
+    if len(matches) != 1:
+        raise ValueError(f"缺少唯一的 {name} 接口状态输出")
+    return "UP" in matches[0].split(",")
 
 
 def evaluate_phase(goals, phase):
@@ -47,6 +56,10 @@ def evaluate_phase(goals, phase):
             detail = (f"{goal['device']}：对端 {goal['target']} 已达 Full。" if passed else
                       f"{goal['device']}：没有匹配对端地址 {goal['peer_address']} 的 Full 邻接。")
             evidence = json.dumps(observed["neighbors"], ensure_ascii=False, indent=2)
+        elif kind == "interface_admin_up":
+            evidence = observed["interfaces"][goal["target"]]
+            passed = interface_admin_up(evidence, goal["target"])
+            detail = f"{goal['device']} {goal['target']}：" + ("接口已启用" if passed else "接口被管理关闭")
         elif kind in {"config_absent", "config_contains"}:
             matching = [line for line in observed["config"].splitlines() if line.strip().startswith(goal["target"])]
             passed = bool(matching) if kind == "config_contains" else not matching
