@@ -9,6 +9,7 @@ from .parser import parse_config
 from .runtime_parser import normalize_outputs
 from .tools import check_link
 from .knowledge import search
+from .storage import data_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -114,7 +115,7 @@ def run_workflow(payload, database=None, planner=None):
         return result
     from langgraph.checkpoint.sqlite import SqliteSaver
     from langgraph.types import Command
-    location = Path(database or ROOT / "runtime" / "workflow.sqlite3")
+    location = Path(database or data_directory() / "workflow.sqlite3")
     location.parent.mkdir(parents=True, exist_ok=True)
     thread_id = payload.get("session_id") or uuid.uuid4().hex
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 150}
@@ -132,12 +133,16 @@ def run_workflow(payload, database=None, planner=None):
         return result
 
 
-def run_open_workflow(payload, database=None, completion=None):
+def run_open_workflow(payload, database=None, completion=None, *, previous_attempt=None):
     """A separate graph namespace prevents mixing rule and open checkpoints."""
     from .investigation import investigate
     validate(payload)
+    seed = {"result": previous_attempt["result"],
+            "conversation": previous_attempt["result"].get("conversation", []),
+            "last_materials": previous_attempt["input"]["configs"]} if previous_attempt else {}
     if not available():
-        result = investigate(payload, completion=completion)
+        result = investigate(payload, seed.get("result", {}).get("investigation"), completion,
+                             conversation=seed.get("conversation"), previous_materials=seed.get("last_materials"))
         result["workflow"] = {"backend": "local_rules", "paused": False, "message": "未安装LangGraph，开放排查未提供持久化恢复。"}
         return result
     from langgraph.graph import StateGraph, START, END
@@ -164,7 +169,7 @@ def run_open_workflow(payload, database=None, completion=None):
 
     thread_id = payload.get("session_id") or uuid.uuid4().hex
     config = {"configurable": {"thread_id": "open:" + thread_id}, "recursion_limit": 30}
-    location = Path(database or ROOT / "runtime" / "workflow.sqlite3")
+    location = Path(database or data_directory() / "workflow.sqlite3")
     location.parent.mkdir(parents=True, exist_ok=True)
     with SqliteSaver.from_conn_string(str(location)) as saver:
         builder = StateGraph(State)
@@ -175,9 +180,12 @@ def run_open_workflow(payload, database=None, completion=None):
         graph = builder.compile(checkpointer=saver)
         snapshot = graph.get_state(config)
         resumed = bool(snapshot.next)
-        graph.invoke(Command(resume={"payload": payload}) if resumed else {"payload": payload}, config)
+        restored = bool(seed) and not snapshot.values
+        graph.invoke(Command(resume={"payload": payload}) if resumed else
+                     {**(seed if restored else {}), "payload": payload}, config)
         snapshot = graph.get_state(config)
         result = dict(snapshot.values["result"])
         result["workflow"] = {"backend": "langgraph", "thread_id": thread_id, "paused": bool(snapshot.next),
-                              "resumed": resumed, "phase": "waiting_for_evidence" if snapshot.next else "completed", "steps": result["trace"]}
+                              "resumed": resumed or restored, "context_restored": restored,
+                              "phase": "waiting_for_evidence" if snapshot.next else "completed", "steps": result["trace"]}
         return result

@@ -7,10 +7,12 @@ let operationHistory = null;
 let previewNumber = 0;
 let videoReady = false;
 let sessionId = null;
+let legacySession = false;
 let modelReady = false;
 let diagnosisBackend = "local";
 let online = false;
 let busy = false;
+let workspaceTransfer = false;
 let evidenceKind = "user_submitted";
 let knowledgeScope = "default";
 let pasteNumber = 0;
@@ -102,6 +104,9 @@ async function diagnose(input) {
 function setBusy(value) {
   busy = value;
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "followup-message", "send-followup", "load-demo"]) $(id).disabled = busy;
+  for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = busy || workspaceTransfer;
+  $("new-conversation").disabled = busy;
+  for (const id of ["followup-message", "send-followup"]) $(id).disabled = busy || legacySession;
   $("demo-case").disabled = busy || Boolean(sessionId) || demoActive;
   $("load-demo").disabled = busy || Boolean(sessionId);
   $("load-demo-repair").disabled = busy || !demoActive || !sessionId;
@@ -113,13 +118,13 @@ function setBusy(value) {
   $("load-demo-final").disabled = busy || !demoActive || !sessionId;
   $("load-demo-final").hidden = $("demo-case").value !== "ospf_goals";
   $("load-demo-repair").textContent = $("demo-case").value === "ospf_goals" ? "② 带入静态路由复测" : "② 带入修改与复测材料";
-  $("analyze").disabled = busy || !modelReady || sessionProblem;
+  $("analyze").disabled = busy || !modelReady || sessionProblem || legacySession;
   $("analyze").replaceChildren(document.createTextNode(busy ? "正在处理…" : sessionId ? "继续诊断" : "开始诊断"), element("span", "→"));
   $("send-followup").textContent = busy && activeRequest?.type === "ask" ? "正在回复…" : "发送追问 ↗";
   serviceStatus();
   $("analysis-result").setAttribute("aria-busy", String(busy));
   for (const button of $("material-list").querySelectorAll("button")) button.disabled = busy;
-  for (const control of document.querySelectorAll(".interaction-actions button,.request button,.request textarea,.chat-retry,.operation-analyze")) control.disabled = busy;
+  for (const control of document.querySelectorAll(".interaction-actions button,.request button,.request textarea,.chat-retry,.operation-analyze")) control.disabled = busy || legacySession;
 }
 function materialChanged(detail) {
   window.LabWorkspace.changed();
@@ -476,6 +481,8 @@ function finishRequest(state, text) {
   requestState(state, text); setBusy(false); message(text, state === "error");
   $("processing-progress").open = false;
   if (state === "error" && activeRequest?.type !== "analyze") {
+    const savedError = $("conversation").lastElementChild;
+    if (!$("conversation").querySelector(".chat-transient") && savedError?.classList.contains("chat-saved-error") && savedError.dataset.requestText === activeRequest.text) savedError.classList.add("chat-transient");
     if (!$("conversation").querySelector(".chat-transient")) pendingTurn(activeRequest.text);
     const response = $("conversation").querySelector(".chat-transient .chat-assistant");
     response.className = "chat-message chat-assistant chat-failed";
@@ -506,16 +513,7 @@ async function performInteraction(type, text) {
 }
 
 function renderConversation(turns) {
-  $("conversation").replaceChildren();
-  for (const turn of turns) {
-    const wrapper = element("div", undefined, "chat-turn");
-    const user = element("div", undefined, "chat-message chat-user");
-    user.append(element("p", "你", "chat-label"), document.createTextNode(turn.intent === "analyze" ? "已提交材料，开始排查。" : turn.user));
-    const assistant = element("div", undefined, "chat-message chat-assistant");
-    assistant.append(element("p", "LabAgent", "chat-label"), document.createTextNode(turn.assistant));
-    wrapper.append(user, assistant); $("conversation").append(wrapper);
-  }
-  $("conversation").scrollTop = $("conversation").scrollHeight;
+  window.LabHistory.renderTurns(turns);
 }
 
 function renderChecks(checks) {
@@ -571,6 +569,8 @@ function renderGoalsAndPlan(analysis, status) {
 }
 function showResult(result) {
   sessionId = result.session_id;
+  window.LabHistory.activate(sessionId);
+  window.LabHistory.refresh();
   window.history.replaceState(null, "", window.LabWorkspace.sessionUrl(sessionId));
   $("empty-result").hidden = true; $("analysis-result").hidden = false; $("save-report").hidden = false;
   const analysis = result.investigation || {};
@@ -595,7 +595,11 @@ function showResult(result) {
   $("guidance-steps").replaceChildren();
   for (const step of analysis.steps || []) $("guidance-steps").append(element("li", step));
   renderChecks(result.interaction_checks || {});
-  renderConversation(result.conversation || [{intent:"analyze", user:defaultQuestion, assistant:analysis.reply || analysis.summary || result.hint}]);
+  renderConversation(result.dialogue || result.conversation || [{intent:"analyze", user:defaultQuestion, assistant:analysis.reply || analysis.summary || result.hint}]);
+  if (legacySession) {
+    $("result-state").textContent = "早期规则诊断记录";
+    $("conversation-count").textContent = `${result.dialogue?.length || 1} 轮对话 · 历史记录`;
+  }
   $("hypotheses").replaceChildren();
   for (const hypothesis of analysis.hypotheses || []) {
     const item = element("section", undefined, "finding");
@@ -700,7 +704,9 @@ $("followup-message").addEventListener("keydown", event => {
 });
 $("new-diagnosis").addEventListener("click", () => {
   window.LabWorkspace.leave();
-  sessionProblem = false; requestFailed = false;
+  sessionProblem = false; requestFailed = false; legacySession = false;
+  window.LabHistory.activate(null); window.LabHistory.setSnapshot(null);
+  $("analysis-details").open = false;
   materials.clear(); sessionId = null; evidenceKind = "user_submitted"; knowledgeScope = "default"; demoActive = false;
   recordings.clear(); screenshots.clear(); renderRecordingChoices(); renderOperationHistory({}); renderRepairComparisons([]);
   $("demo-case").value = "network_access";
@@ -749,6 +755,7 @@ async function start() {
     $("save-report").textContent = "下载实验报告";
     document.querySelector("footer span:last-child").textContent = "测试过程保存在当前在线服务";
   }
+  window.LabHistory.refresh();
   if (await window.LabWorkspace.start()) return;
   const savedSession = new URLSearchParams(window.location.search).get("session");
   if (savedSession && /^[a-f0-9]{32}$/.test(savedSession)) {
@@ -780,8 +787,11 @@ async function start() {
     if (demoActive && materials.has("实验说明.txt")) $("demo-case").value = "ospf_goals";
     renderMaterials();
     window.LabWorkspace.preview();
-    if (latest.result.mode === "open_network") { showResult({...latest.result, session_id:savedSession}); setBusy(false); message("已恢复这次诊断，可以继续交流或补充材料。"); }
-    else { message("已带入保存的材料，可以开始诊断。"); }
+    legacySession = latest.input.diagnostic_mode !== "open_network";
+    window.LabHistory.setSnapshot(saved);
+    showResult({...latest.result, dialogue:saved.dialogue, session_id:savedSession}); setBusy(false);
+    message(legacySession ? "已打开早期规则诊断记录。可查看对话与报告，点击“新对话”开始新的排查。" : "已恢复完整对话，可以继续交流或补充材料。");
+    if (matchMedia("(max-width:1100px)").matches) $("dialogue-section").scrollIntoView({block:"start"});
   }
   const pendingRecording = new URLSearchParams(window.location.search).get("recording");
   if (pendingRecording && /^[a-f0-9]{32}$/.test(pendingRecording)) {
@@ -812,7 +822,8 @@ window.LabWorkspace.init({api, element, message, materials, recordings, screensh
     renderMaterials(); renderRecordingChoices();
     if (!room.session) { sessionId = null; $("analysis-result").hidden = true; $("empty-result").hidden = false; $("save-report").hidden = true; return; }
     const saved = await api("/api/sessions/" + room.session.session_id);
-    showResult({...saved.attempts.at(-1).result, session_id:room.session.session_id}); setBusy(false);
+    legacySession = false; window.LabHistory.setSnapshot(saved);
+    showResult({...saved.attempts.at(-1).result, dialogue:saved.dialogue, session_id:room.session.session_id}); setBusy(false);
     if (room.session.revision !== room.revision) $("result-state").textContent = "队友已补充材料 · 下方为上一次分析";
   },
   locate:locateCitation,
@@ -822,4 +833,59 @@ window.LabWorkspace.init({api, element, message, materials, recordings, screensh
     for (const [name,text] of Object.entries(demo.materials)) materials.set(name,text);
     $("problem").value = demo.question; evidenceKind = "demo"; renderMaterials(); previewOperations(); return true;
   }});
+async function refreshWorkspace() {
+  const saved = await api("/api/workspace");
+  $("workspace-status").textContent = `已保存 ${saved.sessions} 个会话、${saved.rooms} 个协作实验、${saved.recordings} 份图片或录屏、${saved.documents} 份课程资料。`;
+  $("restore-workspace").disabled = busy || workspaceTransfer || !saved.can_restore;
+}
+$("workspace-backup").addEventListener("toggle", () => {
+  if ($("workspace-backup").open && !workspaceTransfer) refreshWorkspace().catch(error => { $("workspace-status").textContent = error.message; });
+});
+async function transferWorkspace(path, file) {
+  if (busy || workspaceTransfer) return;
+  workspaceTransfer = true;
+  let transferError = "";
+  for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = true;
+  $("workspace-status").textContent = file ? "正在上传并恢复工作区…" : "正在准备工作区备份…";
+  try {
+    const response = await fetch(path, {method:"POST", ...(file ? {headers:{"Content-Type":"application/zip"}, body:file} : {})});
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || "备份操作未完成，请稍后重试。");
+    }
+    if (file) {
+      await response.json();
+      window.LabHistory.refresh();
+      const sessions = await api("/api/sessions");
+      const list = $("restored-sessions"); list.replaceChildren(); list.hidden = false;
+      for (const session of sessions) {
+        const link = element("a", `打开恢复的实验 · ${session.session_id.slice(0, 8)}`);
+        link.href = "?session=" + encodeURIComponent(session.session_id); list.append(link);
+      }
+      message("工作区已恢复，原协作邀请链接可以继续使用。");
+    } else {
+      if (!(response.headers.get("Content-Type") || "").includes("application/zip")) throw new Error("服务尚未返回备份文件，请稍后重试。");
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a"); link.href = url; link.download = "labagent-workspace.zip"; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      message("工作区备份已下载，请保存好这个文件。");
+    }
+  } catch (error) { transferError = error.message; $("workspace-status").textContent = error.message; message(error.message, true); }
+  finally {
+    workspaceTransfer = false;
+    $("download-workspace").disabled = busy;
+    $("workspace-file").disabled = busy; $("workspace-file").value = "";
+    $("restore-workspace").disabled = busy;
+    try { await refreshWorkspace(); } catch (error) { transferError = transferError || error.message; }
+    if (transferError) $("workspace-status").textContent = transferError;
+  }
+}
+$("download-workspace").addEventListener("click", () => transferWorkspace("/api/workspace/backup"));
+$("restore-workspace").addEventListener("click", () => $("workspace-file").click());
+$("workspace-file").addEventListener("change", event => {
+  const file = event.target.files[0];
+  if (file) transferWorkspace("/api/workspace/restore", file);
+});
+window.LabHistory.init({api,element,message,busy:() => busy,showScreenshot,
+  newConversation:() => $("new-diagnosis").click(), showDiagnosis:() => window.LabWorkspace.showDiagnosis()});
 start().catch(error => { serviceState = "unavailable"; modelReady = false; setBusy(false); message("暂时无法连接服务：" + error.message, true); });
