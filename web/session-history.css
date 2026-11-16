@@ -149,3 +149,48 @@ footer { color:#a0acbf; font-size:9px; margin-top:18px; }
   .drop-zone strong { font-size:12px; }.delete-session { opacity:.8; }
 }
 @media(hover:none) { .delete-session { opacity:.8; } }
+
+/* Translucent control surfaces stay separate from the reading surface. */
+.workspace-nav button { border:1px solid transparent; }
+.new-conversation,.workspace-nav button[aria-current],.upload-button,.secondary-button,.history-toggle,.interaction-actions button {
+  position:relative;
+  background:linear-gradient(145deg,#ffffffdc 0%,#f5f8ff90 45%,#c8d9ff70 100%);
+  border:1px solid #b4c8ee70;
+  border-radius:12px;
+  -webkit-backdrop-filter:blur(16px) saturate(170%);
+  backdrop-filter:blur(16px) saturate(170%);
+  box-shadow:0 4px 14px #4769a412,inset 0 1px 0 #fffffff5,inset 0 -1px 1px #a7beea45;
+}
+.new-conversation:hover:not(:disabled),.upload-button:hover:not(:disabled),.secondary-button:hover:not(:disabled),.history-toggle:hover:not(:disabled),.interaction-actions button:hover:not(:disabled) {
+  background:linear-gradient(145deg,#ffffffed,#edf4ffd0 45%,#bcd2ff94);
+  border-color:#a4bde6a0;
+  box-shadow:0 6px 18px #4769a41d,inset 0 1px 0 #fff,inset 0 -1px 1px #a7beea60;
+}
+.workspace-nav button[aria-current] { color:#3f5fc6; }
+.primary-button:not(:disabled),.send-button:not(:disabled) {
+  position:relative;
+  background:linear-gradient(155deg,#7492f5ed 0%,#4d70e5ed 38%,#3e60d9f2 100%);
+  border:1px solid #7595f5b0;
+  border-radius:12px;
+  -webkit-backdrop-filter:blur(16px) saturate(170%);
+  backdrop-filter:blur(16px) saturate(170%);
+  box-shadow:0 5px 16px #496bd329,inset 0 1px 0 #ffffff8a,inset 0 -1px 1px #264bb961;
+}
+.primary-button:hover:not(:disabled),.send-button:hover:not(:disabled) {
+  background:linear-gradient(155deg,#829efaed 0%,#5277ecf2 38%,#4064def5 100%);
+  box-shadow:0 7px 20px #496bd33b,inset 0 1px 0 #ffffffa3,inset 0 -1px 1px #264bb970;
+}
+.primary-button:disabled { border:1px solid #dae3f5; border-radius:12px; }
+@media(prefers-reduced-motion:no-preference) {
+  .new-conversation,.upload-button,.secondary-button,.history-toggle,.primary-button,.send-button { transition:background .18s ease,box-shadow .18s ease,transform .18s ease; }
+  .new-conversation:hover:not(:disabled),.upload-button:hover:not(:disabled),.secondary-button:hover:not(:disabled),.primary-button:hover:not(:disabled),.send-button:hover:not(:disabled) { transform:translateY(-1px); }
+  .new-conversation:active:not(:disabled),.upload-button:active:not(:disabled),.secondary-button:active:not(:disabled),.primary-button:active:not(:disabled),.send-button:active:not(:disabled) { transform:translateY(0); }
+}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+  .new-conversation,.workspace-nav button[aria-current],.upload-button,.secondary-button,.history-toggle,.interaction-actions button { background:#eef3ff; }
+  .primary-button:not(:disabled),.send-button:not(:disabled) { background:#4b6ce7; }
+}
+@media(prefers-reduced-transparency:reduce) {
+  .new-conversation,.workspace-nav button[aria-current],.upload-button,.secondary-button,.history-toggle,.interaction-actions button { background:#eef3ff; -webkit-backdrop-filter:none; backdrop-filter:none; }
+  .primary-button:not(:disabled),.send-button:not(:disabled) { background:#4b6ce7; -webkit-backdrop-filter:none; backdrop-filter:none; }
+}
