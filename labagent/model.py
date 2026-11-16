@@ -7,13 +7,21 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from urllib.parse import urlparse
 
 
-def load_env(path):
+def read_env(path):
+    """Read dotenv fields without changing the current process configuration."""
+    fields = {}
     if path.exists():
         for line in path.read_text(encoding="utf-8-sig").splitlines():
             if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+            fields.setdefault(key.strip(), value.strip().strip("\"'"))
+    return fields
+
+
+def load_env(path):
+    for key, value in read_env(path).items():
+        os.environ.setdefault(key, value)
 
 
 def configured():

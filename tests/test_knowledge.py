@@ -74,6 +74,22 @@ class KnowledgeTests(unittest.TestCase):
                 self.assertEqual(ids.count(document["id"]), 1)
             self.assertEqual(warnings, [])
 
+    def test_bundled_notes_keep_each_heading_with_its_evidence(self):
+        for document in knowledge.bundled_documents():
+            source = document["content"].splitlines()
+            passages = list(knowledge.chunks(document))
+            headings = [line for line in source if line.startswith("## ")]
+            retrieved_headings = []
+            for passage in passages:
+                lines = passage["content"].splitlines()
+                section_headings = [line for line in lines if line.startswith("## ")]
+                self.assertEqual(len(section_headings), 1)
+                self.assertEqual(lines, source[passage["line_start"] - 1:passage["line_end"]])
+                self.assertNotEqual(lines[-1], section_headings[0])
+                self.assertTrue(passage["chunk_id"].startswith(f"{document['id']}:section-"))
+                retrieved_headings.extend(section_headings)
+            self.assertEqual(retrieved_headings, headings)
+
     def test_exact_chunk_offsets_and_line_locations(self):
         source = "开头\n" + ("接口地址检查与故障证据\n" * 140) + "结尾"
         knowledge.import_document(document(content=source))
