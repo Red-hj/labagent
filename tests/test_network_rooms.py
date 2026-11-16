@@ -22,6 +22,28 @@ def network(materials):
 
 
 class MapTests(unittest.TestCase):
+    def test_measured_lab02_map_matches_both_directions_and_raw_lines(self):
+        root = ROOT / "data/team_cases/lab_02/map_materials"
+        for phase in ("fault", "repaired"):
+            materials = {file.name: file.read_text(encoding="utf-8") for file in sorted((root / phase).iterdir())}
+            data = network(materials)
+            self.assertEqual({n["id"] for n in data["nodes"]}, {"PC1", "R1", "R2", "PC2"})
+            self.assertEqual({frozenset((e["source"], e["target"])) for e in data["links"]},
+                             {frozenset(edge) for edge in (("PC1", "R1"), ("R1", "R2"), ("R2", "PC2"))})
+            for source, near, far, destination, target in (("PC1", "R1", "R2", "PC2", "192.168.20.10"),
+                                                           ("PC2", "R2", "R1", "PC1", "192.168.10.10")):
+                with self.subTest(phase=phase, source=source):
+                    result = explain_path(data, source, target)
+                    if phase == "fault":
+                        self.assertEqual((result["status"], result["path"]), ("failed", [source, near]))
+                        self.assertTrue(any(s["device"] == near and s["title"] == "检查目标路由" and s["evidence"] for s in result["steps"]))
+                    else:
+                        self.assertEqual((result["status"], result["path"]), ("passed", [source, near, far, destination]))
+                        self.assertTrue(any("OSPF" in s["detail"] for s in result["steps"]))
+                    for step in result["steps"]:
+                        for ref in step["evidence"]:
+                            self.assertEqual(materials[ref["device"]].splitlines()[ref["line"] - 1], ref["quote"])
+
     def test_gateway_failure_is_located_and_each_quote_matches_input(self):
         materials = network_access_demo()["stages"][0]["materials"]
         data = network(materials)
