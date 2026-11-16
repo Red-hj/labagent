@@ -1,5 +1,6 @@
 import json
 import os
+from contextlib import closing
 from pathlib import Path
 import tempfile
 import threading
@@ -124,10 +125,87 @@ class ConversationApiTests(unittest.TestCase):
         self.addCleanup(stop)
         self.base = f"http://127.0.0.1:{self.server.server_port}"
 
-    def request(self,path,payload=None):
+    def request(self,path,payload=None,*,method=None,headers=None):
         data = json.dumps(payload).encode() if payload is not None else None
-        with urlopen(Request(self.base+path,data=data,headers={"Content-Type":"application/json"}),timeout=15) as response:
+        with urlopen(Request(self.base+path,data=data,headers={"Content-Type":"application/json", **(headers or {})},method=method),timeout=15) as response:
             return json.load(response)
+
+    def test_delete_removes_all_turns_checkpoints_exports_and_only_target_room_link(self):
+        from labagent.rooms import Rooms
+        store = Store(Path(self.temp.name)/"sessions.sqlite3")
+        with patch.dict(os.environ,ENV), patch("labagent.investigation.chat_completion",side_effect=lambda messages,**kwargs: completion(messages)):
+            first = self.request("/api/diagnose",stages()[0])
+            session = first["session_id"]
+            self.request("/api/diagnose",{**stages()[1],"session_id":session,"interaction":{"type":"ask","message":"继续检查"}})
+        other = store.save(stages()[0],saved_result(3))["session_id"]
+        rooms = Rooms(store)
+        room = rooms.create("共享实验", "成员")
+        room = rooms.update(room["id"], {"actor":"成员", "member_id":"member", "action":"materials",
+            "patches":[{"name":"R1.cfg", "content":"interface test", "base_revision":0}]})
+        rooms.record_diagnosis({"room_id":room["id"],"room_revision":room["revision"],"room_actor":"成员"}, first)
+        unrelated = rooms.create("其他实验", "成员")
+        rooms.record_diagnosis({"room_id":unrelated["id"],"room_revision":0,"room_actor":"成员"}, {"session_id":other})
+        before_room = rooms.get(room["id"])
+        self.request("/api/export",{"session_id":session})
+        self.request("/api/export",{"session_id":other})
+        import sqlite3
+        with closing(sqlite3.connect(self.server.workflow_database)) as db:
+            self.assertGreater(db.execute("SELECT COUNT(*) FROM checkpoints WHERE thread_id=?",("open:"+session,)).fetchone()[0],0)
+        result = self.request("/api/sessions/"+session,method="DELETE")
+        self.assertEqual(result,{"session_id":session,"deleted":True,"deleted_requests":2})
+        self.assertEqual([row["session_id"] for row in self.request("/api/sessions")],[other])
+        for suffix in ("", "/report", "/export"):
+            with self.subTest(suffix=suffix), self.assertRaises(HTTPError) as error:
+                self.request("/api/sessions/"+session+suffix)
+            self.assertEqual(error.exception.code,404)
+        with closing(sqlite3.connect(self.server.workflow_database)) as db:
+            for table in ("checkpoints", "writes"):
+                self.assertEqual(db.execute(f"SELECT COUNT(*) FROM {table} WHERE thread_id IN (?,?)",(session,"open:"+session)).fetchone()[0],0)
+        for suffix in (".json", ".md"):
+            self.assertFalse((store.path.parent/"exports"/(session+suffix)).exists())
+            self.assertTrue((store.path.parent/"exports"/(other+suffix)).exists())
+        after_room = rooms.get(room["id"])
+        self.assertIsNone(after_room["session"])
+        self.assertEqual({k:v for k,v in before_room.items() if k != "session"},{k:v for k,v in after_room.items() if k != "session"})
+        self.assertEqual(rooms.get(unrelated["id"])["session"]["session_id"],other)
+        prepared = rooms.prepare_diagnosis({"room_id":room["id"],"room_revision":room["revision"],"room_actor":"成员","session_id":session})
+        self.assertNotIn("session_id",prepared)
+        with self.assertRaises(HTTPError) as error:
+            self.request("/api/diagnose",{**stages()[0],"session_id":session})
+        self.assertEqual(error.exception.code,400)
+
+    def test_delete_requires_team_access_and_same_origin(self):
+        session = Store(Path(self.temp.name)/"sessions.sqlite3").save(stages()[0],saved_result())["session_id"]
+        path = "/api/sessions/"+session
+        self.server.team_password = "test-team-secret"
+        with self.assertRaises(HTTPError) as error:
+            self.request(path,method="DELETE")
+        self.assertEqual(error.exception.code,401)
+        import base64
+        authorization = "Basic "+base64.b64encode(b"labagent:test-team-secret").decode()
+        with self.assertRaises(HTTPError) as error:
+            self.request(path,method="DELETE",headers={"Authorization":authorization,"Origin":"https://unrelated.example"})
+        self.assertEqual(error.exception.code,403)
+        self.assertTrue(self.request(path,headers={"Authorization":authorization}))
+        self.assertTrue(self.request(path,method="DELETE",headers={"Authorization":authorization})["deleted"])
+
+    def test_delete_while_work_in_flight_returns_conflict_without_changes(self):
+        store = Store(Path(self.temp.name)/"sessions.sqlite3")
+        session = store.save(stages()[0],saved_result())["session_id"]
+        with self.server.workspace.gate.activity(), self.assertRaises(HTTPError) as error:
+            self.request("/api/sessions/"+session,method="DELETE")
+        self.assertEqual(error.exception.code,409)
+        self.assertIsNotNone(store.history(session))
+        self.assertTrue(self.request("/api/sessions/"+session,method="DELETE")["deleted"])
+
+    def test_missing_or_invalid_delete_does_not_touch_other_sessions(self):
+        store = Store(Path(self.temp.name)/"sessions.sqlite3")
+        session = store.save(stages()[0],saved_result())["session_id"]
+        for target in ("f"*32,"bad-id",session+"/report"):
+            with self.subTest(target=target), self.assertRaises(HTTPError) as error:
+                self.request("/api/sessions/"+target,method="DELETE")
+            self.assertEqual(error.exception.code,404)
+        self.assertIsNotNone(store.history(session))
 
     def test_read_history_does_not_call_model_and_followup_appends_same_session(self):
         with patch.dict(os.environ,ENV), patch("labagent.investigation.chat_completion",side_effect=lambda messages,**kwargs: completion(messages)) as model:

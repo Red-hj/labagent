@@ -4,6 +4,7 @@ window.LabHistory = (() => {
   const pageSize = 30;
   const narrow = matchMedia("(max-width:1100px)");
   let c, rows = [], current = null, token = 0, timer, controller, snapshot = null, materialToken = 0;
+  let deleteTarget = null, deleting = false;
   const labels = {needs_information:"继续排查", verified_from_observations:"已核验", resolved_by_user_report:"已恢复", goals_pending:"目标待完成", comparison_complete:"对照完成"};
 
   function drawer(open) {
@@ -49,7 +50,18 @@ window.LabHistory = (() => {
         if (c.busy()) { event.preventDefault(); c.message("当前请求结束后即可切换对话。"); }
         else if (row.session_id === current) { event.preventDefault(); closeDrawer(); c.showDiagnosis(); }
       });
-      list.append(link);
+      const item = c.element("div", undefined, "session-row");
+      const remove = c.element("button", "删除", "delete-session"); remove.type = "button";
+      remove.setAttribute("aria-label", "删除对话：" + row.title);
+      remove.addEventListener("click", () => {
+        if (c.busy()) return c.message("当前请求结束后即可删除对话。");
+        deleteTarget = row;
+        $("delete-session-title").textContent = "删除“" + row.title + "”？";
+        $("delete-session-note").textContent = "全部问答和诊断记录将被删除，无法恢复。" + (row.room_id ? "团队成员也将无法打开这段对话；共享材料和任务保留。" : "");
+        $("delete-session-error").textContent = "";
+        $("delete-session-dialog").showModal();
+      });
+      item.append(link, remove); list.append(item);
     }
   }
   async function refresh(more = false) {
@@ -79,6 +91,31 @@ window.LabHistory = (() => {
     $("new-conversation").disabled = c.busy();
   }
   function setSnapshot(value) { snapshot = value; }
+  async function confirmDelete() {
+    if (!deleteTarget || deleting) return;
+    if (c.busy()) { $("delete-session-error").textContent = "当前请求结束后即可删除对话。"; return; }
+    const row = deleteTarget;
+    deleting = true;
+    $("confirm-delete-session").disabled = true;
+    $("cancel-delete-session").disabled = true;
+    $("confirm-delete-session").textContent = "正在删除…";
+    $("delete-session-error").textContent = "";
+    try {
+      try { await c.api("/api/sessions/" + row.session_id, undefined, {method:"DELETE"}); }
+      catch (error) { if (error.status !== 404 || error.code !== "session_not_found") throw error; }
+      $("delete-session-dialog").close(); deleteTarget = null;
+      if (current === row.session_id) { closeDrawer(); c.newConversation(); }
+      rows = rows.filter(item => item.session_id !== row.session_id); renderList();
+      await refresh();
+      c.message("对话已删除。");
+    } catch (error) { $("delete-session-error").textContent = "删除失败：" + error.message; }
+    finally {
+      deleting = false;
+      $("confirm-delete-session").disabled = false;
+      $("cancel-delete-session").disabled = false;
+      $("confirm-delete-session").textContent = "删除对话";
+    }
+  }
   async function showMaterials(turn, citation) {
     const id = current, mine = ++materialToken;
     const dialog = $("history-material-dialog"), content = $("history-material-content");
@@ -160,6 +197,9 @@ window.LabHistory = (() => {
   }
   function init(context) {
     c = context;
+    $("confirm-delete-session").addEventListener("click", confirmDelete);
+    $("cancel-delete-session").addEventListener("click", () => { $("delete-session-dialog").close(); deleteTarget = null; });
+    $("delete-session-dialog").addEventListener("cancel", event => { if (deleting) event.preventDefault(); else deleteTarget = null; });
     $("toggle-session-history").addEventListener("click", () => drawer(true));
     for (const id of ["close-session-history","history-backdrop"]) $(id).addEventListener("click",closeDrawer);
     $("close-history-materials").addEventListener("click", () => $("history-material-dialog").close());
@@ -169,7 +209,7 @@ window.LabHistory = (() => {
     $("history-search").addEventListener("input", () => { clearTimeout(timer); controller?.abort(); ++token; timer = setTimeout(() => refresh(),250); });
     narrow.addEventListener("change", () => drawer(false));
     document.addEventListener("keydown", event => {
-      if (!$("session-sidebar").classList.contains("history-open")) return;
+      if (!$("session-sidebar").classList.contains("history-open") || $("delete-session-dialog").open || $("history-material-dialog").open) return;
       if (event.key === "Escape") { event.preventDefault(); closeDrawer(); }
       if (event.key === "Tab") {
         const focusable = [...$("session-sidebar").querySelectorAll("button:not([disabled]),input,a")].filter(node => !node.hidden);
