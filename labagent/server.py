@@ -22,7 +22,7 @@ from .workflow import run_workflow, available
 from .workflow import run_open_workflow
 from .workspace_archive import WorkspaceArchive, WorkspaceBusy, MAX_ARCHIVE_BYTES
 from .report import generate_report
-from .knowledge import import_document, list_documents, list_scopes, search
+from .knowledge import get_document, import_document, list_documents, list_scopes, search
 from .cases import demo_cases
 from .demos import network_access_demo, ospf_goals_demo
 from .progress import emit_progress, progress_to
@@ -148,6 +148,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(list_documents(scope))
             except ValueError as error:
                 return self.reply({"error": str(error)}, 400)
+        if match := re.fullmatch(r"/api/knowledge/documents/([A-Za-z0-9_-]{1,100})", path):
+            try:
+                scope = parse_qs(urlparse(self.path).query).get("scope", ["default"])[0]
+                document = get_document(match[1], scope)
+                return self.reply(document if document else {"error": "资料不存在或不在当前资料范围内。"}, 200 if document else 404)
+            except ValueError as error:
+                return self.reply({"error": str(error)}, 400)
         if path == "/api/cases":
             return self.reply([{"id": case_id, "title": data["title"], "description": data["description"]}
                                for case_id, data in demo_cases().items()])
@@ -179,6 +186,7 @@ class Handler(BaseHTTPRequestHandler):
         assets = {"/": ("student.html", "text/html; charset=utf-8"), "/student.js": ("student.js", "text/javascript; charset=utf-8"), "/student.css": ("student.css", "text/css; charset=utf-8"),
                   "/network-room.js": ("network-room.js", "text/javascript; charset=utf-8"), "/network-room.css": ("network-room.css", "text/css; charset=utf-8"),
                   "/session-history.js": ("session-history.js", "text/javascript; charset=utf-8"), "/session-history.css": ("session-history.css", "text/css; charset=utf-8"),
+                  "/course-knowledge.js": ("course-knowledge.js", "text/javascript; charset=utf-8"), "/course-knowledge.css": ("course-knowledge.css", "text/css; charset=utf-8"),
                   "/ambient-network.js": ("ambient-network.js", "text/javascript; charset=utf-8"),
                   "/vendor/tsparticles.slim.bundle.min.js": ("vendor/tsparticles.slim.bundle.min.js", "text/javascript; charset=utf-8"),
                   "/workbench": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8"), "/knowledge.css": ("knowledge.css", "text/css; charset=utf-8")}
