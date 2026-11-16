@@ -10,6 +10,10 @@ if not exist ".venv\Scripts\python.exe" goto failed
 if errorlevel 1 python -B -m pip --python .venv\Scripts\python.exe install pip
 .venv\Scripts\python.exe -B -m pip install -r requirements-workflow.txt
 if errorlevel 1 goto failed
+.venv\Scripts\python.exe -B -m pip install -r requirements-replay.txt
+if errorlevel 1 goto failed
+.venv\Scripts\python.exe -B scripts/extract_recording.py --prepare
+if errorlevel 1 goto failed
 echo Setup complete. Run start.cmd.
 pause
 exit /b 0

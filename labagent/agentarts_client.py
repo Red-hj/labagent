@@ -1,0 +1,118 @@
+"""HTTP client for local SDK and deployed AgentArts runtimes."""
+import json
+import os
+import re
+import sys
+import time
+import uuid
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+SESSION_HEADER = "x-hw-agentarts-session-id"
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("调用地址发生重定向，请使用运行时详情页的完整调用地址")
+
+
+class AgentArtsClient:
+    def __init__(self, url, api_key="", platform_session_id=None, timeout=300, *,
+                 access_key="", secret_key="", security_token="", region="cn-southwest-2", monitor_path=None):
+        parsed = urlparse(url)
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1")):
+            raise ValueError("请填写 HTTPS 云端调用地址，或本机 HTTP SDK 地址")
+        if not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+            raise ValueError("请使用运行时详情页的完整调用地址")
+        self.url, self.api_key, self.timeout = url, api_key, timeout
+        self.monitor_path = monitor_path
+        if bool(access_key) != bool(secret_key):
+            raise ValueError("IAM调用需要同时配置华为云AK和SK")
+        if api_key and access_key:
+            raise ValueError("请选择IAM或API Key中的一种认证方式")
+        self.iam_signer = None
+        self.security_token = security_token
+        if access_key:
+            sdk_path = Path(__file__).resolve().parents[1] / "runtime/agentarts-signing-sdk"
+            if str(sdk_path) not in sys.path:
+                sys.path.insert(0, str(sdk_path))
+            try:
+                from apig_sdk import signer
+            except ImportError:
+                raise ValueError("请先运行 python scripts/setup_agentarts_iam.py 安装华为官方签名SDK") from None
+            self.iam_module = signer
+            self.iam_signer = signer.Signer(algorithm="V11-HMAC-SHA256", region_id=region)
+            self.iam_signer.Key, self.iam_signer.Secret = access_key, secret_key
+        self.platform_session_id = platform_session_id or uuid.uuid4().hex
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.platform_session_id):
+            raise ValueError("平台会话编号须为1～64位字母、数字、短横线或下划线")
+
+    @classmethod
+    def from_environment(cls, *, url=None, platform_session_id=None):
+        url = url or os.environ.get("LABAGENT_AGENTARTS_URL", "")
+        if not url:
+            raise ValueError("请配置LABAGENT_AGENTARTS_URL云端调用地址")
+        auth = os.environ.get("LABAGENT_AGENTARTS_AUTH", "api_key").lower()
+        monitor = (Path(__file__).resolve().parents[1] / "runtime/monitor/agentarts.jsonl"
+                   if os.environ.get("LABAGENT_AGENTARTS_MONITOR") == "1" else None)
+        if auth == "api_key":
+            api_key = os.environ.get("LABAGENT_AGENTARTS_KEY", "")
+            if urlparse(url).scheme == "https" and not api_key:
+                raise ValueError("请配置LABAGENT_AGENTARTS_KEY调用密钥")
+            return cls(url, api_key, platform_session_id, monitor_path=monitor)
+        if auth != "iam":
+            raise ValueError("LABAGENT_AGENTARTS_AUTH应为iam或api_key")
+        access_key, secret_key = os.environ.get("HUAWEICLOUD_SDK_AK", ""), os.environ.get("HUAWEICLOUD_SDK_SK", "")
+        if not access_key or not secret_key:
+            raise ValueError("请配置HUAWEICLOUD_SDK_AK和HUAWEICLOUD_SDK_SK")
+        return cls(url, platform_session_id=platform_session_id, access_key=access_key, secret_key=secret_key,
+                   security_token=os.environ.get("HUAWEICLOUD_SDK_SECURITY_TOKEN", ""),
+                   region=os.environ.get("LABAGENT_AGENTARTS_REGION", "cn-southwest-2"), monitor_path=monitor)
+
+    def invoke(self, payload):
+        if not self.monitor_path:
+            return self._invoke(payload)
+        from .monitoring import record_invocation
+        started = time.monotonic()
+        outcome = {"http_status": None, "error_code": "invalid_response"}
+        try:
+            result = self._invoke(payload, outcome)
+            outcome.update(result=result, error_code=None)
+            return result
+        finally:
+            record_invocation(self.monitor_path, elapsed_ms=round((time.monotonic() - started) * 1000), **outcome)
+
+    def _invoke(self, payload, outcome=None):
+        headers = {"Content-Type": "application/json", SESSION_HEADER: self.platform_session_id}
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        if self.api_key:
+            headers["Authorization"] = "Bearer " + self.api_key
+        if self.iam_signer:
+            headers["X-Sdk-Content-Sha256"] = "UNSIGNED-PAYLOAD"
+            if self.security_token:
+                headers["X-Security-Token"] = self.security_token
+            signed = self.iam_module.HttpRequest("POST", self.url, headers, body.decode("utf-8"))
+            # AgentArts data-plane SDK signs an empty query line; the gateway
+            # may rewrite queries. Keep the original URL on the HTTP request.
+            signed.query = {}
+            self.iam_signer.Sign(signed)
+            headers = signed.headers
+        request = Request(self.url, data=body, headers=headers, method="POST")
+        try:
+            with build_opener(NoRedirect()).open(request, timeout=self.timeout) as response:
+                if outcome is not None:
+                    outcome["http_status"] = response.status
+                result = json.load(response)
+        except HTTPError as error:
+            if outcome is not None:
+                outcome.update(http_status=error.code, error_code="http_error")
+            raise ValueError(f"运行时返回 HTTP {error.code}，请检查调用地址、入站认证和请求材料") from None
+        except (URLError, TimeoutError) as error:
+            if outcome is not None:
+                outcome["error_code"] = "timeout" if isinstance(error, TimeoutError) else "network_error"
+            raise ValueError("运行时连接失败或响应超时，请检查服务状态和网络") from None
+        if not isinstance(result, dict) or not result.get("session_id") or not result.get("status"):
+            raise ValueError("运行时未返回 LabAgent 诊断结果，请检查所调用的镜像版本")
+        return result

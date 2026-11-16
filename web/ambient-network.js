@@ -5,7 +5,8 @@
   "use strict";
   const root = document.getElementById("ambient-network");
   if (!root) return;
-  const color = "rgb(148, 163, 178)";
+  const color = "rgb(153, 168, 184)";
+  const grabDistance = 140;
   const options = {
     autoPlay:true,
     background:{color:{value:"none"}},
@@ -15,7 +16,7 @@
     interactivity:{
       detectsOn:"window",
       events:{onClick:{enable:true, mode:"push"}, onHover:{enable:true, mode:"grab", parallax:{enable:true, force:60, smooth:10}}, resize:{enable:true, delay:.5}},
-      modes:{grab:{distance:400, links:{opacity:1}}, push:{quantity:4}}
+      modes:{grab:{distance:grabDistance, links:{opacity:.45}}, push:{quantity:4}}
     },
     particles:{
       color:{value:color},
@@ -25,7 +26,7 @@
       opacity:{value:{min:.1,max:.5}, animation:{enable:true,speed:3,sync:false,startValue:"random"}},
       size:{value:{min:1,max:10}, animation:{enable:true,speed:20,sync:false,startValue:"random"}},
       shape:{type:"circle"},
-      links:{enable:true, color, distance:150, opacity:.4, width:1}
+      links:{enable:true, color, distance:125, opacity:.25, width:1}
     },
     pauseOnBlur:true,
     pauseOnOutsideViewport:true,
@@ -37,7 +38,7 @@
     if (!container) return;
     root.dataset.engine = "tsparticles-3.9.1";
     root.dataset.pushQuantity = "4";
-    root.dataset.grabDistance = "400";
+    root.dataset.grabDistance = String(grabDistance);
     const updateCount = () => { root.dataset.nodes = String(container.particles.count); };
     updateCount();
     addEventListener("click", () => setTimeout(updateCount,100), {passive:true});

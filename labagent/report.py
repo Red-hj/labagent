@@ -1,5 +1,7 @@
 """Evidence-only experiment process reports; no fabricated scores or outcomes."""
 from datetime import datetime, timezone, timedelta
+from .session_state import STATUS_LABELS, RESOLVED_STATUSES, experiment_goal
+from .experiment_goals import LABELS
 
 STATUS = {"fault_found": "发现问题，等待修正", "needs_information": "证据不足，等待补充", "awaiting_verification": "配置检查通过，等待运行复测", "verified_from_observations": "用户提交的运行观测通过"}
 
@@ -12,6 +14,8 @@ def generate_report(history):
     latest = history["attempts"][-1]
     result, payload = latest["result"], latest["input"]
     is_open = result.get("mode") == "open_network"
+    if is_open:
+        return generate_open_report(history)
     rows = ["# 网络实验诊断过程报告", "", f"会话编号：{history['session_id']}",
             f"当前结论：{'继续排查，下一步见材料请求' if is_open and result['status'] != 'verified_from_observations' else STATUS.get(result['status'], result['status'])}",
             f"案例来源：{'预置演示案例' if payload.get('evidence_kind') == 'demo' else '用户提交'}", "",
@@ -94,4 +98,132 @@ def generate_report(history):
     rows += ["", "## 执行步骤", ""]
     for step in result["trace"]:
         rows.append(f"- {step['step']}. {clean(step['component'])}：{clean(step['action'])}")
+    return "\n".join(rows) + "\n"
+
+
+def generate_open_report(history):
+    attempts = history["attempts"]
+    latest = attempts[-1]
+    result, payload = latest["result"], latest["input"]
+    analysis = result.get("investigation", {})
+    conclusion = STATUS_LABELS.get(result["status"], "继续排查")
+    if result.get("llm", {}).get("status") != "ok" and result["status"] not in RESOLVED_STATUSES:
+        conclusion = "本轮分析未完成，材料已保存"
+    goal = analysis.get("experiment_goal") or experiment_goal(attempts[0]["input"])
+    rows = ["# 网络实验诊断过程报告", "", f"会话编号：{history['session_id']}", f"当前结论：{conclusion}",
+            "案例来源：" + ("预置演示案例" if payload.get("evidence_kind") == "demo" else "用户提交"),
+            "", "## 实验目标", "", clean(goal), "", "## 最终结论", "", conclusion]
+    closed_attempt = next((attempt for attempt in reversed(attempts) if attempt["result"]["status"] == result["status"]
+                           and attempt["result"].get("investigation", {}).get("summary")
+                           and attempt["input"].get("interaction", {}).get("type") != "ask"), latest)
+    summary = analysis.get("resolution_summary") or closed_attempt["result"].get("investigation", {}).get("summary") or analysis.get("summary")
+    if summary:
+        rows += ["", clean(summary)]
+    for comparison in result.get("repair_comparisons", []):
+        if comparison.get("error"):
+            continue
+        rows += ["", "## 候选修复的运行对照", "", clean(comparison["title"]),
+                 "", "运行环境：" + clean(comparison["environment"].get("image", "FRRouting")),
+                 "运行记录：" + clean(comparison["environment"].get("action_url", comparison["run_id"])),
+                 "", "| 方案 | 满足目标 | 各项目标的实际结果 |", "| --- | --- | --- |"]
+        for phase in comparison["phases"]:
+            details = "；".join(item["title"] + "：" + ("通过" if item["passed"] else "未满足") + "（" + item["detail"] + "）" for item in phase["checks"])
+            rows.append(f"| {clean(phase['title'])} | {phase['passed_count']}/{phase['total']} | {clean(details)} |")
+        recommended = next((phase for phase in comparison["phases"] if phase["id"] == comparison["recommended"]), None)
+        if recommended:
+            rows += ["", "满足全部实验目标的方案：" + clean(recommended["title"])]
+        for phase in comparison["phases"][1:]:
+            for change in phase["changes"]:
+                rows += ["", clean(phase["title"]) + " · " + clean(change["device"]), "", "```diff", change["diff"], "```"]
+    operations = result.get("operation_history", {})
+    if operations.get("events"):
+        focus = next((event for event in operations["events"] if event["id"] == operations.get("focus_id")), None)
+        rows += ["", "## 实验过程回溯", "", f"识别{operations['event_count']}步操作、{operations['error_count']}处报错。"]
+        if focus:
+            rows += ["", f"关键操作：{clean(focus['time_label'])} · {clean(focus['device'])} · {clean(focus['view_label'])}",
+                     "", clean(focus["command"]), "", clean(focus["explanation"])]
+        rows += ["", "| 时间 | 设备与视图 | 操作 | 终端结果 |", "| --- | --- | --- | --- |"]
+        for event in operations["events"]:
+            state = "报错后已重新输入" if event["recovered"] else {"issued": "命令已输入", "returned": "终端已返回", "error": "命令报错"}[event["status"]]
+            rows.append(f"| {clean(event['time_label'])} | {clean(event['device'])} / {clean(event['view_label'])} | {clean(event['command'])} | {state} |")
+        for event in operations["events"]:
+            if event["status"] == "error":
+                rows.append("")
+                for citation in event["evidence"] + event["response_evidence"]:
+                    rows.append(f"- {clean(citation['device'])} 第{citation['line']}行：{clean(citation['quote'])}")
+    if result.get("llm", {}).get("status") != "ok" and result["status"] in RESOLVED_STATUSES:
+        rows += ["", "本轮请求未完成，以上结论沿用此前保存的状态。"]
+    verification = analysis.get("verification", {})
+    if verification.get("source") == "user_report":
+        rows += ["", "恢复依据：用户在追问中反馈目标已恢复。"]
+        for evidence in verification.get("evidence", []):
+            rows.append(f"- {clean(evidence['device'])} 第{evidence['line']}行：{clean(evidence['quote'])}")
+    elif result["status"] == "verified_from_observations":
+        rows += ["", "恢复依据：工具已核对实验目标对应的提交测试输出。"]
+    assessment = analysis.get("goal_assessment", {})
+    if assessment.get("checks"):
+        rows += ["", "## 实验目标逐项核对", "", "| 目标 | 状态 | 核对结果 |", "| --- | --- | --- |"]
+        for check in assessment["checks"]:
+            rows.append(f"| {clean(check['title'])} | {LABELS[check['status']]} | {clean(check['detail'])} |")
+        for check in assessment["checks"]:
+            instruction = check["instruction"]
+            rows.append(f"- 要求：{clean(instruction['device'])} 第{instruction['line']}行：{clean(instruction['quote'])}")
+            for item in check["evidence"]:
+                rows.append(f"  - 结果：{clean(item['device'])} 第{item['line']}行：{clean(item['quote'])}")
+    plan = analysis.get("diagnostic_plan", {})
+    if plan.get("selected") and result["status"] not in RESOLVED_STATUSES:
+        selected = plan["selected"]
+        rows += ["", "## 下一项检查的选择", "", f"{clean(selected['device'])}：{clean(selected['command'])}", "", clean(plan["reason"])]
+        for hypothesis in plan["hypotheses"]:
+            rows.append(f"- {clean(hypothesis['title'])}：" + {"active": "待检查", "supported": "已有支持依据", "ruled_out": "已排除"}[hypothesis["state"]])
+    rows += ["", "## 排查方向与原文依据", ""]
+    findings = []
+    for number, attempt in enumerate(attempts, 1):
+        for item in attempt["result"].get("investigation", {}).get("hypotheses", []):
+            findings += [f"- 第{number}轮：{clean(item['title'])}", "  - " + clean(item["reasoning"])]
+            for citation in item["evidence"]:
+                findings.append(f"  - {clean(citation['device'])} / {citation['source_id']} 第{citation['line']}行：{clean(citation['quote'])}")
+    rows += findings or [clean(analysis.get("summary") or "本轮分析尚未生成，已保留提交的实验材料。")]
+    steps = []
+    for attempt in attempts:
+        for step in attempt["result"].get("investigation", {}).get("steps", []):
+            if step not in steps:
+                steps.append(step)
+    if steps:
+        rows += ["", "## 修改与验证过程", ""] + [f"{index}. {clean(step)}" for index, step in enumerate(steps, 1)]
+    pings = result.get("interaction_checks", {}).get("check_submitted_pings", {}).get("pings", [])
+    if pings:
+        rows += ["", "## 本次运行复测", "", "| 材料来源 | 目标 | 发送 | 接收 | 结果 |", "| --- | --- | --- | --- | --- |"]
+        for ping in pings:
+            rows.append(f"| {clean(ping.get('device', '提交输出'))} | {clean(ping['target'])} | {ping['sent']} | {ping['received']} | {'通过' if ping['passed'] else '未通过'} |")
+    pending = analysis.get("pending_requests", analysis.get("evidence_requests", []))
+    if pending and result["status"] not in RESOLVED_STATUSES:
+        rows += ["", "## 下一步", ""]
+        for request in pending:
+            rows.append(f"- {clean(request['device'])}：{clean(request['information'])}；用途：{clean(request['why'])}")
+    rows += ["", "## 提交与状态变化", "", "| 轮次 | 北京时间 | 本轮请求 | 状态 |", "| --- | --- | --- | --- |"]
+    for index, attempt in enumerate(attempts, 1):
+        stamp = datetime.fromisoformat(attempt["created_at"]).astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+        item = attempt["result"]
+        request = attempt["input"].get("interaction", {}).get("message") or "提交实验材料"
+        if attempt["input"].get("room_actor"):
+            request = attempt["input"]["room_actor"] + " · " + request + "（共享材料第" + str(attempt["input"]["room_revision"]) + "版）"
+        rows.append(f"| {index} | {stamp} | {clean(request)} | {STATUS_LABELS.get(item['status'], item['status'])} |")
+    if result.get("conversation"):
+        rows += ["", "## 交互排查记录", ""]
+        for turn in result["conversation"]:
+            rows += ["- 你：" + clean(turn["user"]), "- LabAgent：" + clean(turn["assistant"])]
+    documents = {doc.get("chunk_id", doc["id"]): doc for attempt in attempts for doc in attempt["result"].get("knowledge", [])}
+    if documents:
+        rows += ["", "## 知识依据", ""]
+        for doc in documents.values():
+            rows.append(f"- {clean(doc['title'])}：{doc.get('reference_url', '')}")
+            if "chunk_id" in doc:
+                rows.append(f"  - 版本 {clean(doc.get('version'))}；第{doc['line_start']}～{doc['line_end']}行；正文 SHA256 {doc['content_hash']}")
+                rows.append("  - 保存的原文片段：" + clean(doc["content"]))
+    tools = [(number, tool) for number, attempt in enumerate(attempts, 1) for tool in attempt["result"].get("llm", {}).get("tool_trace", [])]
+    if tools:
+        rows += ["", "## 工具执行记录", ""]
+        rows += [f"- 第{number}轮：{clean(tool['tool'])} · {clean(tool['status'])}" for number, tool in tools]
+    rows += ["", f"共提交{len(attempts)}轮；材料变化{history['learning_record']['config_revisions']}次。"]
     return "\n".join(rows) + "\n"

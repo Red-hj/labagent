@@ -1,0 +1,272 @@
+{
+  "kind": "labagent_repair_run",
+  "schema_version": 1,
+  "run_id": "b-lab02-frr-20261112",
+  "title": "B 组实测：OSPF 区域错误与修复",
+  "started_at": "2026-11-12T22:35:49+08:00",
+  "environment": {
+    "engine": "FRRouting 10.2.2",
+    "platform": "Alpine 3.22.8 / WSL2",
+    "source": "B 组独立网络命名空间实测；仅移除本机主机名与域名"
+  },
+  "goals": [
+    {
+      "id": "ping_PC1",
+      "kind": "ping",
+      "device": "PC1",
+      "target": "192.168.20.10",
+      "title": "PC1 → PC2 端到端 Ping",
+      "count": 5
+    },
+    {
+      "id": "ping_PC2",
+      "kind": "ping",
+      "device": "PC2",
+      "target": "192.168.10.10",
+      "title": "PC2 → PC1 端到端 Ping",
+      "count": 5
+    },
+    {
+      "id": "route_protocol_R1",
+      "kind": "route_protocol",
+      "device": "R1",
+      "target": "192.168.20.0/24",
+      "title": "R1 学到 PC2 网段的 OSPF 路由",
+      "expected": "ospf"
+    },
+    {
+      "id": "route_protocol_R2",
+      "kind": "route_protocol",
+      "device": "R2",
+      "target": "192.168.10.0/24",
+      "title": "R2 学到 PC1 网段的 OSPF 路由",
+      "expected": "ospf"
+    },
+    {
+      "id": "ospf_neighbor_R1",
+      "kind": "ospf_neighbor",
+      "device": "R1",
+      "target": "2.2.2.2",
+      "title": "R1 观察到 R2 的 Full 邻接",
+      "peer_address": "10.12.0.2"
+    },
+    {
+      "id": "ospf_neighbor_R2",
+      "kind": "ospf_neighbor",
+      "device": "R2",
+      "target": "1.1.1.1",
+      "title": "R2 观察到 R1 的 Full 邻接",
+      "peer_address": "10.12.0.1"
+    },
+    {
+      "id": "ping_R1",
+      "kind": "ping",
+      "device": "R1",
+      "target": "10.12.0.2",
+      "title": "R1 → R2 直连接口 Ping（对照）",
+      "count": 5
+    }
+  ],
+  "phases": [
+    {
+      "id": "baseline",
+      "title": "故障：R2 互联接口使用 Area 1",
+      "commands": {},
+      "observations": {
+        "R1": {
+          "config": "Building configuration...\n\nCurrent configuration:\n!\nfrr version 10.2.2\nfrr defaults traditional\nhostname R1\n! host identity omitted\nno ipv6 forwarding\nlog stdout\n! host identity omitted\n!\ninterface lan\n ip ospf area 0.0.0.0\n ip ospf passive\nexit\n!\ninterface transit\n ip ospf area 0.0.0.0\n ip ospf dead-interval 4\n ip ospf hello-interval 1\n ip ospf network point-to-point\nexit\n!\nrouter ospf\n ospf router-id 1.1.1.1\nexit\n!\nend\n",
+          "neighbors": {
+            "neighbors": {}
+          },
+          "routes": {
+            "10.12.0.0/24": [
+              {
+                "protocol": "kernel",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.10.0/24": [
+              {
+                "protocol": "kernel",
+                "selected": true,
+                "installed": true
+              }
+            ]
+          },
+          "route_output": "10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.1 \n192.168.10.0/24 dev lan proto kernel scope link src 192.168.10.1\n",
+          "pings": {
+            "ping_R1": "PING 10.12.0.2 (10.12.0.2) 56(84) bytes of data.\n64 bytes from 10.12.0.2: icmp_seq=1 ttl=64 time=0.072 ms\n64 bytes from 10.12.0.2: icmp_seq=2 ttl=64 time=0.051 ms\n64 bytes from 10.12.0.2: icmp_seq=3 ttl=64 time=0.064 ms\n64 bytes from 10.12.0.2: icmp_seq=4 ttl=64 time=0.070 ms\n64 bytes from 10.12.0.2: icmp_seq=5 ttl=64 time=0.063 ms\n\n--- 10.12.0.2 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 803ms\nrtt min/avg/max/mdev = 0.051/0.064/0.072/0.007 ms\n"
+          }
+        },
+        "R2": {
+          "config": "Building configuration...\n\nCurrent configuration:\n!\nfrr version 10.2.2\nfrr defaults traditional\nhostname R2\n! host identity omitted\nno ipv6 forwarding\nlog stdout\n! host identity omitted\n!\ninterface lan\n ip ospf area 0.0.0.0\n ip ospf passive\nexit\n!\ninterface transit\n ip ospf area 0.0.0.1\n ip ospf dead-interval 4\n ip ospf hello-interval 1\n ip ospf network point-to-point\nexit\n!\nrouter ospf\n ospf router-id 2.2.2.2\nexit\n!\nend\n",
+          "neighbors": {
+            "neighbors": {}
+          },
+          "routes": {
+            "10.12.0.0/24": [
+              {
+                "protocol": "kernel",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.20.0/24": [
+              {
+                "protocol": "kernel",
+                "selected": true,
+                "installed": true
+              }
+            ]
+          },
+          "route_output": "10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.2 \n192.168.20.0/24 dev lan proto kernel scope link src 192.168.20.1\n",
+          "pings": {}
+        },
+        "PC1": {
+          "config": "lo               UNKNOWN        127.0.0.1/8 ::1/128 \neth0@if2         UP             192.168.10.10/24 fe80::9cf3:d6ff:fe04:d989/64\ndefault via 192.168.10.1 dev eth0 \n192.168.10.0/24 dev eth0 proto kernel scope link src 192.168.10.10\n",
+          "pings": {
+            "ping_PC1": "PING 192.168.20.10 (192.168.20.10) 56(84) bytes of data.\nFrom 192.168.10.1 icmp_seq=1 Destination Net Unreachable\n\n--- 192.168.20.10 ping statistics ---\n1 packets transmitted, 0 received, +1 errors, 100% packet loss, time 0ms\n"
+          }
+        },
+        "PC2": {
+          "config": "lo               UNKNOWN        127.0.0.1/8 ::1/128 \neth0@if3         UP             192.168.20.10/24 fe80::ec0f:f6ff:fefd:cf79/64\ndefault via 192.168.20.1 dev eth0 \n192.168.20.0/24 dev eth0 proto kernel scope link src 192.168.20.10\n",
+          "pings": {
+            "ping_PC2": "PING 192.168.10.10 (192.168.10.10) 56(84) bytes of data.\nFrom 192.168.20.1 icmp_seq=1 Destination Net Unreachable\n\n--- 192.168.10.10 ping statistics ---\n1 packets transmitted, 0 received, +1 errors, 100% packet loss, time 0ms\n"
+          }
+        }
+      },
+      "captured_at": "2026-11-12T22:35:56+08:00"
+    },
+    {
+      "id": "area0",
+      "title": "修复：R2 互联接口恢复 Area 0",
+      "commands": {
+        "R2": [
+          "configure terminal",
+          "interface transit",
+          "no ip ospf area 0.0.0.1",
+          "ip ospf area 0.0.0.0",
+          "end"
+        ]
+      },
+      "observations": {
+        "R1": {
+          "config": "Building configuration...\n\nCurrent configuration:\n!\nfrr version 10.2.2\nfrr defaults traditional\nhostname R1\n! host identity omitted\nno ipv6 forwarding\nlog stdout\n! host identity omitted\n!\ninterface lan\n ip ospf area 0.0.0.0\n ip ospf passive\nexit\n!\ninterface transit\n ip ospf area 0.0.0.0\n ip ospf dead-interval 4\n ip ospf hello-interval 1\n ip ospf network point-to-point\nexit\n!\nrouter ospf\n ospf router-id 1.1.1.1\nexit\n!\nend\n",
+          "neighbors": {
+            "neighbors": {
+              "2.2.2.2": [
+                {
+                  "nbrState": "Full/-",
+                  "nbrPriority": 1,
+                  "converged": "Full",
+                  "role": "DROther",
+                  "upTimeInMsec": 5601,
+                  "routerDeadIntervalTimerDueMsec": 3862,
+                  "upTime": "5.601s",
+                  "deadTime": "3.862s",
+                  "ifaceAddress": "10.12.0.2",
+                  "ifaceName": "transit:10.12.0.1",
+                  "linkStateRetransmissionListCounter": 1,
+                  "linkStateRequestListCounter": 0,
+                  "databaseSummaryListCounter": 0
+                }
+              ]
+            }
+          },
+          "routes": {
+            "10.12.0.0/24": [
+              {
+                "protocol": "kernel",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.10.0/24": [
+              {
+                "protocol": "kernel",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.20.0/24": [
+              {
+                "protocol": "ospf",
+                "selected": true,
+                "installed": true,
+                "nexthop": "10.12.0.2"
+              }
+            ]
+          },
+          "route_output": "10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.1 \n192.168.10.0/24 dev lan proto kernel scope link src 192.168.10.1 \n192.168.20.0/24 nhid 11 via 10.12.0.2 dev transit proto ospf metric 20\n",
+          "pings": {
+            "ping_R1": "PING 10.12.0.2 (10.12.0.2) 56(84) bytes of data.\n64 bytes from 10.12.0.2: icmp_seq=1 ttl=64 time=0.049 ms\n64 bytes from 10.12.0.2: icmp_seq=2 ttl=64 time=0.045 ms\n64 bytes from 10.12.0.2: icmp_seq=3 ttl=64 time=0.063 ms\n64 bytes from 10.12.0.2: icmp_seq=4 ttl=64 time=0.044 ms\n64 bytes from 10.12.0.2: icmp_seq=5 ttl=64 time=0.062 ms\n\n--- 10.12.0.2 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 803ms\nrtt min/avg/max/mdev = 0.044/0.052/0.063/0.008 ms\n"
+          }
+        },
+        "R2": {
+          "config": "Building configuration...\n\nCurrent configuration:\n!\nfrr version 10.2.2\nfrr defaults traditional\nhostname R2\n! host identity omitted\nno ipv6 forwarding\nlog stdout\n! host identity omitted\n!\ninterface lan\n ip ospf area 0.0.0.0\n ip ospf passive\nexit\n!\ninterface transit\n ip ospf area 0.0.0.0\n ip ospf dead-interval 4\n ip ospf hello-interval 1\n ip ospf network point-to-point\nexit\n!\nrouter ospf\n ospf router-id 2.2.2.2\nexit\n!\nend\n",
+          "neighbors": {
+            "neighbors": {
+              "1.1.1.1": [
+                {
+                  "nbrState": "Full/-",
+                  "nbrPriority": 1,
+                  "converged": "Full",
+                  "role": "DROther",
+                  "upTimeInMsec": 5766,
+                  "routerDeadIntervalTimerDueMsec": 3232,
+                  "upTime": "5.766s",
+                  "deadTime": "3.232s",
+                  "ifaceAddress": "10.12.0.1",
+                  "ifaceName": "transit:10.12.0.2",
+                  "linkStateRetransmissionListCounter": 1,
+                  "linkStateRequestListCounter": 0,
+                  "databaseSummaryListCounter": 0
+                }
+              ]
+            }
+          },
+          "routes": {
+            "10.12.0.0/24": [
+              {
+                "protocol": "kernel",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.10.0/24": [
+              {
+                "protocol": "ospf",
+                "selected": true,
+                "installed": true,
+                "nexthop": "10.12.0.1"
+              }
+            ],
+            "192.168.20.0/24": [
+              {
+                "protocol": "kernel",
+                "selected": true,
+                "installed": true
+              }
+            ]
+          },
+          "route_output": "10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.2 \n192.168.10.0/24 nhid 12 via 10.12.0.1 dev transit proto ospf metric 20 \n192.168.20.0/24 dev lan proto kernel scope link src 192.168.20.1\n",
+          "pings": {}
+        },
+        "PC1": {
+          "config": "lo               UNKNOWN        127.0.0.1/8 ::1/128 \neth0@if2         UP             192.168.10.10/24 fe80::9cf3:d6ff:fe04:d989/64\ndefault via 192.168.10.1 dev eth0 \n192.168.10.0/24 dev eth0 proto kernel scope link src 192.168.10.10\n",
+          "pings": {
+            "ping_PC1": "PING 192.168.20.10 (192.168.20.10) 56(84) bytes of data.\n64 bytes from 192.168.20.10: icmp_seq=1 ttl=62 time=0.069 ms\n64 bytes from 192.168.20.10: icmp_seq=2 ttl=62 time=0.058 ms\n64 bytes from 192.168.20.10: icmp_seq=3 ttl=62 time=0.056 ms\n64 bytes from 192.168.20.10: icmp_seq=4 ttl=62 time=0.054 ms\n64 bytes from 192.168.20.10: icmp_seq=5 ttl=62 time=0.082 ms\n\n--- 192.168.20.10 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 802ms\nrtt min/avg/max/mdev = 0.054/0.063/0.082/0.010 ms\n"
+          }
+        },
+        "PC2": {
+          "config": "lo               UNKNOWN        127.0.0.1/8 ::1/128 \neth0@if3         UP             192.168.20.10/24 fe80::ec0f:f6ff:fefd:cf79/64\ndefault via 192.168.20.1 dev eth0 \n192.168.20.0/24 dev eth0 proto kernel scope link src 192.168.20.10\n",
+          "pings": {
+            "ping_PC2": "PING 192.168.10.10 (192.168.10.10) 56(84) bytes of data.\n64 bytes from 192.168.10.10: icmp_seq=1 ttl=62 time=0.061 ms\n64 bytes from 192.168.10.10: icmp_seq=2 ttl=62 time=0.071 ms\n64 bytes from 192.168.10.10: icmp_seq=3 ttl=62 time=0.074 ms\n64 bytes from 192.168.10.10: icmp_seq=4 ttl=62 time=0.100 ms\n64 bytes from 192.168.10.10: icmp_seq=5 ttl=62 time=0.100 ms\n\n--- 192.168.10.10 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 806ms\nrtt min/avg/max/mdev = 0.061/0.081/0.100/0.015 ms\n"
+          }
+        }
+      },
+      "captured_at": "2026-11-12T22:36:04+08:00"
+    }
+  ]
+}

@@ -92,7 +92,7 @@ function applyInput(data) {
   $("binding-status").textContent = data.observations?.config_fingerprint ? "案例内含已绑定的演示观测，仅用于演示。" : "";
   message("已载入：" + data.title);
 }
-const statusNames = {fault_found: "发现需要处理的问题", needs_information: "需要补充信息", awaiting_verification: "配置检查通过 · 待运行复测", verified_from_observations: "用户提交的复测观测通过"};
+const statusNames = {fault_found: "发现需要处理的问题", needs_information: "需要补充信息", awaiting_verification: "配置检查通过 · 待运行复测", verified_from_observations: "用户提交的复测观测通过", resolved_by_user_report: "用户反馈已恢复"};
 const explanations = {fault_found: "以下结果来自确定性检查和用户提交的运行观测，请结合证据逐步排查。", needs_information: "现有输入或受支持的检查范围不足以确认结果。", awaiting_verification: "静态配置通过不代表网络已恢复，请提交当前配置对应的运行证据。", verified_from_observations: "当前配置与绑定观测符合实验要求。本地引擎没有连接设备执行命令。"};
 function showResult(result) {
   lastResult = result; sessionId = result.session_id;
@@ -102,7 +102,7 @@ function showResult(result) {
   $("status-label").textContent = statusNames[result.status]; $("status-explanation").textContent = explanations[result.status];
   const open = result.mode === "open_network";
   $("rule-stats").hidden = open;
-  if (open) { $("status-label").textContent = "开放排查 · 待验证假设"; $("status-explanation").textContent = "结合下方原文核对假设，按请求补充运行证据后继续排查。"; }
+  if (open) { $("status-label").textContent = statusNames[result.status]; $("status-explanation").textContent = result.investigation?.experiment_goal || result.hint; }
   $("status-banner").className = "status-banner" + (result.status === "verified_from_observations" ? " good" : result.status === "awaiting_verification" ? " neutral" : "");
   $("fault-count").textContent = result.findings.length; $("unknown-count").textContent = result.unknowns.length; $("check-count").textContent = result.checks.length;
   $("hint-label").textContent = open ? "当前排查进展" : "第 " + result.hint_level + " 级提示"; $("hint-text").textContent = result.hint;

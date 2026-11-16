@@ -2,22 +2,32 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LabAgent · 实验诊断</title><link rel="stylesheet" href="/student.css">
+  <title>LabAgent · 实验诊断</title><link rel="stylesheet" href="/student.css"><link rel="stylesheet" href="/network-room.css">
 </head>
 <body>
   <div id="ambient-network" aria-hidden="true"></div>
-  <header><a class="brand" href="/"><span class="logo">L<span class="logo-dot"></span></span><span>LabAgent<small>实验材料 · 分析与排查</small></span></a><div class="header-actions"><span id="service-status" class="service-status" role="status">正在连接服务…</span><button id="motion-toggle" class="motion-toggle" aria-pressed="false">暂停背景动效</button></div></header>
+  <header><a class="brand" href="/"><span class="logo">L<span class="logo-dot"></span></span><span>LabAgent<small>网络实验排障</small></span></a><div class="header-actions"><span id="service-status" class="service-status" role="status">正在连接服务…</span><button id="motion-toggle" class="motion-toggle" aria-pressed="false">暂停背景动效</button></div></header>
   <main>
-    <div class="workspace">
+    <nav class="workspace-nav" aria-label="实验功能">
+      <button data-workspace="diagnosis" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M9 9v11"/></svg></span>排障工作台<small>材料与对话</small></button>
+      <button data-workspace="map"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="3" width="6" height="5" rx="1.5"/><rect x="2" y="16" width="6" height="5" rx="1.5"/><rect x="16" y="16" width="6" height="5" rx="1.5"/><path d="M12 8v4M5 16v-4h14v4"/></svg></span>网络地图<span id="map-count" class="nav-count" hidden></span><small>沿路径找问题</small></button>
+      <button data-workspace="team"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 5v1"/></svg></span>团队协作<span id="team-count" class="nav-count" hidden></span><small>共享材料与分工</small></button>
+    </nav>
+    <div id="room-summary" class="room-summary" hidden></div>
+    <section id="collaboration" class="card collaboration" aria-label="协作排障室" hidden></section>
+    <section id="network-map" class="card network-map" aria-label="会解释的网络地图" hidden></section>
+    <div id="diagnosis-workspace" class="workspace">
       <section class="card input-card" aria-labelledby="input-heading">
-        <div class="card-heading"><h2 id="input-heading"><span class="section-index">01</span>诊断材料</h2><button id="new-diagnosis" class="text-button">新的排查</button></div>
+        <div class="card-heading"><h2 id="input-heading"><span class="section-index">01</span>实验材料</h2><button id="new-diagnosis" class="text-button">新的排查</button></div>
         <div id="drop-zone" class="drop-zone">
           <svg width="34" height="34" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M10 22H8a6 6 0 0 1-1-12 9 9 0 0 1 17 1 5.5 5.5 0 0 1 0 11h-2M16 26V13m-5 5 5-5 5 5"/></svg>
-          <strong>拖入文件，或点击添加</strong><p>配置、设备输出、终端信息、实验说明都可以</p>
-          <button id="choose-files" class="upload-button">添加诊断材料</button><input id="material-files" type="file" multiple accept=".txt,.cfg,.conf,.log,.md,.json" hidden>
-          <small>支持 txt、cfg、log、md、json 等文本文件</small>
+          <strong>把出错的画面发过来</strong><p>直接粘贴截图，或添加配置、日志、实验说明与录屏</p>
+          <button id="choose-files" class="upload-button">添加截图或诊断材料</button><input id="material-files" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.txt,.cfg,.conf,.log,.md,.json,.mp4,.webm,.mov,.mkv" hidden>
+          <small>Ctrl+V 粘贴截图 · PNG/JPG/WebP · 文本 · 10分钟以内录屏</small>
         </div>
+        <details id="demo-panel" class="demo-panel"><summary>用示例体验一次完整排查</summary><label for="demo-case">选择实验</label><select id="demo-case"><option value="network_access">DHCP网关排查</option><option value="ospf_goals">OSPF：连通性与实验目标</option><option value="operation_history">实验回放：找到未生效的命令</option><option value="repair_comparison">修复对照：实际运行两种方案</option><option value="ospf_area_measured">B 组实测：OSPF 区域错误与修复</option></select><p>带入实验说明与运行记录，按阶段分析原因、补充材料并核对实验目标。</p><span class="tag">合成演示材料 · 模型与工具实时分析</span><div class="demo-actions"><button id="load-demo" class="secondary-button">① 带入故障材料</button><button id="load-demo-repair" class="secondary-button" disabled>② 带入修改与复测材料</button><button id="load-demo-final" class="secondary-button" hidden disabled>③ 带入OSPF修复材料</button></div><p id="demo-status" class="section-note">先带入故障材料，再点击“开始诊断”。</p></details>
         <div class="materials-heading"><span id="material-count">尚未添加材料</span><button id="paste-toggle" class="text-button" aria-expanded="false" aria-controls="paste-panel">直接粘贴内容</button></div>
+        <p id="material-source" class="material-source" hidden>当前包含合成演示材料</p>
         <div id="paste-panel" class="paste-panel" hidden><label for="pasted-material">粘贴诊断材料</label><textarea id="pasted-material" rows="5" placeholder="粘贴设备配置、命令输出或实验说明…"></textarea><button id="add-pasted" class="secondary-button">添加这份材料</button></div>
         <div id="material-list" class="material-list" aria-live="polite"></div>
         <label for="problem">补充说明 <span class="optional">选填</span></label><textarea id="problem" rows="3" placeholder="例如：终端拿到了地址，但访问不了其他网段。也可以直接上传材料开始分析。"></textarea>
@@ -26,20 +36,42 @@
       </section>
       <section class="card result-card" aria-labelledby="result-heading">
         <div class="card-heading"><h2 id="result-heading"><span class="section-index">02</span>诊断与交流</h2><button id="save-report" class="text-button" hidden>保存实验报告</button></div>
+        <div class="result-nav" role="tablist" aria-label="排查结果"><button id="diagnosis-tab" role="tab" aria-selected="true" aria-controls="diagnosis-panel">分析与交流</button><button id="evidence-tab" role="tab" aria-selected="false" aria-controls="evidence-panel">复测与回放<span id="evidence-count" class="nav-count" hidden></span></button></div>
         <div id="request-status" class="request-status" role="status" aria-live="polite" hidden><span class="status-indicator" aria-hidden="true"></span><span id="request-status-text"></span><span id="request-elapsed"></span></div>
+        <details id="processing-progress" class="processing-progress" hidden open><summary>本轮处理进展</summary><ol id="processing-events" aria-live="polite"></ol></details>
+        <div id="evidence-panel" role="tabpanel" aria-labelledby="evidence-tab" hidden>
+        <div id="empty-evidence" class="empty-result"><span class="empty-symbol" aria-hidden="true">↻</span><h3>把排查过程也留下来。</h3><p>添加终端日志、录屏或修复实验记录后，可以查看操作时间线与方案复测对照。</p></div>
+        <section id="repair-section" class="repair-section" hidden aria-label="修复方案实际对照"><div class="dialogue-heading"><h3>修复方案实际对照</h3><span>按同一组实验目标比较</span></div><div id="repair-comparisons"></div></section>
+        <section id="process-section" class="process-section" hidden aria-label="实验过程回溯">
+          <div class="dialogue-heading"><h3>实验过程回溯</h3><span id="operation-count"></span></div>
+          <label id="recording-label" for="replay-recording" hidden>配套录屏</label><select id="replay-recording" hidden></select>
+          <video id="replay-video" controls preload="metadata" hidden></video><p id="recording-note" class="section-note" hidden>录屏时间为文字首次出现在采样画面的时刻，采样间隔0.5秒。</p>
+          <div id="operation-focus" class="operation-focus" hidden></div>
+          <details id="operation-details"><summary>查看操作时间线</summary><ol id="operation-timeline" class="operation-timeline"></ol></details>
+        </section>
+        </div>
+        <div id="diagnosis-panel" role="tabpanel" aria-labelledby="diagnosis-tab">
         <div id="empty-result" class="empty-result"><span class="empty-symbol" aria-hidden="true">⌁</span><h3>准备好材料，就可以开始。</h3><p>这里会显示问题原因、材料依据和下一步操作。</p><div class="flow"><span>提供材料</span><b>→</b><span>分析问题</span><b>→</b><span>补充验证</span></div></div>
         <div id="analysis-result" hidden>
+          <ol id="diagnosis-progress" class="diagnosis-progress" aria-label="排查进度"><li>材料</li><li>分析</li><li>修改</li><li>复测</li></ol>
           <div class="interaction-actions"><button data-intent="ask">解释一下原因</button><button data-intent="repair">给我修改步骤</button><button data-intent="verify">核对修改结果</button></div>
           <div class="analysis-summary"><span id="result-state" class="eyebrow">本次分析</span><p id="analysis-summary"></p></div>
+          <div id="resolution-status" class="verification-checks" hidden></div>
+          <section id="goals-section" class="goals-section" hidden aria-label="实验目标核对"><h3 class="subheading">实验目标核对</h3><p id="goals-summary" class="section-note"></p><div id="goal-checks"></div></section>
+          <section id="plan-section" class="plan-section" hidden aria-label="下一步检查"><h3 class="subheading">下一步检查</h3><div id="diagnostic-plan"></div></section>
           <section id="steps-section" hidden><h3 class="subheading">操作步骤</h3><ol id="guidance-steps" class="guidance-steps"></ol></section>
           <div id="verification-checks" class="verification-checks" hidden></div>
           <div id="hypotheses"></div><section id="requests-section" class="requests-section" hidden><h3>还需要这些材料</h3><p class="section-note">可以直接粘贴对应输出，也可以在左侧上传文件。</p><div id="evidence-requests"></div></section>
           <details id="references-section" class="references-section" hidden><summary>参考资料</summary><div id="references"></div></details>
+          <details id="tools-section" class="references-section" hidden><summary id="tools-heading">本轮工具记录</summary><ol id="tool-records" class="tool-records"></ol></details>
           <section class="dialogue-section"><div class="dialogue-heading"><h3>继续交流</h3><span>保留本次排查上下文</span></div><div id="conversation" class="conversation" aria-live="polite"></div><form id="followup-form"><label for="followup-message" class="sr-only">继续追问</label><textarea id="followup-message" rows="2" aria-describedby="followup-shortcuts" placeholder="为什么这里不对？我已经修改了，还需要验证什么？"></textarea><div class="composer-footer"><span id="followup-shortcuts">Enter 发送 · Shift+Enter 换行</span><button id="send-followup" class="send-button" type="submit">发送追问 ↗</button></div></form></section>
+        </div>
         </div>
       </section>
     </div>
     <footer><span>LabAgent / 从读懂问题开始</span><span>材料与过程保存在项目文件夹内</span></footer>
-  </main><div id="feedback-toast" class="feedback-toast" role="status" aria-live="polite" hidden></div><script src="/vendor/tsparticles.slim.bundle.min.js"></script><script src="/ambient-network.js"></script><script src="/student.js"></script>
+  </main>
+  <dialog id="screenshot-dialog" class="screenshot-dialog" aria-labelledby="screenshot-title"><div class="dialogue-heading"><h3 id="screenshot-title">截图原文</h3><button id="close-screenshot" class="secondary-button">关闭</button></div><p id="screenshot-location" class="section-note"></p><div class="screenshot-canvas"><svg id="screenshot-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="诊断截图与引用位置"><image id="screenshot-image"></image><rect id="screenshot-highlight" hidden></rect></svg></div><a id="open-screenshot" target="_blank" rel="noopener">打开完整尺寸图片 ↗</a></dialog>
+  <div id="feedback-toast" class="feedback-toast" role="status" aria-live="polite" hidden><span id="feedback-toast-text"></span><button id="close-feedback" type="button" aria-label="关闭提示">×</button></div><script src="/vendor/tsparticles.slim.bundle.min.js"></script><script src="/ambient-network.js"></script><script src="/network-room.js"></script><script src="/student.js"></script>
 </body>
 </html>

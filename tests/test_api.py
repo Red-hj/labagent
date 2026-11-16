@@ -78,12 +78,114 @@ class ApiTests(unittest.TestCase):
         report = self.request("/api/sessions/" + result["session_id"] + "/report")[1]["markdown"]
         self.assertIn("排查方向与原文依据", report)
 
+    def test_demo_provides_current_materials_for_each_stage(self):
+        from labagent.connectivity import parse_ping_records
+        demo = self.request("/api/demos/network_access")[1]
+        self.assertEqual(demo["source"], "合成演示材料")
+        first, second = demo["stages"]
+        self.assertEqual(set(first["materials"]), set(second["materials"]))
+        initial = next(iter(first["materials"].values()))
+        repaired = next(iter(second["materials"].values()))
+        self.assertIn("gateway-list 10.20.0.254", initial)
+        self.assertIn("gateway-list 10.20.0.1", repaired)
+        self.assertNotIn("10.20.0.254", repaired)
+        self.assertTrue(any(not row["passed"] for row in parse_ping_records(initial.splitlines())))
+        records = parse_ping_records(repaired.splitlines())
+        self.assertTrue(records)
+        self.assertTrue(all(row["passed"] for row in records))
+        self.assertTrue(any(row["target"] == "10.30.0.10" for row in records))
+
+    def test_goals_demo_provides_three_stages_without_diagnosis_answers(self):
+        demo = self.request("/api/demos/ospf_goals")[1]
+        self.assertEqual(len(demo["stages"]), 3)
+        self.assertIn("Static", demo["stages"][1]["materials"]["R1-运行.log"])
+        self.assertIn("OSPF", demo["stages"][2]["materials"]["R1-运行.log"])
+        for stage in demo["stages"]:
+            self.assertNotIn("expected_result", stage)
+            self.assertNotIn("hypotheses", stage)
+
+    def test_operation_history_preview_and_demo_video_ranges(self):
+        demo = self.request("/api/demos/operation_history")[1]
+        history = self.request("/api/operations/inspect", {"materials": demo["materials"]})[1]
+        self.assertEqual(history["error_count"], 1)
+        event = next(item for item in history["events"] if item["id"] == history["first_issue_id"])
+        self.assertEqual(event["seconds"], 3)
+        url = self.base + "/api/demos/operation_history/video"
+        with urlopen(Request(url, headers={"Range": "bytes=0-15"}), timeout=5) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(len(response.read()), 16)
+            self.assertTrue(response.headers["Content-Range"].startswith("bytes 0-15/"))
+        with self.assertRaises(HTTPError) as denied:
+            urlopen(Request(url, headers={"Range": "bytes=999999999-"}), timeout=5)
+        self.assertEqual(denied.exception.code, 416)
+
+    def test_actual_repair_demo_is_recomputed_and_saved_with_the_session(self):
+        demo=self.request("/api/demos/repair_comparison")[1]
+        compared=self.request("/api/repair-labs/inspect",{"materials":demo["materials"]})[1]["comparisons"][0]
+        self.assertEqual([row["passed_count"] for row in compared["phases"]],[1,1,3])
+        self.assertEqual(compared["recommended"],"ospf")
+        saved=self.request("/api/diagnose",{"diagnostic_mode":"open_network","configs":demo["materials"],"question":"比较修复结果","use_llm":False})[1]
+        restored=self.request("/api/sessions/"+saved["session_id"])[1]
+        self.assertEqual(restored["attempts"][-1]["result"]["repair_comparisons"][0]["run_id"],compared["run_id"])
+        report=self.request("/api/sessions/"+saved["session_id"]+"/report")[1]
+        self.assertIn("候选修复的运行对照",report["markdown"])
+
+    def test_measured_area_demo_rechecks_bidirectional_observations_and_restores_session(self):
+        demo = self.request("/api/demos/ospf_area_measured")[1]
+        materials = demo["materials"]
+        compared = self.request("/api/repair-labs/inspect", {"materials": materials})[1]["comparisons"][0]
+        fault, repaired = compared["phases"]
+        self.assertEqual([fault["passed_count"], repaired["passed_count"]], [1, 7])
+        self.assertEqual(compared["recommended"], "area0")
+        self.assertEqual([check["id"] for check in fault["checks"] if check["passed"]], ["ping_R1"])
+        self.assertIn("1发0收", fault["checks"][0]["detail"])
+        self.assertIn("5发5收", repaired["checks"][1]["detail"])
+        self.assertEqual([change["device"] for change in repaired["changes"]], ["R2"])
+        self.assertIn("+ ip ospf area 0.0.0.0", repaired["changes"][0]["diff"])
+        result = self.request("/api/diagnose", {"diagnostic_mode": "open_network", "configs": materials,
+                                                "question": "根据记录比较 OSPF 故障与恢复", "use_llm": False})[1]
+        session = "/api/sessions/" + result["session_id"]
+        saved = self.request(session)[1]["attempts"][-1]
+        self.assertEqual(saved["result"]["repair_comparisons"][0]["run_id"], compared["run_id"])
+        self.assertIn("FRRouting", self.request(session + "/report")[1]["markdown"])
+
+    def test_recording_upload_and_status_use_the_same_saved_video(self):
+        from labagent.recordings import Recordings
+        with patch("labagent.recordings.available", return_value=True), patch.object(Recordings, "_process"):
+            with urlopen(Request(self.base + "/api/recordings", data=b"test-video", headers={"Content-Type": "video/mp4", "X-Recording-Name": "test.mp4"}), timeout=5) as response:
+                self.assertEqual(response.status, 202)
+                job = json.load(response)
+            status = self.request("/api/recordings/" + job["id"])[1]
+            self.assertEqual(status["status"], "queued")
+            with urlopen(Request(self.base + status["video_url"], headers={"Range": "bytes=-5"}), timeout=5) as response:
+                self.assertEqual(response.read(), b"video")
+
     def test_session_modes_cannot_be_mixed(self):
         first = self.request("/api/diagnose", case())[1]
         payload = {"session_id": first["session_id"], "diagnostic_mode": "open_network", "question": "网络排查", "configs": {"PC1": "test"}, "use_llm": False}
         with self.assertRaises(HTTPError) as caught:
             self.request("/api/diagnose", payload)
         self.assertEqual(caught.exception.code, 400)
+
+    def test_screenshot_upload_status_and_preview_share_the_same_media_id(self):
+        from labagent.recordings import Recordings, write_status
+        with patch("labagent.recordings.available", return_value=True), patch.object(Recordings, "_process"):
+            with urlopen(Request(self.base + "/api/recordings", data=b"image-bytes", headers={"Content-Type":"image/png", "X-Recording-Name":"error.png"}), timeout=5) as response:
+                job = json.load(response)
+            self.assertEqual(job["kind"], "image")
+            folder = self.server.recordings.folder(job["id"])
+            (folder / "preview.jpg").write_bytes(b"normalized-preview")
+            (folder / "transcript.log").write_text("Error: failed\n", encoding="utf-8")
+            write_status(folder, {**job, "status":"ready", "regions":[{"line":1,"text":"Error: failed","box":[1,2,30,15]}]})
+            status = self.request("/api/recordings/" + job["id"])[1]
+            self.assertEqual(status["regions"][0]["line"], 1)
+            self.assertEqual(status["transcript"], "Error: failed\n")
+            with urlopen(self.base + job["image_url"], timeout=5) as response:
+                self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+                self.assertEqual(response.read(), b"normalized-preview")
+            with self.assertRaises(HTTPError) as error:
+                urlopen(self.base + "/api/recordings/" + job["id"] + "/video", timeout=5)
+            self.assertEqual(error.exception.code, 404)
 
     def test_session_repair_cycle_and_learning_record(self):
         result = self.request("/api/diagnose", case("01_area_mismatch"))[1]
@@ -131,6 +233,31 @@ class ApiTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as context:
             self.request("/api/diagnose", payload)
         self.assertEqual(context.exception.code, 400)
+
+    def test_missing_saved_session_has_a_specific_error(self):
+        with self.assertRaises(HTTPError) as context:
+            self.request("/api/sessions/" + "f" * 32)
+        self.assertEqual(context.exception.code, 404)
+        error = json.loads(context.exception.read())
+        self.assertEqual(error["code"], "session_not_found")
+        self.assertIn("新的排查", error["error"])
+
+    def test_stream_reports_actual_graph_progress_and_saves_final_result(self):
+        import os
+        from test_investigation import ENV, stages, completion
+        payload = stages()[0]
+        with patch.dict(os.environ, ENV), patch("labagent.investigation.chat_completion", side_effect=lambda messages, **kwargs: completion(messages)):
+            request = Request(self.base + "/api/diagnose/stream", data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"})
+            with urlopen(request, timeout=5) as response:
+                self.assertIn("application/x-ndjson", response.headers["Content-Type"])
+                events = [json.loads(line) for line in response if line.strip()]
+        self.assertEqual(events[0]["stage"], "received")
+        self.assertTrue(any(event.get("stage") == "tool" and "SW1" in event["message"] for event in events))
+        self.assertTrue(any(event.get("stage") == "saving" for event in events))
+        self.assertEqual(events[-1]["type"], "result")
+        result = events[-1]["result"]
+        self.assertEqual(result["llm"]["status"], "ok")
+        self.assertEqual(len(self.request("/api/sessions/" + result["session_id"])[1]["attempts"]), 1)
 
     def test_cross_origin_write_rejected(self):
         with self.assertRaises(HTTPError) as context:

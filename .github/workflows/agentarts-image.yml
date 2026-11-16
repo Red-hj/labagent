@@ -1,0 +1,39 @@
+name: Build AgentArts ARM64 image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Build ARM64 image
+        run: |
+          image="labagent-agentarts:${GITHUB_SHA:0:12}"
+          docker build --platform linux/arm64 -f Dockerfile.agentarts -t "$image" .
+          test "$(docker image inspect "$image" --format '{{.Architecture}}')" = arm64
+          mkdir -p runtime/release
+          printf '%s\n' "$image" > runtime/release/image.txt
+      - name: Check SDK, sessions and bundled references inside the image
+        run: |
+          image="$(cat runtime/release/image.txt)"
+          docker run --rm "$image" python -B scripts/verify_agentarts.py
+          docker run --rm "$image" python -B -m unittest discover -s tests -p test_knowledge.py -v
+      - name: Export image for SWR upload
+        run: |
+          image="$(cat runtime/release/image.txt)"
+          docker save "$image" | gzip > runtime/release/labagent-agentarts-arm64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: labagent-agentarts-arm64-${{ github.sha }}
+          path: runtime/release/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
