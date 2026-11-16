@@ -59,7 +59,7 @@ async function api(path, body, options = {}) {
     const error = new Error(response.status === 413 ? "材料较多，请先保留与本次问题相关的内容。" : data.error || "服务暂时无法响应，请稍后重试。");
     error.status = response.status; error.code = data.code; throw error;
   }
-  if (!Object.keys(data).length) throw new Error("服务尚未返回完整结果，请稍后重试。");
+  if (!Array.isArray(data) && !Object.keys(data).length) throw new Error("服务尚未返回完整结果，请稍后重试。");
   return data;
 }
 function serviceStatus() {
@@ -820,7 +820,12 @@ window.LabWorkspace.init({api, element, message, materials, recordings, screensh
       } catch {}
     }
     renderMaterials(); renderRecordingChoices();
-    if (!room.session) { sessionId = null; $("analysis-result").hidden = true; $("empty-result").hidden = false; $("save-report").hidden = true; return; }
+    if (!room.session) {
+      sessionId = null; window.LabHistory.activate(null); window.LabHistory.setSnapshot(null);
+      $("conversation").replaceChildren(); $("followup-message").value = "";
+      $("analysis-result").hidden = true; $("empty-result").hidden = false; $("save-report").hidden = true;
+      setBusy(false); return;
+    }
     const saved = await api("/api/sessions/" + room.session.session_id);
     legacySession = false; window.LabHistory.setSnapshot(saved);
     showResult({...saved.attempts.at(-1).result, dialogue:saved.dialogue, session_id:room.session.session_id}); setBusy(false);

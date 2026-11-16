@@ -11,6 +11,17 @@
 .session-item { display:block; margin:4px 0; padding:10px; border-radius:8px; text-decoration:none; border:1px solid transparent; color:#465b72; }
 .session-item:hover { background:#f0f4f8; }
 .session-item[aria-current="page"] { background:#e9f0f8; border-color:#dce6f2; color:#243f60; }
+.session-row { position:relative; }
+.session-row .session-item { padding-right:42px; }
+.delete-session { position:absolute; top:10px; right:3px; min-width:36px; min-height:32px; padding:4px; background:transparent; color:#8998a9; font-size:10px; border-radius:5px; }
+.delete-session:hover,.delete-session:focus-visible { color:#a54343; background:#fbebeb; }
+.delete-session-dialog { width:min(420px,calc(100vw - 36px)); border:1px solid #dce5ef; border-radius:12px; padding:24px; color:#354b63; }
+.delete-session-dialog::backdrop { background:#1c2e4652; }
+.delete-session-dialog h3 { margin:0 0 12px; font-size:16px; overflow-wrap:anywhere; }
+.delete-session-dialog p { font-size:13px; }
+.delete-session-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:20px; }
+.danger-button { padding:9px 14px; background:#a54343; color:#fff; border-radius:6px; font-size:12px; }
+#delete-session-error { color:#a54343; }
 .session-title { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; font-size:12px; line-height:1.6; font-weight:600; }
 .session-preview { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; line-height:1.8; margin-top:4px; color:#758598; }
 .session-meta { display:flex; justify-content:space-between; gap:8px; font-size:9px; color:#8d9bad; margin-top:5px; }

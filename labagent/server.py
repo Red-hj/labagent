@@ -195,6 +195,30 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.reply({"error": "未找到内容"}, 404)
 
+    def do_DELETE(self):
+        origin = self.headers.get("Origin")
+        if not self.safe_host() or (origin and origin not in self.server.allowed_origins):
+            return self.reply({"error": "请从当前网站提交请求"}, 403)
+        if not self.team_access():
+            return
+        match = re.fullmatch(r"/api/sessions/([a-f0-9]{32})", urlparse(self.path).path)
+        if not match:
+            return self.reply({"error": "未找到内容"}, 404)
+        try:
+            # Diagnosis workers keep a lease until saving, so a deleted session
+            # cannot reappear when an in-flight request completes.
+            with self.server.workspace.gate.activity(maintenance=True):
+                result = self.store.delete_session(match[1], workflow_database=self.server.workflow_database)
+                if result is None:
+                    return self.reply({"code": "session_not_found", "error": "这次对话已不存在。"}, 404)
+                return self.reply(result)
+        except WorkspaceBusy as error:
+            return self.reply({"error": str(error)}, 409)
+        except Exception:
+            import traceback
+            self.server.write_log(traceback.format_exc(), error=True)
+            return self.reply({"error": "删除失败，请稍后重试。"}, 500)
+
     def do_POST(self):
         try:
             if urlparse(self.path).path in ("/api/workspace/backup", "/api/workspace/restore"):

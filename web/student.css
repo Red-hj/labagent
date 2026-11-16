@@ -10,7 +10,7 @@ button:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-vis
 header { max-width:none; margin:0 0 14px; padding:22px max(40px,calc((100% - 1240px) / 2)); display:flex; align-items:center; justify-content:space-between; gap:16px; background:#ffffff; border-bottom:1px solid #e1e7ef; box-shadow:0 2px 8px #233b5303; }
 .brand { text-decoration:none; display:flex; align-items:center; gap:12px; color:#233b53; font-size:23px; font-weight:650; letter-spacing:-.7px; }
 .brand small { display:block; font-weight:400; font-size:10px; color:#687c92; letter-spacing:1px; margin-top:5px; }
-.logo { position:relative; background:#2d4e70; color:white; border:1px solid #233b53; border-radius:11px 11px 4px 11px; padding:8px 15px; font-size:26px; box-shadow:0 3px 8px #28394b10; }
+.logo { position:relative; display:inline-grid; place-items:center; width:48px; height:48px; flex-shrink:0; background:#2d4e70; color:white; border:1px solid #233b53; border-radius:0; padding:0; font-size:26px; line-height:1; box-shadow:0 3px 8px #28394b10; }
 .logo-dot { position:absolute; width:9px; height:9px; border:2px solid #f4f6f9; border-radius:50%; background:#74a9ce; right:-3px; bottom:2px; }
 .header-actions { display:flex; align-items:center; gap:16px; }
 .service-status { font-size:11px; color:#587891; background:#edf3fb; border:1px solid #d9e5f4; border-radius:20px; padding:7px 12px; }

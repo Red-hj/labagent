@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import json
 import sqlite3
 import uuid
+import re
 from .storage import data_directory
 from .conversations import conversation_title, dialogue
 
@@ -85,3 +86,26 @@ class Store:
         return [{"session_id": row[0], "updated_at": row[1], "requests": row[2], "cursor": row[3],
                  "title": conversation_title(row[4], row[5], row[6]), "preview": " ".join(row[7].split())[:160],
                  "status": row[8], "mode": row[9], "room_id": row[10]} for row in rows]
+
+    def delete_session(self, session_id, *, workflow_database=None):
+        if not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id):
+            raise ValueError("session_id 格式错误")
+        with self.connect() as db:
+            if workflow_database is not None and Path(workflow_database).is_file():
+                db.execute("ATTACH DATABASE ? AS workflow", (str(workflow_database),))
+                workflow_tables = {row[0] for row in db.execute("SELECT name FROM workflow.sqlite_master WHERE type='table'")}
+            else:
+                workflow_tables = set()
+            db.execute("BEGIN IMMEDIATE")
+            count = db.execute("SELECT COUNT(*) FROM attempts WHERE session_id=?", (session_id,)).fetchone()[0]
+            if not count:
+                return None
+            for table in ("checkpoints", "writes"):
+                if table in workflow_tables:
+                    db.execute(f"DELETE FROM workflow.{table} WHERE thread_id IN (?,?)", (session_id, "open:" + session_id))
+            if db.execute("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='rooms'").fetchone():
+                db.execute("UPDATE rooms SET data=json_set(data,'$.session',NULL) WHERE json_extract(data,'$.session.session_id')=?", (session_id,))
+            db.execute("DELETE FROM attempts WHERE session_id=?", (session_id,))
+            for suffix in (".json", ".md"):
+                (self.path.parent / "exports" / (session_id + suffix)).unlink(missing_ok=True)
+        return {"session_id": session_id, "deleted": True, "deleted_requests": count}
