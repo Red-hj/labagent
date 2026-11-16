@@ -8,6 +8,8 @@ from .operation_history import inspect_history
 
 IP = r"(?:\d{1,3}\.){3}\d{1,3}"
 DEVICE = r"[A-Za-z][A-Za-z0-9_.-]{0,39}"
+LINUX_ADDRESS = re.compile(r"(\S+?)\s+(UP|DOWN|UNKNOWN|LOWERLAYERDOWN|DORMANT)\s+(.*)")
+LINUX_ROUTE = re.compile(r"(" + IP + r"/\d+|default)\s+(?:nhid\s+\d+\s+)?(?:via\s+(" + IP + r")\s+)?dev\s+(\S+)(?:\s+(.*))?$")
 
 PATH_TOOL = {"type": "function", "function": {
     "name": "explain_network_path",
@@ -73,6 +75,12 @@ def build_map(sources):
                     arps.append({"device": match[1], "address": ips[-1], "state": "incomplete", "evidence": [ref]})
             if not current:
                 continue
+            if block["command"].startswith("ip -br address") and (brief := LINUX_ADDRESS.fullmatch(text)):
+                link, _, values = brief.groups()
+                if link.split("@", 1)[0] != "lo":
+                    ipv4 = re.search(r"(?:^|\s)(" + IP + r")/(\d+)(?:\s|$)", values)
+                    if ipv4:
+                        address(current, link.split("@", 1)[0], ipv4[1], ipv4[2], ref)
             if match := re.match(r"interface\s+(\S+)", text, re.I):
                 iface = match[1]
             elif text in ("#", "!", "return", "quit", "exit"):
@@ -91,10 +99,17 @@ def build_map(sources):
                 address(current, "主机", host_ip[0], host_mask, host_ip[1]); host_ip = None
             if match := re.search(r"(?:Default Gateway|默认网关)\s*[:：.]?\s*(" + IP + r")", text, re.I):
                 current["gateway"] = {"address": match[1], "evidence": [ref]}
-            if match := re.match(r"(" + IP + r"/\d+|default)\s+(?:via\s+(" + IP + r")\s+)?dev\s+(\S+)", text):
+            if match := LINUX_ROUTE.fullmatch(text):
+                try:
+                    prefix = str(ipaddress.IPv4Network(match[1] if match[1] != "default" else "0.0.0.0/0", strict=False))
+                    if match[2]:
+                        ipaddress.IPv4Address(match[2])
+                except ValueError:
+                    continue
+                protocol = re.search(r"(?:^|\s)proto\s+(\w+)", match[4] or "")
                 current["route_table"] = True
-                current["routes"].append({"network": "0.0.0.0/0" if match[1] == "default" else match[1],
-                                          "next_hop": match[2], "interface": match[3], "protocol": "运行路由", "evidence": [ref]})
+                current["routes"].append({"network": prefix, "next_hop": match[2], "interface": match[3],
+                                          "protocol": protocol[1].upper() if protocol else "运行路由", "evidence": [ref]})
         if current:
             try:
                 routes = parse_routes("\n".join(block["lines"]))
@@ -184,7 +199,8 @@ def explain_path(network, source, target):
                     step(name, "路径细节", "unmapped", f"端到端Ping已通过；当前材料尚未展开{name}的具体下一跳。")
                 else:
                     step(name, "检查目标路由", "failed" if current["route_table"] else "needs_evidence",
-                         f"路由表中没有到{target}的匹配路由。" if current["route_table"] else f"补充{name}的路由表，继续确定到{target}的下一跳。")
+                         f"已提交的路由表中没有到{target}的匹配路由。" if current["route_table"] else f"补充{name}的路由表，继续确定到{target}的下一跳。",
+                         [ref for route in current["routes"] for ref in route["evidence"]][:4])
                 break
             route = max(matching, key=lambda r: ipaddress.IPv4Network(r["network"], strict=False).prefixlen)
             hop = route.get("next_hop") or target
