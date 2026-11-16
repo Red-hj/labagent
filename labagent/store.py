@@ -4,13 +4,14 @@ from contextlib import contextmanager
 import json
 import sqlite3
 import uuid
+from .storage import data_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class Store:
     def __init__(self, path=None):
-        self.path = Path(path or ROOT / "runtime" / "sessions.sqlite3")
+        self.path = Path(path) if path is not None else data_directory() / "sessions.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, result TEXT NOT NULL)")

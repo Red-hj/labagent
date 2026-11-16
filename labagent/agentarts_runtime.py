@@ -1,7 +1,7 @@
 """Official AgentArts SDK adapter over the existing LangGraph workflow."""
 import threading
 
-from .material_service import MaterialService
+from .material_service import MaterialService, SessionNotFound
 
 
 def create_app(database=None, completion=None):
@@ -20,7 +20,7 @@ def create_app(database=None, completion=None):
         try:
             platform_id = context.session_id if context else None
             with session_locks[hash(platform_id or "new") % len(session_locks)]:
-                if isinstance(request, dict) and not request.get("session_id") and platform_id:
+                if isinstance(request, dict) and not request.get("session_id") and "resume_from" not in request and platform_id:
                     with service.store.connect() as db:
                         saved = db.execute("SELECT session_id FROM agentarts_sessions WHERE platform_id=?", (platform_id,)).fetchone()
                     session_id = saved[0] if saved else platform_id
@@ -35,6 +35,8 @@ def create_app(database=None, completion=None):
                 context.session_id = platform_id
             response["platform_session_id"] = platform_id
             return response
+        except SessionNotFound as error:
+            return JSONResponse({"status": "invalid_request", "code": "session_not_found", "message": str(error)}, status_code=400)
         except ValueError as error:
             return JSONResponse({"status": "invalid_request", "message": str(error)}, status_code=400)
 

@@ -11,6 +11,7 @@ let modelReady = false;
 let diagnosisBackend = "local";
 let online = false;
 let busy = false;
+let workspaceTransfer = false;
 let evidenceKind = "user_submitted";
 let knowledgeScope = "default";
 let pasteNumber = 0;
@@ -102,6 +103,7 @@ async function diagnose(input) {
 function setBusy(value) {
   busy = value;
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "followup-message", "send-followup", "load-demo"]) $(id).disabled = busy;
+  for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = busy || workspaceTransfer;
   $("demo-case").disabled = busy || Boolean(sessionId) || demoActive;
   $("load-demo").disabled = busy || Boolean(sessionId);
   $("load-demo-repair").disabled = busy || !demoActive || !sessionId;
@@ -822,4 +824,56 @@ window.LabWorkspace.init({api, element, message, materials, recordings, screensh
     for (const [name,text] of Object.entries(demo.materials)) materials.set(name,text);
     $("problem").value = demo.question; evidenceKind = "demo"; renderMaterials(); previewOperations(); return true;
   }});
+async function refreshWorkspace() {
+  const saved = await api("/api/workspace");
+  $("workspace-status").textContent = `已保存 ${saved.sessions} 个会话、${saved.rooms} 个协作实验、${saved.recordings} 份图片或录屏、${saved.documents} 份课程资料。`;
+  $("restore-workspace").disabled = busy || workspaceTransfer || !saved.can_restore;
+}
+$("workspace-backup").addEventListener("toggle", () => {
+  if ($("workspace-backup").open && !workspaceTransfer) refreshWorkspace().catch(error => { $("workspace-status").textContent = error.message; });
+});
+async function transferWorkspace(path, file) {
+  if (busy || workspaceTransfer) return;
+  workspaceTransfer = true;
+  let transferError = "";
+  for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = true;
+  $("workspace-status").textContent = file ? "正在上传并恢复工作区…" : "正在准备工作区备份…";
+  try {
+    const response = await fetch(path, {method:"POST", ...(file ? {headers:{"Content-Type":"application/zip"}, body:file} : {})});
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || "备份操作未完成，请稍后重试。");
+    }
+    if (file) {
+      await response.json();
+      const sessions = await api("/api/sessions");
+      const list = $("restored-sessions"); list.replaceChildren(); list.hidden = false;
+      for (const session of sessions) {
+        const link = element("a", `打开恢复的实验 · ${session.session_id.slice(0, 8)}`);
+        link.href = "?session=" + encodeURIComponent(session.session_id); list.append(link);
+      }
+      message("工作区已恢复，原协作邀请链接可以继续使用。");
+    } else {
+      if (!(response.headers.get("Content-Type") || "").includes("application/zip")) throw new Error("服务尚未返回备份文件，请稍后重试。");
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a"); link.href = url; link.download = "labagent-workspace.zip"; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      message("工作区备份已下载，请保存好这个文件。");
+    }
+  } catch (error) { transferError = error.message; $("workspace-status").textContent = error.message; message(error.message, true); }
+  finally {
+    workspaceTransfer = false;
+    $("download-workspace").disabled = busy;
+    $("workspace-file").disabled = busy; $("workspace-file").value = "";
+    $("restore-workspace").disabled = busy;
+    try { await refreshWorkspace(); } catch (error) { transferError = transferError || error.message; }
+    if (transferError) $("workspace-status").textContent = transferError;
+  }
+}
+$("download-workspace").addEventListener("click", () => transferWorkspace("/api/workspace/backup"));
+$("restore-workspace").addEventListener("click", () => $("workspace-file").click());
+$("workspace-file").addEventListener("change", event => {
+  const file = event.target.files[0];
+  if (file) transferWorkspace("/api/workspace/restore", file);
+});
 start().catch(error => { serviceState = "unavailable"; modelReady = false; setBusy(false); message("暂时无法连接服务：" + error.message, true); });

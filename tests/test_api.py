@@ -225,7 +225,7 @@ class ApiTests(unittest.TestCase):
         report = self.request("/api/sessions/" + result["session_id"] + "/report")[1]
         self.assertIn("预置演示案例", report["markdown"])
         exported = self.request("/api/export", {"session_id": result["session_id"]})[1]
-        self.assertTrue(Path(exported["report_path"]).resolve().is_relative_to(ROOT / "runtime" / "exports"))
+        self.assertTrue(Path(exported["report_path"]).resolve().is_relative_to(self.server.workspace.store.path.parent / "exports"))
         self.assertTrue(Path(exported["report_path"]).is_file())
 
     def test_unknown_session_rejected(self):
