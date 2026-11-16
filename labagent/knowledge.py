@@ -128,6 +128,15 @@ def list_documents(scope="default"):
     return {"scope": scope, "documents": [summary(doc) for doc in documents], "warnings": warnings}
 
 
+def get_document(document_id, scope="default"):
+    documents, _ = corpus(scope)
+    document = next((doc for doc in documents if doc["id"] == document_id), None)
+    if document is None:
+        return None
+    return {**summary(document), "content": document["content"],
+            "line_count": len(document["content"].splitlines())}
+
+
 def list_scopes():
     scopes = {"default", *(doc["scope"] for doc in bundled_documents())}
     for file in notes_directory().glob("*.json"):
@@ -139,12 +148,30 @@ def list_scopes():
     return sorted(scopes)
 
 
+def section_boundaries(text):
+    headings, fence = [], None
+    position = 0
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line.rstrip("\r\n"))
+        if marker:
+            run, tail = marker.groups()
+            if fence is None:
+                fence = (run[0], len(run))
+            elif run[0] == fence[0] and len(run) >= fence[1] and not tail.strip():
+                fence = None
+        elif fence is None and (heading := re.match(r"^ {0,3}(#{1,6})[ \t]+\S", line)):
+            headings.append((len(heading[1]), position))
+        position += len(line)
+    sections = [start for level, start in headings if level >= 2]
+    # Keep a document's title and introduction with its first real section.
+    return (sections or [start for _, start in headings])[1:]
+
+
 def chunks(document, size=600):
     text = document["content"]
     newlines = [match.start() for match in re.finditer("\n", text)]
-    sectioned = document.get("sectioned", False)
-    # Keep the document title at the start of the first section.
-    section_ends = [match.start() for match in re.finditer(r"(?m)^## ", text)][1:] if sectioned else []
+    section_ends = section_boundaries(text)
+    sectioned = bool(section_ends) or document.get("sectioned", False)
     section_ends.append(len(text))
     metadata = {key: value for key, value in document.items() if key not in ("content", "sectioned")}
     start, number = 0, 0

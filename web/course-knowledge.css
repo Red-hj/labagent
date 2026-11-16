@@ -1,0 +1,27 @@
+.knowledge-entry { display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin:12px 0 3px; }
+.knowledge-entry span { color:#7486a1; font-size:11px; }
+.course-knowledge-dialog { width:min(800px,calc(100vw - 32px)); max-height:88dvh; overflow:auto; box-sizing:border-box; border:1px solid #dce5f2; border-radius:18px; padding:26px; background:#fbfcff; color:#354b63; box-shadow:0 18px 70px #233d7326; }
+.course-knowledge-dialog::backdrop { background:#1c2e4652; }
+.course-knowledge-dialog .secondary-button { margin-top:0; }
+.course-knowledge-dialog h2 { font-size:18px; margin:0; }
+.course-knowledge-dialog h3 { font-size:13px; margin:0; }
+.course-knowledge-dialog label { font-size:12px; margin:12px 0 7px; }
+.course-knowledge-dialog .section-note { font-size:11px; }
+.knowledge-scope-row { display:flex; gap:12px; align-items:flex-end; margin:20px 0; }
+.knowledge-scope-row>div { flex:1; min-width:0; }
+.course-knowledge-dialog select,.course-knowledge-dialog input:not([type=file]) { width:100%; box-sizing:border-box; border:1px solid #dce5f2; border-radius:8px; padding:10px; color:#354b63; background:#fff; font:inherit; font-size:12px; }
+.course-knowledge-dialog textarea { box-sizing:border-box; font-size:12px; }
+.knowledge-search-row { display:flex; align-items:center; gap:10px; }
+.knowledge-search-row input { flex:1; min-width:0; }
+#knowledge-status { white-space:pre-line; color:#5f7595; font-size:12px; line-height:1.7; }
+.knowledge-document { padding:12px 0; border-bottom:1px solid #e6ecf5; }
+.knowledge-document-title { padding:0; background:transparent; color:#4666c5; font-size:13px; text-align:left; overflow-wrap:anywhere; }
+.knowledge-document .section-note { margin:6px 0 0; }
+.knowledge-document pre { font-size:12px; max-height:220px; overflow:auto; background:#f0f4fb; }
+.knowledge-import { margin-top:22px; border-top:1px solid #e6ecf5; padding-top:16px; }
+.knowledge-import>summary { cursor:pointer; color:#536e8a; font-size:12px; }
+.knowledge-import-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 14px; }
+#knowledge-source { border:1px solid #dce5f2; border-radius:10px; padding:15px; margin-top:18px; }
+#knowledge-source-content { font-size:12px; line-height:1.8; max-height:360px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+#knowledge-source-content mark { color:inherit; background:#ffe8a8; }
+@media(max-width:480px) { .course-knowledge-dialog{padding:19px}.knowledge-import-grid{grid-template-columns:1fr}.knowledge-scope-row{align-items:stretch;flex-direction:column}.knowledge-scope-row button{align-self:flex-end} }

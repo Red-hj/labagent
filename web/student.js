@@ -131,6 +131,7 @@ function setBusy(value) {
   for (const button of $("material-list").querySelectorAll("button")) button.disabled = busy;
   for (const control of document.querySelectorAll(".interaction-actions button,.request button,.request textarea,.chat-retry,.operation-analyze")) control.disabled = busy || legacySession;
   syncWorkspaceLayout();
+  window.LabKnowledge?.sync();
 }
 function materialChanged(detail) {
   window.LabWorkspace.changed();
@@ -646,6 +647,8 @@ function showResult(result) {
   $("references").replaceChildren();
   for (const document of result.knowledge || []) {
     const reference = element("div"); reference.append(element("p", document.title), element("p", document.content));
+    const original = element("button", "查看资料原文", "text-button"); original.type = "button";
+    original.addEventListener("click", () => window.LabKnowledge.showPassage(document)); reference.append(original);
     reference.append(element("p", [document.version, "第" + document.line_start + "～" + document.line_end + "行", document.source_name].filter(Boolean).join(" · "), "source-location"));
     if (/^https?:\/\//i.test(document.reference_url || "")) {
       const link = element("a", "查看来源"); link.href = document.reference_url; link.target = "_blank"; link.rel = "noopener noreferrer"; reference.append(link);
@@ -835,6 +838,7 @@ window.LabWorkspace.init({api, element, message, materials, recordings, screensh
       setBusy(false); return;
     }
     const saved = await api("/api/sessions/" + room.session.session_id);
+    knowledgeScope = saved.attempts.at(-1).input.knowledge_scope || "default";
     legacySession = false; window.LabHistory.setSnapshot(saved);
     showResult({...saved.attempts.at(-1).result, dialogue:saved.dialogue, session_id:room.session.session_id}); setBusy(false);
     if (room.session.revision !== room.revision) $("result-state").textContent = "队友已补充材料 · 下方为上一次分析";
@@ -901,4 +905,8 @@ $("workspace-file").addEventListener("change", event => {
 });
 window.LabHistory.init({api,element,message,busy:() => busy,showScreenshot,
   newConversation:() => $("new-diagnosis").click(), showDiagnosis:() => window.LabWorkspace.showDiagnosis()});
+window.LabKnowledge.init({api,element,message,busy:() => busy,scope:() => knowledgeScope,setScope:scope => {
+  knowledgeScope = scope;
+  if (sessionId) $("result-state").textContent = "参考资料已更新 · 下方为上一次分析";
+}});
 start().catch(error => { serviceState = "unavailable"; modelReady = false; setBusy(false); message("暂时无法连接服务：" + error.message, true); });
