@@ -3,10 +3,56 @@ import ipaddress
 import re
 
 IP = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+ADDRESS_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_.])(?P<address>(?:[0-9]{1,3}\.){3}[0-9]{1,3}|(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4})"
+    r"(?P<prefix>/[0-9]{1,3})?(?![0-9a-z:/]|\.[0-9])", re.I
+)
+PING_ARGUMENTS = re.compile(
+    r"(?<![A-Za-z0-9])ping6?(?![A-Za-z0-9])[ \t]*(?:到|至)?[ \t]*[`(]?"
+    r"(?:[A-Za-z0-9:._%/\-]+[ \t]*)+", re.I
+)
+MISSING_PING_IP = "<目标端点实际 IP>"
 NUMBER = r"(?<![\d-])(\d{1,8})(?!\d)"
 SENT = re.compile(NUMBER + r"\s+packet(?:s|\(s\))?\s+transmitted", re.I)
 RECEIVED = re.compile(NUMBER + r"\s+(?:packet(?:s|\(s\))?\s+)?received", re.I)
 WINDOWS = re.compile(r"(?:Sent|(?:已)?发送)\s*[=:：]?\s*(\d{1,8})(?!\d).*?(?:Received|(?:已)?接收|收到)\s*[=:：]?\s*(\d{1,8})(?!\d)", re.I)
+
+
+def address_literal(value):
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
+def host_literals(text):
+    for match in ADDRESS_TOKEN.finditer(text):
+        address = address_literal(match["address"])
+        if address is None:
+            continue
+        if match["prefix"]:
+            try:
+                interface = ipaddress.ip_interface(match[0])
+            except ValueError:
+                continue
+            if interface.network.num_addresses > 1 and interface.ip == interface.network.network_address:
+                continue
+        yield address
+
+
+def ground_ping_text(text, known, proposed=()):
+    """Remove unsupported Ping literals without changing source quotes or routing commands."""
+    def replace(match):
+        address = address_literal(match["address"])
+        if address in known and not match["prefix"]:
+            return match[0]
+        return MISSING_PING_IP
+
+    revised = PING_ARGUMENTS.sub(lambda match: ADDRESS_TOKEN.sub(replace, match[0]), text)
+    if proposed:
+        revised = ADDRESS_TOKEN.sub(lambda match: replace(match) if not match["prefix"] and
+                                    address_literal(match["address"]) in proposed else match[0], revised)
+    return revised
 
 
 def parse_ping_records(lines):
