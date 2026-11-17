@@ -70,6 +70,22 @@ class RepairLabTests(unittest.TestCase):
         self.assertEqual(result["recommended"],"ospf")
         self.assertIn("quay.io/frrouting/frr@sha256:",result["environment"]["image_digest"])
 
+    def test_area_mismatch_can_keep_connectivity_on_measured_backup_routes(self):
+        path = Path(__file__).resolve().parents[1] / "data/examples/frr_lab02_backup.json"
+        result = compare_run(json.loads(path.read_text(encoding="utf-8")))
+        fault, repaired = result["phases"]
+        self.assertEqual((fault["passed_count"], repaired["passed_count"]), (3, 7))
+        self.assertEqual(result["recommended"], "restore")
+        checks = {row["id"]: row for row in fault["checks"]}
+        for host in ("PC1-ping", "PC2-ping"):
+            self.assertTrue(checks[host]["passed"])
+            self.assertIn("5发5收", checks[host]["detail"])
+        for router in ("R1", "R2"):
+            self.assertFalse(checks[f"neighbor_{router}"]["passed"])
+            self.assertFalse(checks[f"route_{router}"]["passed"])
+            self.assertIn("static", checks[f"route_{router}"]["detail"])
+            self.assertIn("S>*", checks[f"route_{router}"]["evidence"])
+
     def test_changed_devices_addresses_and_fault_location_reuse_the_evaluator(self):
         path=Path(__file__).resolve().parents[1]/"data/examples/frr_repair_variant.json"
         record=json.loads(path.read_text(encoding="utf-8"));result=compare_run(record)
