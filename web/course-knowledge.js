@@ -105,6 +105,13 @@ window.LabKnowledge = (() => {
   function init(context) {
     c = context; sync();
     $("open-knowledge").addEventListener("click",open);
+    $("open-course-import").addEventListener("click",async () => {
+      await open();
+      if (!isOpen()) return;
+      $("course-import-section").open = true;
+      $("course-file").focus();
+      $("course-import-section").scrollIntoView({block:"start"});
+    });
     $("close-knowledge").addEventListener("click",close);
     $("course-knowledge-dialog").addEventListener("cancel", event => { if (importing) event.preventDefault(); else { ++request; ++sourceRequest; loading = false; sync(); } });
     $("course-scope").addEventListener("change",() => load());
