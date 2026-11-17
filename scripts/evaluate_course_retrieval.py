@@ -1,0 +1,153 @@
+"""Evaluate course retrieval separately from the diagnostic model and its answers."""
+
+import argparse
+from pathlib import Path
+import json
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from labagent import knowledge
+from scripts.evaluate_b import read, score
+
+
+HIT_FIELDS = ('id', 'chunk_id', 'content', 'char_start', 'char_end', 'line_start', 'line_end')
+TOP_K = 3
+
+
+def load_package(folder):
+    manifest, questions = (read(folder / name) for name in ('manifest.json', 'questions.json'))
+    if questions['version'] != manifest['version']:
+        raise ValueError('题集与资料清单的版本不同')
+    questions = questions['cases']
+    if len({q['id'] for q in questions}) != len(questions) or not questions:
+        raise ValueError('题集为空或存在重复题号')
+    scope = knowledge.validate_scope(manifest['scope'])
+    if scope in {'default', 'common'}:
+        raise ValueError('请为课程评测指定独立资料范围')
+    sources = {}
+    for item in manifest['documents']:
+        path = (folder / item['file']).resolve()
+        if not path.is_relative_to(folder.resolve()) or item['key'] in sources:
+            raise ValueError('资料路径不在包内或资料代号重复')
+        sources[item['key']] = {**{key: item[key] for key in ('title', 'version', 'source_name', 'reference_url')},
+                                'scope': scope, 'content': path.read_text(encoding='utf-8-sig')}
+    if not sources:
+        raise ValueError('课程资料清单为空')
+    return manifest['version'], scope, sources, questions
+
+
+def prepare_corpus(scope, sources):
+    ids = {key: knowledge.import_document(source)['document']['id'] for key, source in sources.items()}
+    documents, warnings = knowledge.corpus(scope)
+    unexpected = [doc['title'] for doc in documents if doc['scope'] != 'common' and doc['id'] not in ids.values()]
+    if warnings or unexpected:
+        raise ValueError('课程范围包含清单外资料或读取错误，请使用独立的本地资料目录复评')
+    return ids, {doc['id']: doc['content'] for doc in documents}
+
+
+def run_search(version, scope, questions):
+    return {'version': version, 'scope': scope, 'method': 'local_bm25_with_fault_tags', 'predictions': {
+        q['id']: [{field: passage[field] for field in HIT_FIELDS}
+                  for passage in knowledge.search(q['query'], scope=scope, limit=TOP_K)['results']]
+        for q in questions
+    }}
+
+
+def reference_bounds(content, first, last):
+    lines = content.splitlines(keepends=True)
+    if type(first) is not int or type(last) is not int or not 1 <= first <= last <= len(lines):
+        raise ValueError('答案行号超出资料原文范围')
+    start = sum(len(line) for line in lines[:first - 1])
+    end = sum(len(line) for line in lines[:last])
+    support = content[start:end]
+    if not support.strip():
+        raise ValueError('答案行未包含原文')
+    return start + len(support) - len(support.lstrip()), start + len(support.rstrip())
+
+
+def valid_span(passage, corpus):
+    if not isinstance(passage, dict) or not isinstance(passage.get('id'), str):
+        return None
+    source = corpus.get(passage['id'])
+    start, end = passage.get('char_start'), passage.get('char_end')
+    if source is None or type(start) is not int or type(end) is not int or not 0 <= start < end <= len(source):
+        return None
+    if (source[start:end] != passage.get('content') or
+            passage.get('line_start') != source.count('\n', 0, start) + 1 or
+            passage.get('line_end') != source.count('\n', 0, end - 1) + 1):
+        return None
+    return passage['id'], start, end
+
+
+def summarize(rows):
+    answerable = [row for row in rows if row['answerable']]
+    unanswered = [row for row in rows if not row['answerable']]
+    count_passages = sum(row['returned'] for row in rows)
+    valid_passages = count_passages - sum(row['invalid_citations'] for row in rows)
+    return {'top1': score(sum(row['rank'] == 1 for row in answerable), len(answerable)),
+            'top3': score(sum(row['rank'] is not None for row in answerable), len(answerable)),
+            'unanswerable_returned': score(sum(bool(row['returned']) for row in unanswered), len(unanswered)),
+            'source_alignment': score(valid_passages, count_passages)}
+
+
+def evaluate(version, scope, questions, labels, predictions, ids, corpus):
+    if labels['version'] != version or predictions['version'] != version or predictions['scope'] != scope:
+        raise ValueError('答案、预测和评测资料的版本或范围不一致')
+    expected, submitted = labels['cases'], predictions['predictions']
+    if set(expected) != set(submitted) or set(expected) != {q['id'] for q in questions}:
+        raise ValueError('预测、题集和答案的题号必须一一对应')
+    rows = []
+    for q in questions:
+        targets = []
+        for label in expected[q['id']]:
+            doc_id = ids[label['document']]
+            targets.append((doc_id, *reference_bounds(corpus[doc_id], label['start_line'], label['end_line'])))
+        passages = submitted[q['id']]
+        if not isinstance(passages, list) or len(passages) > TOP_K:
+            raise ValueError(f"{q['id']} 需要 0～{TOP_K} 条候选")
+        rank, invalid = None, 0
+        for number, passage in enumerate(passages, 1):
+            span = valid_span(passage, corpus)
+            if span is None:
+                invalid += 1
+                continue
+            doc, start, end = span
+            if rank is None and any(doc == match and start <= first and end >= last for match, first, last in targets):
+                rank = number
+        rows.append({'id': q['id'], 'category': q['category'], 'language': q['language'], 'answerable': bool(targets),
+                     'rank': rank, 'returned': len(passages), 'invalid_citations': invalid})
+    result = {'version': version, 'scope': scope, 'method': predictions['method'], 'questions': len(rows),
+              'all': summarize(rows), 'records': rows}
+    for field in ('category', 'language'):
+        result[f'by_{field}'] = {value: summarize([row for row in rows if row[field] == value])
+                                 for value in sorted({row[field] for row in rows})}
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    for command in ('search', 'score'):
+        sub = commands.add_parser(command)
+        sub.add_argument('package', type=Path, help='包含 manifest.json、questions.json 和原文的目录')
+        sub.add_argument('output', type=Path)
+        if command == 'score':
+            sub.add_argument('--labels', required=True, type=Path)
+            sub.add_argument('--predictions', required=True, type=Path)
+    args = parser.parse_args()
+    try:
+        version, scope, sources, questions = load_package(args.package)
+        ids, corpus = prepare_corpus(scope, sources)
+        result = (run_search(version, scope, questions) if args.command == 'search' else
+                  evaluate(version, scope, questions, read(args.labels), read(args.predictions), ids, corpus))
+        with args.output.open('x', encoding='utf-8') as output:
+            json.dump(result, output, ensure_ascii=False, indent=2)
+            output.write('\n')
+    except (ValueError, KeyError, OSError) as error:
+        parser.error(str(error))
+    print(f'{len(questions)} 题 → {args.output}')
+
+
+if __name__ == '__main__':
+    main()
