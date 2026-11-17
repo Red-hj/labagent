@@ -10,10 +10,14 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from labagent.connectivity import parse_ping_records
-from labagent.repair_lab import RUN_KIND, compare_run, evaluate_phase, interface_admin_up
+from labagent.repair_lab import RUN_KIND, compare_run, evaluate_phase, interface_admin_up, route_to
 
 
 ROUTERS = ('R1', 'R2')
+PEERS = {
+    'R1': ('2.2.2.2', '10.12.0.2', '192.168.20.0/24'),
+    'R2': ('1.1.1.1', '10.12.0.1', '192.168.10.0/24'),
+}
 PINGS = (
     ('PC1', 'PC1-ping', '192.168.20.10', 'PC1 → PC2 端到端 Ping'),
     ('PC2', 'PC2-ping', '192.168.10.10', 'PC2 → PC1 端到端 Ping'),
@@ -24,6 +28,8 @@ CASES = {
                ['interface transit', 'no ip ospf area 0.0.0.1', 'ip ospf area 0.0.0.0']),
     'lab_03': ('OSPF 互联接口关闭', 'R2 互联接口被管理关闭', '重新启用 R2 互联接口',
                ['ip link set dev transit up']),
+    'lab_02_backup': ('OSPF 区域错误与备用静态路由', 'R2 互联接口使用 Area 1，路由切到备用静态', '恢复 R2 互联接口至 Area 0',
+                      ['interface transit', 'no ip ospf area 0.0.0.1', 'ip ospf area 0.0.0.0']),
 }
 
 
@@ -44,10 +50,7 @@ def stamp(folder, name):
 def experiment_goals(case_id):
     goals = [{'id': key, 'device': device, 'target': target, 'title': title, 'kind': 'ping', 'count': 5}
              for device, key, target, title in PINGS]
-    for router, peer_id, peer_ip, prefix in (
-        ('R1', '2.2.2.2', '10.12.0.2', '192.168.20.0/24'),
-        ('R2', '1.1.1.1', '10.12.0.1', '192.168.10.0/24'),
-    ):
+    for router, (peer_id, peer_ip, prefix) in PEERS.items():
         goals.extend([
             {'id': f'route_{router}', 'kind': 'route_protocol', 'device': router, 'target': prefix,
              'expected': 'ospf', 'title': f'{router} 学到远端 OSPF 路由 {prefix}'},
@@ -63,10 +66,11 @@ def experiment_goals(case_id):
 def phase(folder, case_id):
     observations = {router: {} for router in ROUTERS}
     fault = folder.name == 'fault'
+    backup = case_id == 'lab_02_backup'
     for router in ROUTERS:
         config = text(folder, f'{router}-config.txt')
         transit = re.search(r'^interface transit\n((?: +[^\n]+\n)+)', config, re.M)
-        area = '0.0.0.1' if fault and case_id == 'lab_02' and router == 'R2' else '0.0.0.0'
+        area = '0.0.0.1' if fault and case_id in {'lab_02', 'lab_02_backup'} and router == 'R2' else '0.0.0.0'
         if not transit or f'ip ospf area {area}' not in {line.strip() for line in transit[1].splitlines()}:
             raise ValueError(f'{folder.name}/{router} 的互联接口区域与预期不符')
         interface_output = text(folder, f'{router}-transit-link.txt').splitlines()[0]
@@ -77,6 +81,12 @@ def phase(folder, case_id):
         routes = json.loads(text(folder, f'{router}-routes.json'))
         if not isinstance(neighbors.get('neighbors'), dict) or not routes:
             raise ValueError(f'{folder.name}/{router} 缺少可核对的邻居或路由表')
+        if backup:
+            _, _, target = PEERS[router]
+            expected = 'static' if fault else 'ospf'
+            installed = {row.get('protocol') for row in route_to(routes, target) if row.get('selected') and row.get('installed')}
+            if installed != {expected} or (fault and neighbors['neighbors']):
+                raise ValueError(f'{folder.name}/{router} 未观察到预期的路由来源或邻居状态')
         config = re.sub(r'^(?:hostname (?!R[12]$)|domainname ).*$', '! host identity omitted', config, flags=re.M)
         observations[router] = {
             'config': config,
@@ -84,12 +94,12 @@ def phase(folder, case_id):
             'neighbors': neighbors,
             'routes': {prefix: [{key: row[key] for key in ('protocol', 'selected', 'installed') if key in row}
                                 for row in rows] for prefix, rows in routes.items()},
-            'route_output': text(folder, f'{router}-ospf-routes.txt'),
+            'route_output': text(folder, f'{router}-all-routes.txt' if backup else f'{router}-ospf-routes.txt'),
         }
     for device, key, target, _ in PINGS:
         output = text(folder, f'{key}.txt')
         matches = [row for row in parse_ping_records(output.splitlines()) if row['target'] == target]
-        should_pass = not fault or (case_id == 'lab_02' and key == 'R1-direct-ping')
+        should_pass = not fault or backup or (case_id == 'lab_02' and key == 'R1-direct-ping')
         exit_code = int(text(folder, f'{key}.txt.exit'))
         if len(matches) != 1 or (should_pass and (matches[0]['sent'], matches[0]['received'], exit_code) != (5, 5, 0)) or (
             not should_pass and (matches[0]['received'] != 0 or exit_code == 0)
@@ -102,7 +112,7 @@ def phase(folder, case_id):
 def export_capture(folder):
     case_id = text(folder, 'case.txt').strip()
     if case_id not in CASES:
-        raise ValueError('采集用例应为 lab_02 或 lab_03')
+        raise ValueError('采集用例应为 ' + '、'.join(CASES))
     title, fault_title, repair_title, commands = CASES[case_id]
     started = stamp(folder, 'started-at.txt')
     completed = stamp(folder, 'completed-at.txt')
@@ -124,7 +134,8 @@ def export_capture(folder):
                    {**repaired, 'id': 'restore', 'title': repair_title, 'commands': {'R2': commands}}],
     }
     comparison = compare_run(run)
-    if [item['passed_count'] for item in comparison['phases']] != [int(case_id == 'lab_02'), len(goals)]:
+    fault_count = {'lab_02': 1, 'lab_03': 0, 'lab_02_backup': 3}[case_id]
+    if [item['passed_count'] for item in comparison['phases']] != [fault_count, len(goals)]:
         raise ValueError('故障或修复阶段未得到预期的邻居、路由和 Ping 对照结果')
     return run, comparison
 

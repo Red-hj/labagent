@@ -1,0 +1,379 @@
+{
+  "kind": "labagent_repair_run",
+  "schema_version": 1,
+  "run_id": "lab_02_backup-frr-20261117T091053",
+  "title": "B 组实测：OSPF 区域错误与备用静态路由与修复",
+  "started_at": "2026-11-17T09:10:53+00:00",
+  "environment": {
+    "engine": "FRRouting 10.2.2",
+    "platform": "Linux 6.18.58.1-microsoft-standard-WSL2",
+    "source": "B 组隔离 Linux 网络命名空间实测",
+    "healthy_baseline_checked_at": "2026-11-17T09:10:59+00:00"
+  },
+  "goals": [
+    {
+      "id": "PC1-ping",
+      "device": "PC1",
+      "target": "192.168.20.10",
+      "title": "PC1 → PC2 端到端 Ping",
+      "kind": "ping",
+      "count": 5
+    },
+    {
+      "id": "PC2-ping",
+      "device": "PC2",
+      "target": "192.168.10.10",
+      "title": "PC2 → PC1 端到端 Ping",
+      "kind": "ping",
+      "count": 5
+    },
+    {
+      "id": "R1-direct-ping",
+      "device": "R1",
+      "target": "10.12.0.2",
+      "title": "R1 → R2 直连接口 Ping（对照）",
+      "kind": "ping",
+      "count": 5
+    },
+    {
+      "id": "route_R1",
+      "kind": "route_protocol",
+      "device": "R1",
+      "target": "192.168.20.0/24",
+      "expected": "ospf",
+      "title": "R1 学到远端 OSPF 路由 192.168.20.0/24"
+    },
+    {
+      "id": "neighbor_R1",
+      "kind": "ospf_neighbor",
+      "device": "R1",
+      "target": "2.2.2.2",
+      "peer_address": "10.12.0.2",
+      "title": "R1 观察到 2.2.2.2 的 Full 邻接"
+    },
+    {
+      "id": "route_R2",
+      "kind": "route_protocol",
+      "device": "R2",
+      "target": "192.168.10.0/24",
+      "expected": "ospf",
+      "title": "R2 学到远端 OSPF 路由 192.168.10.0/24"
+    },
+    {
+      "id": "neighbor_R2",
+      "kind": "ospf_neighbor",
+      "device": "R2",
+      "target": "1.1.1.1",
+      "peer_address": "10.12.0.1",
+      "title": "R2 观察到 1.1.1.1 的 Full 邻接"
+    }
+  ],
+  "phases": [
+    {
+      "captured_at": "2026-11-17T09:11:06+00:00",
+      "observations": {
+        "R1": {
+          "config": "Building configuration...\n\nCurrent configuration:\n!\nfrr version 10.2.2\nfrr defaults traditional\n! host identity omitted\n! host identity omitted\nhostname R1\nno ipv6 forwarding\nlog stdout\n!\nip route 192.168.20.0/24 10.12.0.2 200\n!\ninterface lan\n ip ospf area 0.0.0.0\n ip ospf passive\nexit\n!\ninterface transit\n ip ospf area 0.0.0.0\n ip ospf dead-interval 4\n ip ospf hello-interval 1\n ip ospf network point-to-point\nexit\n!\nrouter ospf\n ospf router-id 1.1.1.1\nexit\n!\nend\n",
+          "interfaces": {
+            "transit": "3: transit@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000"
+          },
+          "neighbors": {
+            "neighbors": {}
+          },
+          "routes": {
+            "10.12.0.0/24": [
+              {
+                "protocol": "ospf"
+              },
+              {
+                "protocol": "connected",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "10.12.0.1/32": [
+              {
+                "protocol": "local",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.10.0/24": [
+              {
+                "protocol": "ospf"
+              },
+              {
+                "protocol": "connected",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.10.1/32": [
+              {
+                "protocol": "local",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.20.0/24": [
+              {
+                "protocol": "static",
+                "selected": true,
+                "installed": true
+              }
+            ]
+          },
+          "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   10.12.0.0/24 [110/10] is directly connected, transit, weight 1, 00:00:14\nC>* 10.12.0.0/24 is directly connected, transit, weight 1, 00:00:14\nL>* 10.12.0.1/32 is directly connected, transit, weight 1, 00:00:14\nO   192.168.10.0/24 [110/10] is directly connected, lan, weight 1, 00:00:13\nC>* 192.168.10.0/24 is directly connected, lan, weight 1, 00:00:13\nL>* 192.168.10.1/32 is directly connected, lan, weight 1, 00:00:13\nS>* 192.168.20.0/24 [200/0] via 10.12.0.2, transit, weight 1, 00:00:13\n",
+          "pings": {
+            "R1-direct-ping": "PING 10.12.0.2 (10.12.0.2) 56(84) bytes of data.\n64 bytes from 10.12.0.2: icmp_seq=1 ttl=64 time=0.031 ms\n64 bytes from 10.12.0.2: icmp_seq=2 ttl=64 time=0.040 ms\n64 bytes from 10.12.0.2: icmp_seq=3 ttl=64 time=0.053 ms\n64 bytes from 10.12.0.2: icmp_seq=4 ttl=64 time=0.038 ms\n64 bytes from 10.12.0.2: icmp_seq=5 ttl=64 time=0.048 ms\n\n--- 10.12.0.2 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 812ms\nrtt min/avg/max/mdev = 0.031/0.042/0.053/0.007 ms\n"
+          }
+        },
+        "R2": {
+          "config": "Building configuration...\n\nCurrent configuration:\n!\nfrr version 10.2.2\nfrr defaults traditional\n! host identity omitted\n! host identity omitted\nhostname R2\nno ipv6 forwarding\nlog stdout\n!\nip route 192.168.10.0/24 10.12.0.1 200\n!\ninterface transit\n ip ospf area 0.0.0.1\n ip ospf dead-interval 4\n ip ospf hello-interval 1\n ip ospf network point-to-point\nexit\n!\ninterface lan\n ip ospf area 0.0.0.0\n ip ospf passive\nexit\n!\nrouter ospf\n ospf router-id 2.2.2.2\nexit\n!\nend\n",
+          "interfaces": {
+            "transit": "2: transit@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000"
+          },
+          "neighbors": {
+            "neighbors": {}
+          },
+          "routes": {
+            "10.12.0.0/24": [
+              {
+                "protocol": "ospf"
+              },
+              {
+                "protocol": "connected",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "10.12.0.2/32": [
+              {
+                "protocol": "local",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.10.0/24": [
+              {
+                "protocol": "static",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.20.0/24": [
+              {
+                "protocol": "ospf"
+              },
+              {
+                "protocol": "connected",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.20.1/32": [
+              {
+                "protocol": "local",
+                "selected": true,
+                "installed": true
+              }
+            ]
+          },
+          "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   10.12.0.0/24 [110/10] is directly connected, transit, weight 1, 00:00:04\nC>* 10.12.0.0/24 is directly connected, transit, weight 1, 00:00:13\nL>* 10.12.0.2/32 is directly connected, transit, weight 1, 00:00:13\nS>* 192.168.10.0/24 [200/0] via 10.12.0.1, transit, weight 1, 00:00:13\nO   192.168.20.0/24 [110/10] is directly connected, lan, weight 1, 00:00:13\nC>* 192.168.20.0/24 is directly connected, lan, weight 1, 00:00:13\nL>* 192.168.20.1/32 is directly connected, lan, weight 1, 00:00:13\n"
+        },
+        "PC1": {
+          "config": "",
+          "pings": {
+            "PC1-ping": "PING 192.168.20.10 (192.168.20.10) 56(84) bytes of data.\n64 bytes from 192.168.20.10: icmp_seq=1 ttl=62 time=0.045 ms\n64 bytes from 192.168.20.10: icmp_seq=2 ttl=62 time=0.053 ms\n64 bytes from 192.168.20.10: icmp_seq=3 ttl=62 time=0.059 ms\n64 bytes from 192.168.20.10: icmp_seq=4 ttl=62 time=0.073 ms\n64 bytes from 192.168.20.10: icmp_seq=5 ttl=62 time=0.063 ms\n\n--- 192.168.20.10 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 803ms\nrtt min/avg/max/mdev = 0.045/0.058/0.073/0.009 ms\n"
+          }
+        },
+        "PC2": {
+          "config": "",
+          "pings": {
+            "PC2-ping": "PING 192.168.10.10 (192.168.10.10) 56(84) bytes of data.\n64 bytes from 192.168.10.10: icmp_seq=1 ttl=62 time=0.057 ms\n64 bytes from 192.168.10.10: icmp_seq=2 ttl=62 time=0.057 ms\n64 bytes from 192.168.10.10: icmp_seq=3 ttl=62 time=0.092 ms\n64 bytes from 192.168.10.10: icmp_seq=4 ttl=62 time=0.068 ms\n64 bytes from 192.168.10.10: icmp_seq=5 ttl=62 time=0.057 ms\n\n--- 192.168.10.10 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 810ms\nrtt min/avg/max/mdev = 0.057/0.066/0.092/0.013 ms\n"
+          }
+        }
+      },
+      "id": "baseline",
+      "title": "故障：R2 互联接口使用 Area 1，路由切到备用静态",
+      "commands": {}
+    },
+    {
+      "captured_at": "2026-11-17T09:11:15+00:00",
+      "observations": {
+        "R1": {
+          "config": "Building configuration...\n\nCurrent configuration:\n!\nfrr version 10.2.2\nfrr defaults traditional\n! host identity omitted\n! host identity omitted\nhostname R1\nno ipv6 forwarding\nlog stdout\n!\nip route 192.168.20.0/24 10.12.0.2 200\n!\ninterface lan\n ip ospf area 0.0.0.0\n ip ospf passive\nexit\n!\ninterface transit\n ip ospf area 0.0.0.0\n ip ospf dead-interval 4\n ip ospf hello-interval 1\n ip ospf network point-to-point\nexit\n!\nrouter ospf\n ospf router-id 1.1.1.1\nexit\n!\nend\n",
+          "interfaces": {
+            "transit": "3: transit@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000"
+          },
+          "neighbors": {
+            "neighbors": {
+              "2.2.2.2": [
+                {
+                  "nbrState": "Full/-",
+                  "nbrPriority": 1,
+                  "converged": "Full",
+                  "role": "DROther",
+                  "upTimeInMsec": 5487,
+                  "routerDeadIntervalTimerDueMsec": 3873,
+                  "upTime": "5.487s",
+                  "deadTime": "3.873s",
+                  "ifaceAddress": "10.12.0.2",
+                  "ifaceName": "transit:10.12.0.1",
+                  "linkStateRetransmissionListCounter": 1,
+                  "linkStateRequestListCounter": 0,
+                  "databaseSummaryListCounter": 0
+                }
+              ]
+            }
+          },
+          "routes": {
+            "10.12.0.0/24": [
+              {
+                "protocol": "ospf"
+              },
+              {
+                "protocol": "connected",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "10.12.0.1/32": [
+              {
+                "protocol": "local",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.10.0/24": [
+              {
+                "protocol": "ospf"
+              },
+              {
+                "protocol": "connected",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.10.1/32": [
+              {
+                "protocol": "local",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.20.0/24": [
+              {
+                "protocol": "ospf",
+                "selected": true,
+                "installed": true
+              },
+              {
+                "protocol": "static"
+              }
+            ]
+          },
+          "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   10.12.0.0/24 [110/10] is directly connected, transit, weight 1, 00:00:23\nC>* 10.12.0.0/24 is directly connected, transit, weight 1, 00:00:23\nL>* 10.12.0.1/32 is directly connected, transit, weight 1, 00:00:23\nO   192.168.10.0/24 [110/10] is directly connected, lan, weight 1, 00:00:22\nC>* 192.168.10.0/24 is directly connected, lan, weight 1, 00:00:22\nL>* 192.168.10.1/32 is directly connected, lan, weight 1, 00:00:22\nO>* 192.168.20.0/24 [110/20] via 10.12.0.2, transit, weight 1, 00:00:01\nS   192.168.20.0/24 [200/0] via 10.12.0.2, transit, weight 1, 00:00:22\n",
+          "pings": {
+            "R1-direct-ping": "PING 10.12.0.2 (10.12.0.2) 56(84) bytes of data.\n64 bytes from 10.12.0.2: icmp_seq=1 ttl=64 time=0.058 ms\n64 bytes from 10.12.0.2: icmp_seq=2 ttl=64 time=0.063 ms\n64 bytes from 10.12.0.2: icmp_seq=3 ttl=64 time=0.055 ms\n64 bytes from 10.12.0.2: icmp_seq=4 ttl=64 time=0.045 ms\n64 bytes from 10.12.0.2: icmp_seq=5 ttl=64 time=0.041 ms\n\n--- 10.12.0.2 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 802ms\nrtt min/avg/max/mdev = 0.041/0.052/0.063/0.008 ms\n"
+          }
+        },
+        "R2": {
+          "config": "Building configuration...\n\nCurrent configuration:\n!\nfrr version 10.2.2\nfrr defaults traditional\n! host identity omitted\n! host identity omitted\nhostname R2\nno ipv6 forwarding\nlog stdout\n!\nip route 192.168.10.0/24 10.12.0.1 200\n!\ninterface transit\n ip ospf area 0.0.0.0\n ip ospf dead-interval 4\n ip ospf hello-interval 1\n ip ospf network point-to-point\nexit\n!\ninterface lan\n ip ospf area 0.0.0.0\n ip ospf passive\nexit\n!\nrouter ospf\n ospf router-id 2.2.2.2\nexit\n!\nend\n",
+          "interfaces": {
+            "transit": "2: transit@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000"
+          },
+          "neighbors": {
+            "neighbors": {
+              "1.1.1.1": [
+                {
+                  "nbrState": "Full/-",
+                  "nbrPriority": 1,
+                  "converged": "Full",
+                  "role": "DROther",
+                  "upTimeInMsec": 5694,
+                  "routerDeadIntervalTimerDueMsec": 3304,
+                  "upTime": "5.694s",
+                  "deadTime": "3.304s",
+                  "ifaceAddress": "10.12.0.1",
+                  "ifaceName": "transit:10.12.0.2",
+                  "linkStateRetransmissionListCounter": 1,
+                  "linkStateRequestListCounter": 0,
+                  "databaseSummaryListCounter": 0
+                }
+              ]
+            }
+          },
+          "routes": {
+            "10.12.0.0/24": [
+              {
+                "protocol": "ospf"
+              },
+              {
+                "protocol": "connected",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "10.12.0.2/32": [
+              {
+                "protocol": "local",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.10.0/24": [
+              {
+                "protocol": "ospf",
+                "selected": true,
+                "installed": true
+              },
+              {
+                "protocol": "static"
+              }
+            ],
+            "192.168.20.0/24": [
+              {
+                "protocol": "ospf"
+              },
+              {
+                "protocol": "connected",
+                "selected": true,
+                "installed": true
+              }
+            ],
+            "192.168.20.1/32": [
+              {
+                "protocol": "local",
+                "selected": true,
+                "installed": true
+              }
+            ]
+          },
+          "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   10.12.0.0/24 [110/10] is directly connected, transit, weight 1, 00:00:06\nC>* 10.12.0.0/24 is directly connected, transit, weight 1, 00:00:22\nL>* 10.12.0.2/32 is directly connected, transit, weight 1, 00:00:22\nO>* 192.168.10.0/24 [110/20] via 10.12.0.1, transit, weight 1, 00:00:01\nS   192.168.10.0/24 [200/0] via 10.12.0.1, transit, weight 1, 00:00:22\nO   192.168.20.0/24 [110/10] is directly connected, lan, weight 1, 00:00:22\nC>* 192.168.20.0/24 is directly connected, lan, weight 1, 00:00:22\nL>* 192.168.20.1/32 is directly connected, lan, weight 1, 00:00:22\n"
+        },
+        "PC1": {
+          "config": "",
+          "pings": {
+            "PC1-ping": "PING 192.168.20.10 (192.168.20.10) 56(84) bytes of data.\n64 bytes from 192.168.20.10: icmp_seq=1 ttl=62 time=0.062 ms\n64 bytes from 192.168.20.10: icmp_seq=2 ttl=62 time=0.068 ms\n64 bytes from 192.168.20.10: icmp_seq=3 ttl=62 time=0.069 ms\n64 bytes from 192.168.20.10: icmp_seq=4 ttl=62 time=0.064 ms\n64 bytes from 192.168.20.10: icmp_seq=5 ttl=62 time=0.068 ms\n\n--- 192.168.20.10 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 804ms\nrtt min/avg/max/mdev = 0.062/0.066/0.069/0.002 ms\n"
+          }
+        },
+        "PC2": {
+          "config": "",
+          "pings": {
+            "PC2-ping": "PING 192.168.10.10 (192.168.10.10) 56(84) bytes of data.\n64 bytes from 192.168.10.10: icmp_seq=1 ttl=62 time=0.042 ms\n64 bytes from 192.168.10.10: icmp_seq=2 ttl=62 time=0.143 ms\n64 bytes from 192.168.10.10: icmp_seq=3 ttl=62 time=0.055 ms\n64 bytes from 192.168.10.10: icmp_seq=4 ttl=62 time=0.058 ms\n64 bytes from 192.168.10.10: icmp_seq=5 ttl=62 time=0.059 ms\n\n--- 192.168.10.10 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 807ms\nrtt min/avg/max/mdev = 0.042/0.071/0.143/0.036 ms\n"
+          }
+        }
+      },
+      "id": "restore",
+      "title": "恢复 R2 互联接口至 Area 0",
+      "commands": {
+        "R2": [
+          "interface transit",
+          "no ip ospf area 0.0.0.1",
+          "ip ospf area 0.0.0.0"
+        ]
+      }
+    }
+  ]
+}
