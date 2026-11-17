@@ -10,6 +10,7 @@ from labagent.operation_history import inspect_history, prompt_info, time_label
 from labagent.recordings import Recordings, changed_lines
 from labagent.report import generate_report
 from labagent.store import Store
+from scripts.verify_replay import score_events
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,6 +53,35 @@ class OperationHistoryTests(unittest.TestCase):
     def test_later_failed_retry_does_not_resolve_an_error(self):
         text = example() + "\n[00:14] [R2]network 10.2.2.2 0.0.0.0\nError: Unrecognized command"
         self.assertEqual(inspect_history(sources(text))["unresolved_error_count"], 2)
+
+    def test_frr_unknown_command_links_to_the_successful_retry(self):
+        text = "\n".join(("[00:02.000] R2# router ospf", "[00:02.000] % Unknown command: router ospf",
+                          "[00:03.500] R2# configure terminal", "[00:04.500] R2(config)# router ospf",
+                          "[00:04.500] R2(config-router)#"))
+        history = inspect_history(sources(text))
+        first, _, retry = history["events"]
+        self.assertEqual((first["status"], retry["status"]), ("error", "returned"))
+        self.assertEqual(first["retry_event_id"], retry["id"])
+        annotations = {"events": [
+            {"id": "error", "device": "R2", "view": "user", "command": "router ospf", "seconds": 1.625,
+             "status": "error", "retry_to": "retry"},
+            {"id": "retry", "device": "R2", "view": "system", "command": "router ospf", "seconds": 4.125,
+             "status": "returned"},
+        ]}
+        summary = score_events(history, annotations)["summary"]
+        self.assertEqual(summary["commands"], {"matched": 2, "total": 2})
+        self.assertEqual(summary["in_time"], {"matched": 2, "total": 2})
+        self.assertEqual(summary["retry_matches"], {"matched": 1, "total": 1})
+        self.assertEqual(summary["unmatched_detected_events"], 1)
+
+    def test_selected_frr_routes_are_output_and_not_device_prompts(self):
+        text = "\n".join(("[00:02] R1# show ip route ospf", "O>* 192.168.20.0/24 [110/20] via 10.12.0.2",
+                          "C> 2001:db8::/64 is directly connected, eth0", "[00:02] R1#"))
+        history = inspect_history(sources(text))
+        self.assertEqual(history["devices"], ["R1"])
+        event, = history["events"]
+        self.assertEqual(event["status"], "returned")
+        self.assertTrue(any("192.168.20.0/24" in row["quote"] for row in event["response_evidence"]))
 
     def test_device_names_and_ios_views_remain_distinct(self):
         self.assertEqual(prompt_info("[Lab-Edge-7-ospf-10-area-0.0.0.1]network 10.0.0.0 0.0.0.255")[:2], ("Lab-Edge-7", "ospf_area"))
@@ -115,6 +145,11 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(changed_lines(["a", "b", "c"], ["b", "c", "a"]), ["a"])
         self.assertEqual(changed_lines(["Error: old failure", "[R2-ospf-1]area 0", "[R2-ospf-1-area-0.0.0.0]network 10.0.0.0 0.0.0.255"],
             ["Error: old failure", "[R2-ospf-1]area 0", "[R2-ospf-1-area-O.0.0.0]network 10.0.0.0 0.0.0.255", "[R2-ospf-1-area-0.0.0.0]return"]), ["[R2-ospf-1-area-0.0.0.0]return"])
+
+    def test_short_command_keeps_a_single_exit_across_device_switch(self):
+        previous = ["R1# exit", "R2#"]
+        current = ["R1# exit", "R2# show ip ospf neighbor", "R2#"]
+        self.assertEqual(changed_lines(previous, current), current[1:])
 
     def test_upload_is_project_local_and_persisted_status_can_be_reopened(self):
         folder = ROOT / "runtime/tests"; folder.mkdir(parents=True, exist_ok=True)

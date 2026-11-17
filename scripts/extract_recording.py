@@ -28,12 +28,7 @@ def clock(seconds):
 
 
 def recognize(ocr, frame):
-    result = ocr(frame, use_cls=False)
-    if result.txts is None:
-        return []
-    # Reading order within a terminal follows vertical position, then column.
-    rows = sorted(zip(result.boxes, result.txts, result.scores), key=lambda row: (float(row[0][:, 1].mean()), float(row[0][:, 0].min())))
-    return [str(text).strip() for _, text, score in rows if score >= 0.55 and str(text).strip()]
+    return [row['text'] for row in image_regions(ocr(frame, use_cls=False))]
 
 
 def image_regions(result):

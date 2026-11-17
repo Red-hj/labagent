@@ -4,7 +4,8 @@ import re
 TIME = re.compile(r"^\s*\[?(\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,3})?)\]?\s*")
 VRP = re.compile(r"^\s*(?:<([^>]+)>|\[([^\]]+)\])\s*(.*)$")
 IOS = re.compile(r"^\s*([\w.-]+)(\([^)]*\))?[#>]\s*(.*)$")
-ERROR = re.compile(r"^\s*(?:Error\s*:|%\s*(?:Invalid|Error|Incomplete|Ambiguous)|Unrecognized command|Wrong parameter|Too many parameters|Incomplete command|Ambiguous command|错误[：:]|无效命令)", re.I)
+FRR_ROUTE_ROW = re.compile(r"^\s*[A-Z][A-Za-z]{0,2}[>*]+\s+(?:[\da-fA-F.:]+/\d+|default)\b")
+ERROR = re.compile(r"^\s*(?:Error\s*:|%\s*(?:Invalid|Error|Incomplete|Ambiguous|Unknown command\b)|Unrecognized command|Wrong parameter|Too many parameters|Incomplete command|Ambiguous command|错误[：:]|无效命令)", re.I)
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07)")
 VIEW_LABELS = {"user": "用户视图", "system": "系统视图", "interface": "接口视图", "ospf": "OSPF进程视图", "ospf_area": "OSPF区域视图", "router": "路由协议视图", "other": "配置视图"}
 
@@ -31,7 +32,7 @@ def prompt_info(text):
         view = "user" if match[1] else "ospf_area" if re.search(r"-ospf-\d+-area-", inner, re.I) else "ospf" if re.search(r"-ospf-\d+$", inner, re.I) else "interface" if suffix else "system"
         return device, view, inner, match[3], "vrp"
     match = IOS.match(text)
-    if match:
+    if match and not FRR_ROUTE_ROW.match(text):
         mode = match[2] or ""
         view = "interface" if "config-if" in mode else "router" if "config-router" in mode else "system" if mode == "(config)" else "other" if mode else "user"
         return match[1], view, match[1] + mode, match[3], "ios"
