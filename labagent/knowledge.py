@@ -206,13 +206,18 @@ def tokens(text):
 
 
 def search(query, codes=None, scope="default", limit=3):
+    documents, warnings = corpus(scope)
+    return rank_documents(query, documents, codes, scope, limit, warnings)
+
+
+def rank_documents(query, documents, codes=None, scope="default", limit=3, warnings=None):
+    """Use the production ranking on a fixed corpus, including offline evaluations."""
     validate_scope(scope)
     if not isinstance(query, str) or len(query) > 10000:
         raise ValueError("检索问题须为10000字以内文本")
     if type(limit) is not int or not 1 <= limit <= 10:
         raise ValueError("检索数量须为1～10")
     codes = codes or []
-    documents, warnings = corpus(scope)
     passages = [chunk for document in documents for chunk in chunks(document)]
     counters = [Counter(tokens(passage["title"]) * 2 + tokens(passage["content"])) for passage in passages]
     lengths = [sum(counter.values()) for counter in counters]
@@ -232,7 +237,7 @@ def search(query, codes=None, scope="default", limit=3):
             ranked.append({**passage, "score": round(score, 5), "retrieval_reason": "故障标签与正文匹配" if matched_codes else "正文与标题匹配"})
     ranked.sort(key=lambda item: (-item["score"], item["chunk_id"]))
     return {"scope": scope, "method": "local_bm25_with_fault_tags", "query": query, "results": ranked[:limit],
-            "document_count": len(documents), "chunk_count": len(passages), "warnings": warnings}
+            "document_count": len(documents), "chunk_count": len(passages), "warnings": warnings or []}
 
 
 def retrieve(query: str, codes: list[str], limit=3, scope="default"):
