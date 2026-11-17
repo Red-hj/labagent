@@ -72,6 +72,32 @@ def import_document(payload):
     return {"created": created, "document": summary(document)}
 
 
+def validate_course_documents(value, scope):
+    """Normalize a request's imported references without writing shared files."""
+    if not isinstance(value, list) or len(value) > 100:
+        raise ValueError("云端课程资料须为最多100份资料的列表")
+    documents, seen, size = [], set(), 0
+    for item in value:
+        document = make_document(item)
+        if document["scope"] != scope:
+            raise ValueError("云端课程资料须属于本轮选择的资料范围")
+        if document["id"] in seen:
+            raise ValueError("云端课程资料不可重复")
+        seen.add(document["id"])
+        size += len(document["content"])
+        if size > 1_000_000:
+            raise ValueError("本轮云端课程资料正文合计不能超过100万字，请拆分资料范围")
+        documents.append(document)
+    return documents
+
+
+def export_course_documents(scope):
+    documents, _ = corpus(scope)
+    imported = [document for document in documents
+                if document.get("source_type") == "课程资料（用户导入，未自动核实）"]
+    return validate_course_documents(imported, scope)
+
+
 def summary(document):
     return {key: document.get(key) for key in ("id", "title", "scope", "version", "source_name", "reference_url", "source_type", "content_hash")}
 
@@ -205,8 +231,12 @@ def tokens(text):
     return values
 
 
-def search(query, codes=None, scope="default", limit=3):
+def search(query, codes=None, scope="default", limit=3, *, course_documents=None):
     documents, warnings = corpus(scope)
+    if course_documents is not None:
+        documents = [document for document in documents
+                     if document.get("source_type") != "课程资料（用户导入，未自动核实）"]
+        documents.extend(validate_course_documents(course_documents, scope))
     return rank_documents(query, documents, codes, scope, limit, warnings)
 
 
