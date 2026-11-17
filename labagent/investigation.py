@@ -14,7 +14,7 @@ from .personal import validate_memory_context
 from .model import configured, chat_completion, ModelError, public_config, bounded_setting
 from .session_state import RESOLVED_OUTCOMES, experiment_goal
 from .progress import emit_progress
-from .experiment_goals import GOAL_TOOL, validate_goal_fields, check_goals, submitted_pings
+from .experiment_goals import GOAL_TOOL, ROUTE_TOOL, validate_goal_fields, check_goals, check_route_selection, evidence_blocks, submitted_pings
 from .diagnostic_planner import PLAN_TOOL, validate_plan
 from .operation_history import HISTORY_TOOL, inspect_history, model_history
 from .repair_lab import REPAIR_TOOL, compare_run, discover_runs
@@ -158,7 +158,7 @@ def ground_investigation_targets(analysis, known):
 
 
 TOOLS = [
-    GOAL_TOOL, PLAN_TOOL, HISTORY_TOOL, REPAIR_TOOL, PATH_TOOL,
+    GOAL_TOOL, ROUTE_TOOL, PLAN_TOOL, HISTORY_TOOL, REPAIR_TOOL, PATH_TOOL,
     {"type": "function", "function": {"name": "read_source", "description": "按原文行号读取一份已上传材料，每次最多60行。", "parameters": {
         "type": "object", "properties": {"source_id": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}},
         "required": ["source_id", "start_line", "end_line"], "additionalProperties": False}}},
@@ -208,7 +208,7 @@ def checked_citation(citation, sources, seen):
     return {"source_id": source_id, "line": line, "quote": quote, "device": source["device"]}
 
 
-def validate_submission(args, sources, seen, *, conversational=False, checked_pings=None, verifying=False, required_targets=None, comparing=False):
+def validate_submission(args, sources, seen, *, conversational=False, checked_pings=None, verifying=False, required_targets=None, comparing=False, route_checked=False):
     required = {"summary", "hypotheses", "evidence_requests"}
     if not isinstance(args, dict) or not required <= set(args) or set(args) - required - {"reply", "steps", "outcome", "verification_targets", "experiment_goal", "resolution_evidence", "operation_focus"}:
         raise ValueError("字段不符合工具定义")
@@ -216,7 +216,7 @@ def validate_submission(args, sources, seen, *, conversational=False, checked_pi
     hypotheses, requests = args["hypotheses"], args["evidence_requests"]
     if not isinstance(hypotheses, list) or len(hypotheses) > 3:
         raise ValueError("最多3个假设")
-    if not isinstance(requests, list) or not (0 if conversational or comparing or args.get("outcome") == "observations_passed" else 1) <= len(requests) <= 6:
+    if not isinstance(requests, list) or not (0 if conversational or comparing or route_checked or args.get("outcome") == "observations_passed" else 1) <= len(requests) <= 6:
         raise ValueError("请提供明确的补充证据请求；追问交流时可为空")
     checked = []
     for hypothesis in hypotheses:
@@ -278,6 +278,13 @@ def validate_submission(args, sources, seen, *, conversational=False, checked_pi
 
 def execute_tool(name, args, payload, sources, seen, *, previous_materials=None, checked_pings=None, required_targets=None, diagnostic_context=None):
     context = diagnostic_context if diagnostic_context is not None else {}
+    if name == "check_route_selection":
+        exact_keys(args, ("device", "target"))
+        device, target = short_text(args["device"], 120), short_text(args["target"], 64)
+        result = check_route_selection(device, target, evidence_blocks(sources, include_history=payload["configs"] == previous_materials))
+        seen.update((ref["source_id"], ref["line"]) for ref in result["evidence"])
+        context.setdefault("route_selection", {})[(device.casefold(), target)] = result
+        return result, False
     if name == "explain_network_path":
         exact_keys(args, ("source", "target"))
         result = explain_path(build_map(sources), args["source"], args["target"])
@@ -383,14 +390,16 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
                        course_documents=payload.get("course_documents"))
         return {"role": "教学参考，不是设备观测", "results": [{**doc, "content": safe_text(doc["content"])} for doc in found["results"]], "warnings": found["warnings"]}, False
     if name == "submit_hypotheses":
-        if not seen:
+        route_selection = list(context.get("route_selection", {}).values())
+        if not seen and not route_selection:
             raise ValueError("请先读取当前材料，再提交假设或补充请求")
         assessment = assess_goals(context, sources, seen, payload, previous_materials)
         if args.get("outcome") == "observations_passed" and assessment and assessment["status"] != "passed":
             missing = "；".join(item["detail"] for item in assessment["checks"] if item["status"] != "passed")
             raise ValueError("实验目标还未全部满足，请据此继续排查：" + missing)
         result = validate_submission(args, sources, seen, conversational=bool(payload.get("interaction")), checked_pings=checked_pings,
-                                     verifying=checked_pings is not None, required_targets=required_targets, comparing=context.get("repair_compared",False))
+                                     verifying=checked_pings is not None, required_targets=required_targets,
+                                     comparing=context.get("repair_compared", False), route_checked=bool(route_selection))
         if args.get("operation_focus"):
             history = context.get("operation_history", {})
             event = next((item for item in history.get("events", []) if item["id"] == args["operation_focus"]), None)
@@ -412,6 +421,12 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
             if selected and result["outcome"] == "investigating":
                 result["evidence_requests"] = [{"device": selected["device"], "information": selected["command"],
                                                 "why": selected["purpose"] + "。" + context["plan"]["reason"]}]
+        if route_selection and result["outcome"] == "investigating":
+            requests = [lookup["request"] for lookup in route_selection if lookup["request"]]
+            for request in result["evidence_requests"]:
+                if request not in requests:
+                    requests.append(request)
+            result["evidence_requests"] = requests[:6]
         return result, True
     raise ValueError("不支持的工具")
 
@@ -454,7 +469,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
     messages[0]["content"] += " 有终端操作记录时，优先调用inspect_operation_timeline读取时间线，联系当前配置、实验要求与测试输出解释关键步骤，使用operation_focus标记相关事件。命令输入、终端返回、明确报错、后续重试分别叙述；已成功重试的旧报错用作过程记录。关键时间点用MM:SS表达，正文先解释具体操作与影响。事件时间来自日志或录屏采样，引用保持原文行。截图识别材料kind为screenshot_ocr，内容为画面中可见文字；引用对应实际识别行。先围绕可见报错、命令和运行结果解释，必要时请用户补一张包含具体输出的截图。界面会将引用定位到原图；出现疑似OCR字符混淆时请核对具体字符。截图中的设备位置和连线关系需结合实验说明分析。执行视图或语法出错时，先给出最小修正，保留原命令其余参数；参数修改需要对应目标或接口的实际证据。OSPF network可匹配任一参与接口，包括Loopback；截图中另一个接口的地址不能作为改写network目标的依据。"
     messages[0]["content"] += " OSPF语义：network地址与反掩码用于选择参与OSPF的接口。反掩码0.0.0.0表示精确匹配接口主IP，不能据此判断通告/32；通告前缀由接口掩码、OSPF网络类型等决定。例如普通以太网接口10.12.0.2/24使用network 10.12.0.2 0.0.0.0参与OSPF时，通告的接口网段仍为10.12.0.0/24。回答是否宣告/32时明确区分接口匹配与路由前缀；历史回答中的错误以此更正。"
     messages[0]["content"] += " 课程资料用于核对规则，当前设备的值取自本轮配置或运行输出。检查OSPF区域时，只有两端的区域都有材料依据，才判断该链路是否失配。缺一端时先要缺失设备的display ospf interface输出或完整配置；仅查看接口配置可能看不到OSPF进程下的network匹配规则。两端区域一致时，在正文写明已排除区域失配。提交排除依据时用hypotheses的state=ruled_out，不要只在标题标注已排除。两端失配时，改哪端、改成哪个值需要实验指定的区域或明确的拓扑设计依据；缺少依据就索要区域规划。目标区已知且问题出在network时，只移动为目标接口选错区域的network语句，保留其他区域和接口配置。"
-    messages[0]["content"] += " 区分配置影响和实际转发。只有两端配置时，可以说明区域失配会阻止该链路建立OSPF邻接及经它学习路由。若配置里有静态路由，描述为已配置的候选路径；没有当前路由表时，不说‘只能靠静态路由’‘正在走静态路由’或断言目标路由缺失。请补转发设备到目标网段的路由表和端点Ping原文；若材料仅给出网段、未给端点IP，先索要实际端点IP，不猜测地址。Ping成功只完成连通性目标，指定协议的目标仍需核对实际选中的路由来源。"
+    messages[0]["content"] += " 用户问当前有没有目标路由、实际走哪个协议或下一跳时，先调用check_route_selection，按设备和目标IP或网段核对。needs_evidence时复述待补路由表结论；系统会自动生成该路由表申请，不在evidence_requests中重复。可说明配置中的候选路由，但不判断已安装、唯一转发路径或缺少路由。observed时根据工具报告协议、下一跳和出接口；若只问当前选路，回答结果并将evidence_requests填空数组，不建议删除备用路由或擅改配置，不从路由推断Ping已通过。若仅有网段、缺端点IP，索要实际端点IP。完整实验导出JSON的阶段对照使用compare_repair_candidates。"
     messages[0]["content"] += " 表达风格：直接、自然、简洁的技术说明，不扮演老师、助教或导师，不称呼同学，不用鼓励、训导和角色开场。先回答问题，再说明关键原因与下一步；reply通常2～4句，用户要求一句话就只写一句。正文用设备名和关键参数解释，不堆砌第几行，行号留在evidence字段供界面展开。概念追问只回答概念，不重新复述整份诊断，summary也概括本次回答。材料相同时也直接回答本次问题，界面已经显示材料变化，不反复声明结论不变。不要添加‘未在设备上验证’‘仅为推断’‘不代表真实设备或全网已验证’等固定免责声明。确有缺项时直接写缺什么、补什么；不要编造设备操作或测试结果。合成案例的来源保留在材料来源中，不在每次回复重复。面向用户的功能介绍直接说明支持什么、需要提供什么、下一步怎样操作。例如：上传配置和测试输出后，可分析原因、给出修改步骤并核对复测结果。省去能力排除清单及“不连接设备、不执行命令、不做什么”等旁白；围绕当前任务给出有用信息。"
     if payload.get("interaction"):
         messages.append({"role": "user", "content": "本次请求：" + safe_text(payload["interaction"]["message"]) + "\n以上JSON中的question是最初实验背景，conversation是历史记录。reply和summary请直接回答本次请求，不重新回答最初问题。"})
@@ -496,7 +511,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
                     args = json.loads(raw)
                     if name == "submit_hypotheses" and len(calls) != 1:
                         raise ValueError("提交假设时必须单独调用此工具")
-                    tool_labels = {"read_source": "正在读取材料", "retrieve_reference": "正在检索参考资料", "compare_materials": "正在比较前后材料", "check_submitted_pings": "正在核对Ping统计", "check_experiment_goals": "正在核对实验目标与协议要求", "plan_diagnostic_checks": "正在比较候选检查并选择下一步", "inspect_operation_timeline": "正在回溯设备、配置视图与关键报错", "submit_hypotheses": "正在整理结论与下一步"}
+                    tool_labels = {"read_source": "正在读取材料", "retrieve_reference": "正在检索参考资料", "compare_materials": "正在比较前后材料", "check_submitted_pings": "正在核对Ping统计", "check_route_selection": "正在核对实际路由来源和下一跳", "check_experiment_goals": "正在核对实验目标与协议要求", "plan_diagnostic_checks": "正在比较候选检查并选择下一步", "inspect_operation_timeline": "正在回溯设备、配置视图与关键报错", "submit_hypotheses": "正在整理结论与下一步"}
                     tool_labels["compare_repair_candidates"] = "正在核对候选修复的实际运行结果"
                     tool_labels["explain_network_path"] = "正在沿接口、网关和路由解释通信路径"
                     label = tool_labels.get(name, "正在处理工具请求")
@@ -581,6 +596,10 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
     if model.get("status") == "ok":
         model["text"] = analysis["summary"]
     interaction_checks = {item["tool"]: item["result"] for item in model["tool_trace"] if item["status"] == "ok" and item["tool"] in ("compare_materials", "check_submitted_pings")}
+    route_lookups = {(item["result"]["device"].casefold(), item["result"]["target"]): item["result"] for item in model["tool_trace"]
+                     if item["status"] == "ok" and item["tool"] == "check_route_selection"}
+    if route_lookups:
+        interaction_checks["check_route_selection"] = list(route_lookups.values())
     passed = analysis.get("outcome") == "observations_passed"
     reported = analysis.get("outcome") == "user_reported_resolved"
     if passed:

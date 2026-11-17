@@ -538,7 +538,9 @@ function renderConversation(turns) {
 }
 
 function renderChecks(checks) {
-  const container = $("verification-checks"); container.replaceChildren(); container.hidden = !checks.compare_materials && !checks.check_submitted_pings?.pings?.length;
+  const container = $("verification-checks"); container.replaceChildren();
+  const routes = checks.check_route_selection || [];
+  container.hidden = !checks.compare_materials && !checks.check_submitted_pings?.pings?.length && !routes.length;
   if (checks.compare_materials) {
     const comparison = checks.compare_materials;
     container.append(element("strong", comparison.has_previous ? (comparison.changed ? "已对比本轮材料更新" : "当前材料与上一轮相同") : "已读取当前材料"));
@@ -548,6 +550,14 @@ function renderChecks(checks) {
     const pings = checks.check_submitted_pings.pings;
     container.append(element("p", pings.length ? "已核对上传材料中的 " + pings.length + " 条 Ping 记录：" : "请补充包含收发统计的 Ping 输出。"));
     for (const ping of pings) container.append(element("p", ping.device + " → " + ping.target + "：" + ping.sent + " 发 " + ping.received + " 收 · " + (ping.passed ? "该条观测通过" : "该条观测未通过"), ping.passed ? "check-pass" : "check-fail"));
+  }
+  for (const lookup of routes) {
+    container.append(element("p", lookup.detail));
+    for (const citation of lookup.evidence) {
+      const locate = element("button", citation.device + " 第" + citation.line + "行 ↗", "text-button"); locate.type = "button";
+      locate.addEventListener("click", () => locateCitation(citation));
+      container.append(locate);
+    }
   }
 }
 function renderGoalsAndPlan(analysis, status) {

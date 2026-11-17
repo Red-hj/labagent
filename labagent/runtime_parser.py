@@ -8,6 +8,12 @@ from .parser import interface_id, parse_config
 from .connectivity import parse_ping_records
 
 
+FRR_ROUTE_LEGEND = re.compile(r">\s*-\s*selected route,\s*\*\s*-\s*FIB route", re.I)
+FRR_ROUTE = re.compile(r"^\s*([A-Za-z])([>*qrbto ]*)\s+(\d+(?:\.\d+){3}/\d+)\s+(.*)$")
+FRR_CONTINUATION = re.compile(r"^\s+\*\s+((?:via\s|is directly connected,).*)$")
+FRR_PROTOCOLS = dict(K="Kernel", C="Direct", L="Local", S="Static", R="RIP", O="OSPF", I="ISIS", B="BGP", E="EIGRP", N="NHRP")
+
+
 def parse_neighbors(text):
     records = []
     local_ip = peer = None
@@ -35,18 +41,46 @@ def parse_ping(text):
     return {key: records[0][key] for key in ("target", "sent", "received")}
 
 
-def parse_routes(text):
+def parse_routes(text, *, installed_only=False):
     if not re.search(r"Destination/Mask\s+Proto", text):
         return None
     records = []
     for number, line in enumerate(text.splitlines(), 1):
-        match = re.match(r"\s*(\d+\.\d+\.\d+\.\d+/\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\S+)\s+([\d.]+)\s+(\S+)", line)
+        match = re.match(r"\s*(\d+\.\d+\.\d+\.\d+/\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\S+)\s+([\d.]+)\s+(\S+(?:[ \t]+\d+(?:/\d+)+)?)", line)
         if match:
             network = ipaddress.IPv4Network(match[1], strict=False)
             ipaddress.IPv4Address(match[6])
-            records.append({"network": str(network), "protocol": match[2], "next_hop": match[6], "interface": match[7], "line": number, "text": line.strip()})
+            if not installed_only or "D" in match[5].upper():
+                records.append({"network": str(network), "protocol": match[2], "next_hop": match[6], "interface": match[7], "line": number, "text": line.strip()})
         elif re.match(r"\s*\d+\.\d+\.\d+\.\d+/", line):
             return None  # A partially parsed table must not prove a route absent.
+    return records
+
+
+def parse_frr_routes(text):
+    if not FRR_ROUTE_LEGEND.search(text):
+        return None
+    records, current = [], None
+    for number, line in enumerate(text.splitlines(), 1):
+        row = FRR_ROUTE.fullmatch(line)
+        if row:
+            protocol, flags, prefix, detail = row.groups()
+            network = str(ipaddress.IPv4Network(prefix))
+            installed = ">" in flags and "*" in flags and "r" not in flags and protocol != "r"
+            current = (network, FRR_PROTOCOLS.get(protocol, protocol)) if installed else None
+        elif current and (continuation := FRR_CONTINUATION.fullmatch(line)):
+            detail = continuation[1]
+        else:
+            current = None
+            continue
+        if not current:
+            continue
+        via = re.search(r"\bvia\s+([\d.]+),\s*(\S+)", detail)
+        connected = re.search(r"is directly connected,\s*(\S+)", detail)
+        gateway = str(ipaddress.IPv4Address(via[1])) if via else None
+        interface = (via[2] if via else connected[1] if connected else "").rstrip(",")
+        records.append({"network": current[0], "protocol": current[1], "next_hop": gateway,
+                        "interface": interface, "line": number, "text": line.strip()})
     return records
 
 
