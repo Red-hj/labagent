@@ -8,6 +8,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from labagent import knowledge
+from labagent.model import load_env
 from scripts.evaluate_b import read, score
 
 
@@ -22,6 +23,14 @@ def load_package(folder):
     questions = questions['cases']
     if len({q['id'] for q in questions}) != len(questions) or not questions:
         raise ValueError('题集为空或存在重复题号')
+    for q in questions:
+        if set(q) - {'id', 'query', 'category', 'language'}:
+            raise ValueError('题目只接受 id、query、category、language；答案须放在独立标注文件中')
+        for key in ('id', 'query', 'category', 'language'):
+            if not isinstance(q.get(key), str) or not q[key].strip():
+                raise ValueError(f'题目的 {key} 须为非空文字')
+        if len(q['query']) > 10000:
+            raise ValueError('检索问题须为10000字以内')
     scope = knowledge.validate_scope(manifest['scope'])
     if scope in {'default', 'common'}:
         raise ValueError('请为课程评测指定独立资料范围')
@@ -47,11 +56,16 @@ def prepare_corpus(scope, sources):
 
 
 def run_search(version, scope, questions):
-    return {'version': version, 'scope': scope, 'method': 'local_bm25_with_fault_tags', 'predictions': {
+    documents, warnings = knowledge.corpus(scope)
+    if warnings:
+        raise ValueError('课程资料读取或校验失败，请修复后重新检索')
+    result = {'version': version, 'scope': scope, 'method': 'local_bm25_with_fault_tags', 'predictions': {
         q['id']: [{field: passage[field] for field in HIT_FIELDS}
-                  for passage in knowledge.search(q['query'], scope=scope, limit=TOP_K)['results']]
+                  for passage in knowledge.rank_documents(q['query'], documents, scope=scope, limit=TOP_K)['results']]
         for q in questions
     }}
+    result['sources'] = [knowledge.summary(doc) for doc in documents]
+    return result
 
 
 def reference_bounds(content, first, last):
@@ -74,6 +88,7 @@ def valid_span(passage, corpus):
     if source is None or type(start) is not int or type(end) is not int or not 0 <= start < end <= len(source):
         return None
     if (source[start:end] != passage.get('content') or
+            type(passage.get('line_start')) is not int or type(passage.get('line_end')) is not int or
             passage.get('line_start') != source.count('\n', 0, start) + 1 or
             passage.get('line_end') != source.count('\n', 0, end - 1) + 1):
         return None
@@ -87,7 +102,10 @@ def summarize(rows):
     valid_passages = count_passages - sum(row['invalid_citations'] for row in rows)
     return {'top1': score(sum(row['rank'] == 1 for row in answerable), len(answerable)),
             'top3': score(sum(row['rank'] is not None for row in answerable), len(answerable)),
+            'mrr_at_3': round(sum(1 / row['rank'] for row in answerable if row['rank']) / len(answerable), 6) if answerable else None,
+            'evidence_coverage': score(sum(row['evidence_found'] for row in answerable), sum(row['evidence_total'] for row in answerable)),
             'unanswerable_returned': score(sum(bool(row['returned']) for row in unanswered), len(unanswered)),
+            'unanswerable_empty': score(sum(not row['returned'] for row in unanswered), len(unanswered)),
             'source_alignment': score(valid_passages, count_passages)}
 
 
@@ -95,28 +113,39 @@ def evaluate(version, scope, questions, labels, predictions, ids, corpus):
     if labels['version'] != version or predictions['version'] != version or predictions['scope'] != scope:
         raise ValueError('答案、预测和评测资料的版本或范围不一致')
     expected, submitted = labels['cases'], predictions['predictions']
+    if not questions or len({q['id'] for q in questions}) != len(questions):
+        raise ValueError('题集为空或存在重复题号')
     if set(expected) != set(submitted) or set(expected) != {q['id'] for q in questions}:
         raise ValueError('预测、题集和答案的题号必须一一对应')
     rows = []
     for q in questions:
         targets = []
+        if not isinstance(expected[q['id']], list):
+            raise ValueError('每题标注须为数组；资料不足题使用空数组')
         for label in expected[q['id']]:
+            if not isinstance(label, dict) or set(label) != {'document', 'start_line', 'end_line'}:
+                raise ValueError('标注须包含 document、start_line、end_line')
             doc_id = ids[label['document']]
             targets.append((doc_id, *reference_bounds(corpus[doc_id], label['start_line'], label['end_line'])))
+        if len(set(targets)) != len(targets):
+            raise ValueError('同一题包含重复标注')
         passages = submitted[q['id']]
         if not isinstance(passages, list) or len(passages) > TOP_K:
             raise ValueError(f"{q['id']} 需要 0～{TOP_K} 条候选")
-        rank, invalid = None, 0
+        rank, invalid, found = None, 0, set()
         for number, passage in enumerate(passages, 1):
             span = valid_span(passage, corpus)
             if span is None:
                 invalid += 1
                 continue
             doc, start, end = span
-            if rank is None and any(doc == match and start <= first and end >= last for match, first, last in targets):
-                rank = number
+            for index, (match, first, last) in enumerate(targets):
+                if doc == match and start <= first and end >= last:
+                    found.add(index)
+                    rank = rank or number
         rows.append({'id': q['id'], 'category': q['category'], 'language': q['language'], 'answerable': bool(targets),
-                     'rank': rank, 'returned': len(passages), 'invalid_citations': invalid})
+                     'rank': rank, 'returned': len(passages), 'invalid_citations': invalid,
+                     'evidence_found': len(found), 'evidence_total': len(targets)})
     result = {'version': version, 'scope': scope, 'method': predictions['method'], 'questions': len(rows),
               'all': summarize(rows), 'records': rows}
     for field in ('category', 'language'):
@@ -126,6 +155,7 @@ def evaluate(version, scope, questions, labels, predictions, ids, corpus):
 
 
 def main():
+    load_env(ROOT / '.env')
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     for command in ('search', 'score'):
@@ -137,14 +167,20 @@ def main():
             sub.add_argument('--predictions', required=True, type=Path)
     args = parser.parse_args()
     try:
+        output_path = args.output.resolve()
+        if not output_path.is_relative_to((ROOT / 'runtime').resolve()):
+            raise ValueError('输出文件须位于项目 runtime 内')
+        if output_path.exists():
+            raise ValueError('输出文件已存在，请换用新文件名以保留对照结果')
         version, scope, sources, questions = load_package(args.package)
         ids, corpus = prepare_corpus(scope, sources)
         result = (run_search(version, scope, questions) if args.command == 'search' else
                   evaluate(version, scope, questions, read(args.labels), read(args.predictions), ids, corpus))
-        with args.output.open('x', encoding='utf-8') as output:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open('x', encoding='utf-8') as output:
             json.dump(result, output, ensure_ascii=False, indent=2)
             output.write('\n')
-    except (ValueError, KeyError, OSError) as error:
+    except (ValueError, KeyError, TypeError, OSError) as error:
         parser.error(str(error))
     print(f'{len(questions)} 题 → {args.output}')
 
