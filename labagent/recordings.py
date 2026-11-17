@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from .operation_history import prompt_info
 
 ROOT = Path(__file__).resolve().parents[1]
 VIDEO_SUFFIXES = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".mkv": "video/x-matroska"}
@@ -109,8 +110,11 @@ def changed_lines(previous, current):
     from difflib import SequenceMatcher
     # Anchor at the latest visible command. Small OCR spelling changes in older
     # rows must not append old error output after a newer command.
-    for previous_line in reversed(old[-4:]):
+    for original, previous_line in reversed(list(zip(previous[-4:], old[-4:]))):
         if len(previous_line) < 8:
+            prompt = prompt_info(original)
+            if prompt and prompt[3].strip() and previous_line in new:
+                return current[new.index(previous_line) + 1:]
             continue
         matches = [index for index, line in enumerate(new) if SequenceMatcher(None, previous_line, line, autojunk=False).ratio() >= 0.9]
         if matches:
