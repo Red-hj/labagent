@@ -66,6 +66,17 @@ class OpenInvestigationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_submission(value, self.sources, {("config:1", 8)})
 
+    def test_ruled_out_hypothesis_is_not_pending_and_still_requires_an_exact_quote(self):
+        value = submission()
+        value["hypotheses"].append({**deepcopy(value["hypotheses"][0]), "state": "ruled_out"})
+        seen = {("config:1", 8)}
+        result = validate_submission(value, self.sources, seen)
+        self.assertEqual([item["state"] for item in result["hypotheses"]], ["unverified"])
+        self.assertTrue(result["evidence_requests"])
+        value["hypotheses"][1]["evidence"][0]["quote"] = "invented"
+        with self.assertRaises(ValueError):
+            validate_submission(value, self.sources, seen)
+
     def test_empty_hypotheses_allowed_with_explicit_evidence_request(self):
         value = submission(); value["hypotheses"] = []
         result = validate_submission(value, self.sources, set())

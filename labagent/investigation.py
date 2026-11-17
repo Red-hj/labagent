@@ -127,6 +127,7 @@ TOOLS = [
             "resolution_evidence": {"type": "array", "items": {"type": "object", "properties": {"source_id": {"type": "string"}, "line": {"type": "integer"}, "quote": {"type": "string"}}, "required": ["source_id", "line", "quote"], "additionalProperties": False}, "description": "用户明确反馈目标已恢复时，引用本轮追问的原文。"},
             "hypotheses": {"type": "array", "items": {"type": "object", "properties": {
                 "title": {"type": "string"}, "reasoning": {"type": "string"},
+                "state": {"type": "string", "enum": ["unverified", "ruled_out"], "description": "现有证据已排除时填写ruled_out，该项不会进入待验证假设；仍待排查时填写unverified。"},
                 "evidence": {"type": "array", "items": {"type": "object", "properties": {"source_id": {"type": "string"}, "line": {"type": "integer"}, "quote": {"type": "string"}}, "required": ["source_id", "line", "quote"], "additionalProperties": False}}},
                 "required": ["title", "reasoning", "evidence"], "additionalProperties": False}},
             "evidence_requests": {"type": "array", "items": {"type": "object", "properties": {"device": {"type": "string"}, "information": {"type": "string"}, "why": {"type": "string"}}, "required": ["device", "information", "why"], "additionalProperties": False}}},
@@ -169,15 +170,22 @@ def validate_submission(args, sources, seen, *, conversational=False, checked_pi
         raise ValueError("请提供明确的补充证据请求；追问交流时可为空")
     checked = []
     for hypothesis in hypotheses:
-        exact_keys(hypothesis, ("title", "reasoning", "evidence"))
+        if not isinstance(hypothesis, dict) or set(hypothesis) - {"state"} != {"title", "reasoning", "evidence"}:
+            raise ValueError("字段不符合工具定义")
+        state = hypothesis.get("state", "unverified")
+        if state not in ("unverified", "ruled_out"):
+            raise ValueError("仅接受待验证或已排除的假设状态")
         evidence = hypothesis["evidence"]
         if not isinstance(evidence, list) or not 1 <= len(evidence) <= 6:
             raise ValueError("每个假设需要1～6条原文引用")
         citations = []
         for citation in evidence:
             citations.append(checked_citation(citation, sources, seen))
-        checked.append({"title": short_text(hypothesis["title"], 160), "reasoning": short_text(hypothesis["reasoning"], 1000),
-                        "state": "unverified", "evidence": citations, "citation_check": "exact_seen_lines"})
+        title = short_text(hypothesis["title"], 160)
+        reasoning = short_text(hypothesis["reasoning"], 1000)
+        if state == "unverified":
+            checked.append({"title": title, "reasoning": reasoning, "state": state,
+                            "evidence": citations, "citation_check": "exact_seen_lines"})
     checked_requests = []
     for request in requests:
         exact_keys(request, ("device", "information", "why"))
@@ -388,6 +396,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
     messages[0]["content"] += " 每轮最多8项工具调用；submit_hypotheses单独调用。目标编号留在工具字段，正文直接写‘连通性已满足，OSPF路由来源还需修正’等具体结果。"
     messages[0]["content"] += " 有终端操作记录时，优先调用inspect_operation_timeline读取时间线，联系当前配置、实验要求与测试输出解释关键步骤，使用operation_focus标记相关事件。命令输入、终端返回、明确报错、后续重试分别叙述；已成功重试的旧报错用作过程记录。关键时间点用MM:SS表达，正文先解释具体操作与影响。事件时间来自日志或录屏采样，引用保持原文行。截图识别材料kind为screenshot_ocr，内容为画面中可见文字；引用对应实际识别行。先围绕可见报错、命令和运行结果解释，必要时请用户补一张包含具体输出的截图。界面会将引用定位到原图；出现疑似OCR字符混淆时请核对具体字符。截图中的设备位置和连线关系需结合实验说明分析。执行视图或语法出错时，先给出最小修正，保留原命令其余参数；参数修改需要对应目标或接口的实际证据。OSPF network可匹配任一参与接口，包括Loopback；截图中另一个接口的地址不能作为改写network目标的依据。"
     messages[0]["content"] += " OSPF语义：network地址与反掩码用于选择参与OSPF的接口。反掩码0.0.0.0表示精确匹配接口主IP，不能据此判断通告/32；通告前缀由接口掩码、OSPF网络类型等决定。例如普通以太网接口10.12.0.2/24使用network 10.12.0.2 0.0.0.0参与OSPF时，通告的接口网段仍为10.12.0.0/24。回答是否宣告/32时明确区分接口匹配与路由前缀；历史回答中的错误以此更正。"
+    messages[0]["content"] += " 课程资料用于核对规则，当前设备的值取自本轮配置或运行输出。检查OSPF区域时，只有两端的区域都有材料依据，才判断该链路是否失配。缺一端时先要缺失设备的display ospf interface输出或完整配置；仅查看接口配置可能看不到OSPF进程下的network匹配规则。两端区域一致时，在正文写明已排除区域失配。提交排除依据时用hypotheses的state=ruled_out，不要只在标题标注已排除。两端失配时，改哪端、改成哪个值需要实验指定的区域或明确的拓扑设计依据；缺少依据就索要区域规划。目标区已知且问题出在network时，只移动为目标接口选错区域的network语句，保留其他区域和接口配置。配置只支持对OSPF邻接与学习行为的推断，实际邻居、路由与连通性仍用运行输出核对。"
     messages[0]["content"] += " 表达风格：直接、自然、简洁的技术说明，不扮演老师、助教或导师，不称呼同学，不用鼓励、训导和角色开场。先回答问题，再说明关键原因与下一步；reply通常2～4句，用户要求一句话就只写一句。正文用设备名和关键参数解释，不堆砌第几行，行号留在evidence字段供界面展开。概念追问只回答概念，不重新复述整份诊断，summary也概括本次回答。材料相同时也直接回答本次问题，界面已经显示材料变化，不反复声明结论不变。不要添加‘未在设备上验证’‘仅为推断’‘不代表真实设备或全网已验证’等固定免责声明。确有缺项时直接写缺什么、补什么；不要编造设备操作或测试结果。合成案例的来源保留在材料来源中，不在每次回复重复。面向用户的功能介绍直接说明支持什么、需要提供什么、下一步怎样操作。例如：上传配置和测试输出后，可分析原因、给出修改步骤并核对复测结果。省去能力排除清单及“不连接设备、不执行命令、不做什么”等旁白；围绕当前任务给出有用信息。"
     if payload.get("interaction"):
         messages.append({"role": "user", "content": "本次请求：" + safe_text(payload["interaction"]["message"]) + "\n以上JSON中的question是最初实验背景，conversation是历史记录。reply和summary请直接回答本次请求，不重新回答最初问题。"})
