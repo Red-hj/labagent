@@ -19,6 +19,7 @@ from .diagnostic_planner import PLAN_TOOL, validate_plan
 from .operation_history import HISTORY_TOOL, inspect_history, model_history
 from .repair_lab import REPAIR_TOOL, compare_run, discover_runs
 from .network_map import PATH_TOOL, build_map, explain_path
+from .connectivity import address_literal, ground_ping_text, host_literals
 
 SENSITIVE = re.compile(r"authentication|password|passwd|cipher|community|secret|pre-shared|api[_-]?key|authorization|bearer|sk-[a-z0-9]{12,}|BEGIN.*PRIVATE KEY", re.I)
 
@@ -108,6 +109,52 @@ def source_bundle(payload, conversation=None):
 def manifest(sources):
     return [{key: source[key] for key in ("source_id", "device", "kind")} |
             {"line_count": len(source["lines"]), "command": safe_text(source.get("command", ""))} for source in sources.values()]
+
+
+def submitted_host_addresses(payload, sources):
+    addresses = set()
+    for source in sources.values():
+        addresses.update(host_literals(safe_text(source.get("command", ""))))
+        for line in source["lines"]:
+            addresses.update(host_literals(line))
+    for field in ("topology", "requirements"):
+        addresses.update(host_literals(safe_text(json.dumps(payload.get(field, {}), ensure_ascii=False))))
+    return addresses
+
+
+def ground_investigation_targets(analysis, known):
+    closed = analysis.get("outcome") in RESOLVED_OUTCOMES
+    targets = analysis.get("verification_targets", [])
+    allowed = known | {address_literal(target) for target in analysis.get("verification", {}).get("targets", [])} if closed else known
+    grounded = [target for target in targets if address_literal(target) in allowed - {None}]
+    unverified = {address_literal(target) for target in targets if target not in grounded} - {None}
+    changed = targets != grounded
+    analysis["verification_targets"] = grounded
+
+    def clean(text):
+        nonlocal changed
+        revised = ground_ping_text(text, allowed, unverified)
+        changed |= revised != text
+        return revised
+
+    for field in ("summary", "reply", "experiment_goal"):
+        if analysis.get(field):
+            analysis[field] = clean(analysis[field])
+    if "steps" in analysis:
+        analysis["steps"] = [clean(step) for step in analysis["steps"]]
+    if "hypotheses" in analysis:
+        analysis["hypotheses"] = [{**item, "title": clean(item["title"]), "reasoning": clean(item["reasoning"])}
+                                  for item in analysis["hypotheses"]]
+    for field in ("evidence_requests", "pending_requests"):
+        if field in analysis:
+            analysis[field] = [{**item, "information": clean(item["information"]), "why": clean(item["why"])}
+                               for item in analysis[field]]
+    if changed and not closed:
+        request = {"device": "目标端点", "information": "请提供目标端点的实际 IP 地址。",
+                   "why": "确定 Ping 的准确目的地址"}
+        for field in ("evidence_requests", "pending_requests"):
+            pending = analysis.get(field, [])
+            analysis[field] = [request, *[item for item in pending if item != request]][:6]
 
 
 TOOLS = [
@@ -276,6 +323,8 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
                     raise ValueError("已保存的目标继续沿用；新要求使用新编号并引用原文")
                 continue
             instruction = checked_citation(goal["instruction"], sources, seen)
+            if goal["kind"] == "reachability" and address_literal(goal["target"]) not in submitted_host_addresses(payload, sources):
+                raise ValueError("材料未提供该 Ping 目的地址。请先索要目标端点实际 IP，暂不建立该目标。")
             saved.append({**goal, "instruction": instruction})
         if not saved:
             raise ValueError("请先从已读取的实验说明提取具体目标")
@@ -286,6 +335,9 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
         return assessment, False
     if name == "plan_diagnostic_checks":
         plan = validate_plan(args, lambda value: checked_citation(value, sources, seen))
+        known = submitted_host_addresses(payload, sources)
+        if any(ground_ping_text(test["command"], known) != test["command"] for test in plan["tests"]):
+            raise ValueError("Ping 检查需要材料中的实际目标 IP。缺少地址时，请在补充证据请求里索要地址。")
         context["plan"] = plan
         return plan, False
     if name == "compare_materials":
@@ -513,6 +565,7 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
         analysis["experiment_goal"] = (previous or {}).get("experiment_goal") or analysis.get("experiment_goal") or experiment_goal(payload)
         if not analysis.get("verification_targets"):
             analysis["verification_targets"] = (previous or {}).get("verification_targets", [])
+        ground_investigation_targets(analysis, submitted_host_addresses(payload, sources))
         if closed:
             analysis["resolution_summary"] = ((previous.get("resolution_summary") or previous.get("summary"))
                                               if previous_closed and previous["outcome"] == analysis["outcome"] and same_materials and not current_failure else analysis["summary"])

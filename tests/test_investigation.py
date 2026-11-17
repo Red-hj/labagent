@@ -86,6 +86,68 @@ class OpenInvestigationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_submission(value, self.sources, set())
 
+    def test_open_diagnosis_requests_real_endpoint_when_model_guesses_a_ping_target(self):
+        payload = {"configs": {"R1.cfg": "ip route 192.168.20.0/24 10.12.0.2 200"},
+                   "question": "PC1能否访问PC2？", "use_llm": True}
+
+        def guess(messages):
+            if messages[-1]["role"] != "tool":
+                name, args = "read_source", {"source_id": "config:1", "start_line": 1, "end_line": 1}
+            else:
+                name, args = "submit_hypotheses", {
+                    "summary": "需要在PC1上ping 192.168.20.2。", "reply": "PC2 地址为 192.168.20.2，请复测。",
+                    "verification_targets": ["192.168.20.2", "192.168.20.0"],
+                    "steps": ["ping -c 5 192.168.20.2", "检查到 192.168.20.0/24 的路由"], "hypotheses": [],
+                    "evidence_requests": [{"device": "PC1", "information": "ping 192.168.20.2 的结果", "why": "核对连通性"}],
+                }
+            return {"tool_calls": [{"id": name, "function": {"name": name, "arguments": json.dumps(args)}}]}
+
+        with patch.dict(os.environ, ENV):
+            result = investigate(payload, completion=guess)
+        self.assertEqual(result["llm"]["status"], "ok")
+        self.assertEqual(result["status"], "needs_information")
+        diagnosis = result["investigation"]
+        self.assertEqual(diagnosis["verification_targets"], [])
+        self.assertNotIn("192.168.20.2", str(diagnosis))
+        self.assertIn("192.168.20.0/24", diagnosis["steps"][1])
+        self.assertIn("实际 IP 地址", result["next_steps"][0])
+
+    def test_given_ping_addresses_in_topology_and_follow_up_are_preserved(self):
+        payload = deepcopy(self.payload)
+        payload["topology"] = {"ping_targets": [{"source": "PC1", "target": "192.0.2.10"}]}
+        payload["interaction"] = {"type": "ask", "message": "PC2 的 IPv6 地址是 2001:db8::2。"}
+
+        def recommend(messages):
+            message = completion(messages)
+            if messages[-1]["role"] == "tool":
+                tool = message["tool_calls"][0]["function"]
+                args = json.loads(tool["arguments"])
+                args.update(steps=["ping -n 5 192.0.2.10", "ping6 2001:0db8::2"],
+                            verification_targets=["192.0.2.10", "2001:db8::2"])
+                tool["arguments"] = json.dumps(args)
+            return message
+
+        with patch.dict(os.environ, ENV):
+            result = investigate(payload, completion=recommend)
+        diagnosis = result["investigation"]
+        self.assertEqual(diagnosis["verification_targets"], ["192.0.2.10", "2001:db8::2"])
+        self.assertEqual(diagnosis["steps"], ["ping -n 5 192.0.2.10", "ping6 2001:0db8::2"])
+        self.assertNotIn("目标端点", result["next_steps"][0])
+
+    def test_cannot_save_a_guessed_reachability_goal_or_plan_check(self):
+        payload = {"configs": {"R1.cfg": "ip route 192.168.20.0/24 10.12.0.2 200"}, "question": "检查PC1能否访问PC2"}
+        sources, _ = source_bundle(payload)
+        quote = {"source_id": "question:initial", "line": 1, "quote": payload["question"]}
+        seen = {("question:initial", 1)}
+        goal = {"id": "ping", "title": payload["question"], "kind": "reachability", "device": "PC1",
+                "target": "192.168.20.2", "expected": "", "instruction": quote}
+        plan = {"hypotheses": [{"id": "h1", "title": "路由缺失", "state": "active", "evidence": [quote]}],
+                "tests": [{"id": "c1", "device": "PC1", "command": "ping -a 10.12.0.2 192.168.20.2", "purpose": "查连通性",
+                           "cost": 1, "predictions": [{"hypothesis_id": "h1", "result": "fails"}]}]}
+        for tool, args in (("check_experiment_goals", {"goals": [goal]}), ("plan_diagnostic_checks", plan)):
+            with self.subTest(tool=tool), self.assertRaisesRegex(ValueError, "实际.*IP"):
+                execute_tool(tool, args, payload, sources, seen)
+
     def test_source_reads_redact_only_sensitive_lines_and_cannot_cite_them(self):
         self.payload["configs"]["SW1"] = "public line\n password my-private-password\n gateway-list 10.20.0.1\n"
         sources, _ = source_bundle(self.payload)
