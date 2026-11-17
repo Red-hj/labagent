@@ -56,6 +56,8 @@ class WorkspaceGate:
 class WorkspaceArchive:
     def __init__(self, store, recordings, notes, workflow_database):
         self.store, self.recordings = store, recordings
+        from .personal import Personal
+        Personal(store)
         self.notes = Path(notes)
         self.workflow_database = Path(workflow_database)
         self.gate = WorkspaceGate()
@@ -66,11 +68,14 @@ class WorkspaceArchive:
         with self.store.connect() as db:
             sessions = db.execute("SELECT COUNT(DISTINCT session_id) FROM attempts").fetchone()[0]
             rooms = db.execute("SELECT COUNT(*) FROM rooms").fetchone()[0]
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            users = db.execute("SELECT COUNT(*) FROM personal_users").fetchone()[0] if "personal_users" in tables else 0
+            memories = db.execute("SELECT COUNT(*) FROM personal_memories").fetchone()[0] if "personal_memories" in tables else 0
         media = list(self.recordings.root.glob("*/status.json"))
         pending = any(json.loads(path.read_text(encoding="utf-8")).get("status") not in ("ready", "error") for path in media)
         documents = len(list(self.notes.glob("*.json")))
-        return {"sessions": sessions, "rooms": rooms, "recordings": len(media), "documents": documents,
-                "processing_media": pending, "can_restore": not (sessions or rooms or documents or
+        return {"sessions": sessions, "rooms": rooms, "recordings": len(media), "documents": documents, "users": users, "memories": memories,
+                "processing_media": pending, "can_restore": not (sessions or rooms or documents or users or
                     any(self.recordings.root.iterdir()) or self.workflow_database.exists())}
 
     @contextmanager
@@ -85,6 +90,9 @@ class WorkspaceArchive:
                 snapshot = folder / "sessions.sqlite3"
                 with self.store.connect() as source, closing(sqlite3.connect(snapshot)) as target:
                     source.backup(target)
+                    if target.execute("SELECT 1 FROM sqlite_master WHERE name='personal_tokens'").fetchone():
+                        target.execute("DELETE FROM personal_tokens")
+                        target.commit()
                 manifest = {"format": FORMAT, "version": __version__,
                             "created_at": datetime.now(timezone.utc).isoformat(), **summary}
                 with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as output:
@@ -143,6 +151,10 @@ class WorkspaceArchive:
                                   "rooms": db.execute("SELECT COUNT(*) FROM rooms").fetchone()[0],
                                   "recordings": len(list((folder / "recordings").glob("*/status.json"))),
                                   "documents": len(list((folder / "course_notes").glob("*.json")))}
+                        for key, table in (("users", "personal_users"), ("memories", "personal_memories")):
+                            count = db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+                            if count or key in manifest:
+                                counts[key] = count
                     if any(manifest.get(key) != count for key, count in counts.items()):
                         raise ValueError("备份中的材料数量与记录不一致，文件可能不完整。")
                     moved = []
@@ -157,6 +169,8 @@ class WorkspaceArchive:
                             target.executemany("INSERT INTO attempts(session_id,created_at,payload,result) VALUES (?,?,?,?)",
                                                source.execute("SELECT session_id,created_at,payload,result FROM attempts ORDER BY id"))
                             target.executemany("INSERT INTO rooms(id,data) VALUES (?,?)", source.execute("SELECT id,data FROM rooms"))
+                            from .personal import restore_personal_tables
+                            restore_personal_tables(source, target)
                     except Exception:
                         for target, original in reversed(moved):
                             target.rename(original)
@@ -169,6 +183,8 @@ class WorkspaceArchive:
         """Rebuild known tables rather than installing SQL schema from an upload."""
         clean = Store(folder / "validated.sqlite3")
         Rooms(clean)
+        from .personal import Personal, restore_personal_tables
+        Personal(clean)
         source_path = (folder / "sessions.sqlite3").resolve().as_uri() + "?mode=ro"
         with closing(sqlite3.connect(source_path, uri=True)) as source, clean.connect() as target:
             source.execute("PRAGMA trusted_schema=OFF")
@@ -194,6 +210,7 @@ class WorkspaceArchive:
                 if room.get("session") and not target.execute("SELECT 1 FROM attempts WHERE session_id=?", (room["session"]["session_id"],)).fetchone():
                     raise ValueError("备份缺少协作实验对应的诊断记录")
                 target.execute("INSERT INTO rooms VALUES (?,?)", (room_id, room_text))
+            restore_personal_tables(source, target)
         for path in (folder / "recordings").glob("*"):
             status = json.loads((path / "status.json").read_text(encoding="utf-8"))
             if not isinstance(status, dict):

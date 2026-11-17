@@ -11,6 +11,7 @@ import threading
 import time
 import shutil
 import tempfile
+from http.cookies import SimpleCookie, CookieError
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -29,6 +30,7 @@ from .progress import emit_progress, progress_to
 from .recordings import Recordings, VIDEO_SUFFIXES, available as replay_available
 from .operation_history import inspect_history
 from .rooms import Rooms, RoomConflict
+from .personal import Personal, SignInError, COOKIE, LIFETIME
 
 ROOT = Path(__file__).resolve().parents[1]
 MEASURED_DEMOS = {
@@ -50,17 +52,44 @@ class Handler(BaseHTTPRequestHandler):
         print(time.strftime("%H:%M:%S"), format % args, flush=True)
         self.server.write_log(format % args)
 
-    def reply(self, value, status=200, download=False):
+    def reply(self, value, status=200, download=False, cookie=None):
         content = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if cookie is not None:
+            self.send_header("Set-Cookie", COOKIE + "=" + cookie + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" +
+                str(LIFETIME if cookie else 0) + ("; Secure" if self.server.public_url else ""))
         if download:
             self.send_header("Content-Disposition", 'attachment; filename="labagent-record.json"')
         self.end_headers()
         self.wfile.write(content)
+
+    def personal_token(self):
+        try:
+            cookies = SimpleCookie(self.headers.get("Cookie", ""))
+            return cookies[COOKIE].value if COOKIE in cookies else None
+        except CookieError:
+            return "invalid"
+
+    def personal_user(self, *, strict=True, required=False):
+        token = self.personal_token()
+        if not hasattr(self, "_personal_identity"):
+            self._personal_identity = self.server.personal.user(token)
+        user = self._personal_identity
+        if (token and not user and strict) or (required and not user):
+            raise SignInError("请登录个人账号后继续", 401)
+        return user
+
+    def room_capability(self):
+        value = self.headers.get("X-LabAgent-Room") or parse_qs(urlparse(self.path).query).get("room", [""])[0]
+        return value if re.fullmatch(r"[a-f0-9]{32}", value) else None
+
+    def can_read(self, kind, resource_id):
+        user = self.personal_user()
+        return self.server.personal.owns(kind, resource_id, user["id"] if user else None, self.room_capability())
 
     def safe_host(self):
         return self.headers.get("Host") in self.server.allowed_hosts
@@ -93,6 +122,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.handle_GET()
         except WorkspaceBusy as error:
             return self.reply({"error": str(error)}, 409)
+        except SignInError as error:
+            return self.reply({"error": str(error), "code": "sign_in_required"}, error.status)
 
     def handle_GET(self):
         if not self.safe_host():
@@ -102,6 +133,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "diagnosis_backend": self.server.diagnosis_backend, "diagnosis_configured": self.server.cloud_configured if self.server.diagnosis_backend == "agentarts" else configured(), "llm_configured": configured(), "llm": public_config(), "replay_available": replay_available()})
         if not self.team_access():
             return
+        if path == "/api/account":
+            return self.reply({"user": self.personal_user(strict=False)}, cookie="" if self.personal_token() and not self.personal_user(strict=False) else None)
+        if path == "/api/memories":
+            user = self.personal_user(required=True)
+            return self.reply({"enabled": user["memory_enabled"], "memories": self.server.personal.list_memories(user["id"])})
         if path == "/api/workspace":
             return self.reply(self.server.workspace.summary())
         if match := re.fullmatch(r"/api/rooms/([a-f0-9]{32})", path):
@@ -127,6 +163,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/demos/operation_history/video":
             return self.send_video(ROOT / "data/examples/实验操作回放.webm", "video/webm")
         if match := re.fullmatch(r"/api/recordings/([a-f0-9]{32})(/video|/image)?", path):
+            if not self.can_read("recording", match[1]):
+                return self.reply({"error": "图片或录屏不存在"}, 404)
             status = self.server.recordings.status(match[1])
             if status is None:
                 return self.reply({"error": "图片或录屏不存在，请重新添加"}, 404)
@@ -172,11 +210,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sessions":
             try:
                 query = parse_qs(urlparse(self.path).query)
+                user = self.personal_user()
                 return self.reply(self.store.sessions(limit=int(query.get("limit", ["30"])[0]),
-                    before=int(query["before"][0]) if "before" in query else None, query=query.get("q", [""])[0]))
+                    before=int(query["before"][0]) if "before" in query else None, query=query.get("q", [""])[0],
+                    personal=True, user_id=user["id"] if user else None, room_id=self.room_capability()))
+            except SignInError:
+                raise
             except ValueError as error:
                 return self.reply({"error": str(error)}, 400)
         if match := re.fullmatch(r"/api/sessions/([a-f0-9]{32})(/export|/report)?", path):
+            if not self.can_read("session", match[1]):
+                return self.reply({"error": "会话不存在", "code": "session_not_found"}, 404)
             history = self.store.history(match[1])
             if history:
                 if match[2] == "/report":
@@ -187,6 +231,7 @@ class Handler(BaseHTTPRequestHandler):
                   "/network-room.js": ("network-room.js", "text/javascript; charset=utf-8"), "/network-room.css": ("network-room.css", "text/css; charset=utf-8"),
                   "/session-history.js": ("session-history.js", "text/javascript; charset=utf-8"), "/session-history.css": ("session-history.css", "text/css; charset=utf-8"),
                   "/course-knowledge.js": ("course-knowledge.js", "text/javascript; charset=utf-8"), "/course-knowledge.css": ("course-knowledge.css", "text/css; charset=utf-8"),
+                  "/personal-memory.js": ("personal-memory.js", "text/javascript; charset=utf-8"), "/personal-memory.css": ("personal-memory.css", "text/css; charset=utf-8"),
                   "/ambient-network.js": ("ambient-network.js", "text/javascript; charset=utf-8"),
                   "/vendor/tsparticles.slim.bundle.min.js": ("vendor/tsparticles.slim.bundle.min.js", "text/javascript; charset=utf-8"),
                   "/workbench": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8"), "/knowledge.css": ("knowledge.css", "text/css; charset=utf-8")}
@@ -209,6 +254,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"error": "请从当前网站提交请求"}, 403)
         if not self.team_access():
             return
+        if urlparse(self.path).path == "/api/memories" or re.fullmatch(r"/api/memories/[a-f0-9]{32}", urlparse(self.path).path):
+            try:
+                with self.server.workspace.gate.activity():
+                    user = self.personal_user(required=True)
+                    memory_id = urlparse(self.path).path.rsplit("/", 1)[-1] if urlparse(self.path).path != "/api/memories" else None
+                    return self.reply({"deleted": self.server.personal.delete_memory(user["id"], memory_id)})
+            except SignInError as error:
+                return self.reply({"error": str(error)}, error.status)
+            except WorkspaceBusy as error:
+                return self.reply({"error": str(error)}, 409)
         match = re.fullmatch(r"/api/sessions/([a-f0-9]{32})", urlparse(self.path).path)
         if not match:
             return self.reply({"error": "未找到内容"}, 404)
@@ -216,12 +271,16 @@ class Handler(BaseHTTPRequestHandler):
             # Diagnosis workers keep a lease until saving, so a deleted session
             # cannot reappear when an in-flight request completes.
             with self.server.workspace.gate.activity(maintenance=True):
+                if not self.can_read("session", match[1]):
+                    return self.reply({"error": "会话不存在", "code": "session_not_found"}, 404)
                 result = self.store.delete_session(match[1], workflow_database=self.server.workflow_database)
                 if result is None:
                     return self.reply({"code": "session_not_found", "error": "这次对话已不存在。"}, 404)
                 return self.reply(result)
         except WorkspaceBusy as error:
             return self.reply({"error": str(error)}, 409)
+        except SignInError as error:
+            return self.reply({"error": str(error)}, error.status)
         except Exception:
             import traceback
             self.server.write_log(traceback.format_exc(), error=True)
@@ -235,6 +294,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.handle_POST()
         except WorkspaceBusy as error:
             return self.reply({"error": str(error)}, 409)
+        except SignInError as error:
+            return self.reply({"error": str(error)}, error.status)
 
     def handle_POST(self):
         origin = self.headers.get("Origin")
@@ -246,17 +307,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.workspace_transfer()
         if urlparse(self.path).path == "/api/recordings":
             try:
+                user = self.personal_user()
                 length = int(self.headers.get("Content-Length", "0"))
                 result = self.server.recordings.upload(self.rfile, length, unquote(self.headers.get("X-Recording-Name", "recording.mp4")))
+                if user:
+                    with self.store.connect() as db:
+                        db.execute("INSERT INTO personal_resources VALUES ('recording',?,?)", (result["id"], user["id"]))
                 return self.reply(result, 202)
             except ValueError as error:
                 self.close_connection = True
-                return self.reply({"error": str(error)}, 400)
+                return self.reply({"error": str(error)}, error.status if isinstance(error, SignInError) else 400)
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.reply({"error": "请使用 application/json"}, 415)
         path = urlparse(self.path).path
         room_match = re.fullmatch(r"/api/rooms/([a-f0-9]{32})", path)
-        if not room_match and path not in ("/api/rooms", "/api/network/inspect", "/api/challenges/check", "/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect", "/api/repair-labs/inspect"):
+        if not room_match and path not in ("/api/account/register", "/api/account/login", "/api/account/logout", "/api/account/memory", "/api/memories", "/api/rooms", "/api/network/inspect", "/api/challenges/check", "/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect", "/api/repair-labs/inspect"):
             return self.reply({"error": "未找到接口"}, 404)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -265,10 +330,31 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8-sig"))
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
+            if path in ("/api/account/register", "/api/account/login"):
+                user, token = self.server.personal.authenticate(payload, register=path.endswith("/register"), client=self.client_address[0])
+                return self.reply({"user": user}, cookie=token)
+            if path == "/api/account/logout":
+                self.server.personal.logout(self.personal_token())
+                return self.reply({"signed_out": True}, cookie="")
+            user = self.personal_user()
+            if path in ("/api/memories", "/api/account/memory"):
+                if not user:
+                    raise SignInError("请先登录个人账号")
+                if path == "/api/account/memory":
+                    self.server.personal.enable_memory(user["id"], payload.get("enabled"))
+                    return self.reply({"enabled": payload["enabled"]})
+                return self.reply({"memory": self.server.personal.save_memory(user["id"], payload)})
             if path == "/api/rooms":
-                return self.reply(self.server.rooms.create(payload.get("name"), payload.get("actor")), 201)
+                room = self.server.rooms.create(payload.get("name"), payload.get("actor"))
+                self.server.personal.join_room(user["id"] if user else None, room["id"])
+                return self.reply(room, 201)
             if room_match:
-                return self.reply(self.server.rooms.update(room_match[1], payload))
+                for recording in payload.get("recordings", []):
+                    if not self.can_read("recording", recording):
+                        raise ValueError("无法共享这份图片或录屏")
+                room = self.server.rooms.update(room_match[1], payload)
+                self.server.personal.join_room(user["id"] if user else None, room["id"])
+                return self.reply(room)
             if path == "/api/challenges/check":
                 from .challenges import check_answer
                 return self.reply(check_answer(payload.get("id"), payload.get("choice")))
@@ -297,6 +383,8 @@ class Handler(BaseHTTPRequestHandler):
             session = payload.get("session_id")
             if session is not None and (not isinstance(session, str) or not re.fullmatch(r"[a-f0-9]{32}", session)):
                 raise ValueError("session_id 格式错误")
+            if session and not self.can_read("session", session):
+                return self.reply({"error": "会话不存在", "code": "session_not_found"}, 404)
             if path == "/api/export":
                 if not session:
                     raise ValueError("请选择已有会话")
@@ -314,6 +402,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(result)
             if payload.get("room_id"):
                 payload = self.server.rooms.prepare_diagnosis(payload)
+                session = payload.get("session_id")
+                self.server.personal.join_room(user["id"] if user else None, payload["room_id"])
+            for recording in payload.get("recordings", []):
+                if not self.can_read("recording", recording):
+                    raise ValueError("图片或录屏不属于本次排查")
+            payload.pop("personal_memory", None)
+            if payload.get("diagnostic_mode") == "open_network":
+                payload["personal_memory"] = [] if payload.get("room_id") else self.server.personal.context(user,
+                    payload.get("question", "") + " " + payload.get("interaction", {}).get("message", ""))
             validate(payload)
             if path == "/api/fingerprint":
                 return self.reply({"config_fingerprint": fingerprint(payload)})
@@ -334,6 +431,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.reply(self.save_result(payload, result))
             finally:
                 self.server.diagnosis_slots.release()
+        except SignInError as error:
+            self.reply({"error": str(error), "code": "sign_in_required"}, error.status)
         except RoomConflict as error:
             self.reply({"error": str(error), "code": "room_conflict"}, 409)
         except (ValueError, KeyError, TypeError, UnicodeError) as error:
@@ -345,12 +444,22 @@ class Handler(BaseHTTPRequestHandler):
             self.server.write_log(traceback.format_exc(), error=True)
 
     def save_result(self, payload, result):
-        saved = self.store.save(payload, result)
+        user = self.personal_user()
+        owner = "room:" + payload["room_id"] if payload.get("room_id") else user["id"] if user else None
+        result["memory_used"] = [{"kind": item["kind"], "title": item["title"]} for item in payload.get("personal_memory", [])]
+        saved = self.store.save(payload, result, owner=owner)
         self.server.rooms.record_diagnosis(payload, saved)
+        if user:
+            self.server.personal.remember_issue(user["id"], payload, saved)
         return saved
 
     def workspace_transfer(self):
         try:
+            maintenance = os.environ.get("LABAGENT_MAINTENANCE_PASSWORD", "")
+            if maintenance or self.server.workspace.summary()["users"]:
+                supplied = self.headers.get("X-LabAgent-Maintenance", "")
+                if not maintenance or not hmac.compare_digest(supplied.encode(), maintenance.encode()):
+                    return self.reply({"error": "全站备份与恢复需要独立的维护口令，请维护人员配置 LABAGENT_MAINTENANCE_PASSWORD 后输入。"}, 403)
             if urlparse(self.path).path.endswith("/backup"):
                 with self.server.workspace.export() as archive, archive.open("rb") as content:
                     self.send_response(200)
@@ -483,6 +592,7 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
     store = Store(database)
     server = ThreadingHTTPServer((host, port), partial(Handler, store=store))
     server.rooms = Rooms(store)
+    server.personal = Personal(store)
     server.public_url, server.team_password = public_url, team_password
     server.allowed_hosts = {f"127.0.0.1:{server.server_port}", f"localhost:{server.server_port}"}
     server.allowed_origins = {"http://" + item for item in server.allowed_hosts}
