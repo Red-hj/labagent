@@ -37,6 +37,7 @@ MEASURED_DEMOS = {
     "/api/demos/repair_comparison": ("frr_repair_run.json", "FRR修复实验.json", "修复方案实际运行对照"),
     "/api/demos/ospf_area_measured": ("frr_lab02_area.json", "FRR区域复测.json", "OSPF 区域不匹配实测"),
     "/api/demos/ospf_shutdown_measured": ("frr_lab03_shutdown.json", "FRR接口复测.json", "OSPF 互联接口关闭实测"),
+    "/api/demos/ospf_backup_measured": ("frr_lab02_backup.json", "FRR备用路由复测.json", "OSPF 失配与备用静态路由实测"),
 }
 
 
@@ -408,8 +409,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.can_read("recording", recording):
                     raise ValueError("图片或录屏不属于本次排查")
             payload.pop("personal_memory", None)
+            shared_room = payload.get("room_id") or self.server.personal.session_room(session)
             if payload.get("diagnostic_mode") == "open_network":
-                payload["personal_memory"] = [] if payload.get("room_id") else self.server.personal.context(user,
+                payload["personal_memory"] = [] if shared_room else self.server.personal.context(user,
                     payload.get("question", "") + " " + payload.get("interaction", {}).get("message", ""))
             validate(payload)
             if path == "/api/fingerprint":
@@ -423,9 +425,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self.server.diagnosis_slots.acquire(blocking=False):
                 return self.reply({"error": "当前正在处理其他诊断，请稍后重试"}, 429)
             if path == "/api/diagnose/stream":
-                return self.stream_diagnosis(payload, session)
+                return self.stream_diagnosis(payload, session, room_id=shared_room)
             try:
-                key = payload.get("room_id") or session or "new"
+                key = shared_room or session or "new"
                 with self.server.session_locks[hash(key) % len(self.server.session_locks)]:
                     result = self.server.run_diagnosis(payload)
                     self.reply(self.save_result(payload, result))
@@ -536,14 +538,14 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def stream_diagnosis(self, payload, session):
+    def stream_diagnosis(self, payload, session, *, room_id=None):
         events = Queue()
 
         def process():
             try:
                 with self.server.workspace.gate.activity(), progress_to(events.put):
                     emit_progress("received", "请求已收到，正在准备本轮诊断。")
-                    with self.server.session_locks[hash(payload.get("room_id") or session or "new") % len(self.server.session_locks)]:
+                    with self.server.session_locks[hash(room_id or payload.get("room_id") or session or "new") % len(self.server.session_locks)]:
                         result = self.server.run_diagnosis(payload)
                         emit_progress("saving", "正在保存本轮结论与会话记录…")
                         saved = self.save_result(payload, result)

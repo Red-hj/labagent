@@ -248,14 +248,14 @@ class WorkspaceHttpTests(unittest.TestCase):
             self.assertIn("course-a", self.request(new_base, "/api/knowledge/scopes")["scopes"])
         self.complete = compare_then_complete
         second = self.request(new_base, "/api/diagnose", {**stages()[1], "session_id": first["session_id"],
-            "interaction": {"type": "update", "message": "恢复后已改正网关。"}})
+            "interaction": {"type": "update", "message": "恢复后已改正网关。"}}, headers={"X-LabAgent-Room": room["id"]})
         self.assertTrue(second["workflow"]["context_restored"])
         self.assertEqual(len(second["conversation"]), 2)
         self.assertTrue(second["interaction_checks"]["compare_materials"]["changed"])
-        self.assertEqual(len(self.request(new_base, "/api/sessions/" + first["session_id"])["attempts"]), 2)
-        report = self.request(new_base, "/api/sessions/" + first["session_id"] + "/report")["markdown"]
+        self.assertEqual(len(self.request(new_base, "/api/sessions/" + first["session_id"], headers={"X-LabAgent-Room": room["id"]})["attempts"]), 2)
+        report = self.request(new_base, "/api/sessions/" + first["session_id"] + "/report", headers={"X-LabAgent-Room": room["id"]})["markdown"]
         self.assertIn("恢复后已改正网关", report)
-        exported = self.request(new_base, "/api/export", {"session_id": first["session_id"]})
+        exported = self.request(new_base, "/api/export", {"session_id": first["session_id"]}, headers={"X-LabAgent-Room": room["id"]})
         self.assertTrue(Path(exported["report_path"]).is_relative_to(restored.workspace.store.path.parent))
 
     def test_backup_and_restore_require_team_login_and_same_site(self):

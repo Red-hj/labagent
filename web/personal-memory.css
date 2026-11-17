@@ -3,6 +3,7 @@
 .personal-dialog::backdrop {background:#12213b4a;backdrop-filter:blur(5px)}
 .personal-heading,.personal-account-row,.memory-item-actions {display:flex;justify-content:space-between;align-items:center;gap:12px}
 .personal-heading h2 {margin:0;font-size:22px}.personal-description,.personal-note {font-size:13px;line-height:1.7;color:#68788f}
+.personal-heading {position:sticky;top:-24px;background:#fcfdff;padding:12px 0;z-index:1}.personal-dialog form label {margin:4px 0 0}.personal-dialog .primary-button {margin-top:8px}
 .personal-dialog form {display:grid;gap:9px}.personal-dialog label {font-size:13px;color:#465875}.personal-dialog input:not([type=checkbox]),.personal-dialog textarea,.personal-dialog select {box-sizing:border-box;width:100%;border:1px solid #d9e2ef;border-radius:10px;padding:10px;background:#fff;font:inherit;color:inherit}
 .personal-dialog input:focus-visible,.personal-dialog textarea:focus-visible,.personal-dialog select:focus-visible {outline:2px solid #7795f4;outline-offset:2px}
 .personal-check {display:flex;align-items:center;gap:8px;margin:12px 0}.personal-check input {width:17px;height:17px}

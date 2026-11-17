@@ -343,6 +343,13 @@ class PersonalHttpTests(unittest.TestCase):
         self.assertEqual(len(self.server.personal.list_memories(self.user["id"])), 1)
         self.assertEqual(self.request("/api/sessions/" + saved["session_id"])[0], 404)
         self.assertEqual(self.request("/api/sessions/" + saved["session_id"], headers={"X-LabAgent-Room": room["id"]})[0], 200)
+        followup = self.request("/api/diagnose", {**stages()[0], "session_id": saved["session_id"],
+            "interaction": {"type": "ask", "message": "继续共享排查"}}, cookie=self.cookie)[2]
+        self.assertEqual(followup["memory_used"], [])
+        self.assertEqual(len(self.server.personal.list_memories(self.user["id"])), 1)
+        row = next(row for row in self.request("/api/sessions", cookie=self.cookie)[2] if row["session_id"] == saved["session_id"])
+        self.assertEqual(row["room_id"], room["id"])
+        self.assertEqual(self.server.personal.session_room(saved["session_id"]), room["id"])
 
 
 if __name__ == "__main__":

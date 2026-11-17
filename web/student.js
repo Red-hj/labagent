@@ -29,6 +29,7 @@ const measuredDemos = new Map([
   ["repair_comparison", {name: "FRR修复实验.json", question: "比较这次实际实验中两种修复方案的效果：为什么Ping通了仍可能没有完成实验？推荐满足全部目标的方案，并解释配置改动。"}],
   ["ospf_area_measured", {name: "FRR区域复测.json", question: "根据两阶段 FRRouting 记录，解释 R2 的区域改动怎样影响邻接、远端路由和双向 Ping。为什么直连 Ping 在故障阶段仍然成功？"}],
   ["ospf_shutdown_measured", {name: "FRR接口复测.json", question: "根据 FRRouting 实测记录，说明 R2 的接口管理状态如何影响直连 Ping、OSPF 邻接和两端的远端路由。用哪些证据确认接口重新启用后已经恢复？"}],
+  ["ospf_backup_measured", {name: "FRR备用路由复测.json", question: "为什么 OSPF 区域不一致时，两端 Ping 仍然成功？请根据各阶段实际选中的路由来源和邻居输出，比较备用静态路由与 OSPF 恢复后的实验目标完成情况。"}],
 ]);
 
 function element(tag, text, className) {

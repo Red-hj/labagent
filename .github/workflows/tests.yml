@@ -1,0 +1,40 @@
+name: Test LabAgent
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install application dependencies
+        run: python -m pip install -r requirements-workflow.txt -r requirements-replay.txt
+      - name: Check diagnosis, accounts, sharing and backups without live model calls
+        run: python -B -m unittest discover -s tests -v
+      - name: Check browser scripts and interactions
+        run: |
+          for script in web/*.js; do node --check "$script"; done
+          node tests/test_client_api.js
+          node tests/test_feedback.js
+          node tests/test_personal_memory.js

@@ -208,7 +208,8 @@ class Personal:
                 for *_, memory in ranked[:6]]
 
     def remember_issue(self, user_id, payload, result):
-        if payload.get("room_id") or payload.get("evidence_kind") == "demo" or result.get("llm", {}).get("status") != "ok":
+        if (payload.get("room_id") or self.session_room(result.get("session_id")) or
+            payload.get("evidence_kind") == "demo" or result.get("llm", {}).get("status") != "ok"):
             return
         title = payload.get("question", "").strip()
         if not title or ("上传" in title and title.startswith(("请根据", "请分析"))):
@@ -238,6 +239,15 @@ class Personal:
         if user_id:
             with self.store.connect() as db:
                 db.execute("INSERT OR IGNORE INTO personal_room_members VALUES (?,?)", (user_id, room_id))
+
+    def session_room(self, session_id):
+        if not session_id:
+            return None
+        with self.store.connect() as db:
+            row = db.execute("SELECT substr(owner_id,6) FROM personal_resources WHERE kind='session' AND resource_id=? AND owner_id LIKE 'room:%'",
+                (session_id,)).fetchone() or db.execute("SELECT json_extract(payload,'$.room_id') FROM attempts WHERE session_id=? AND json_extract(payload,'$.room_id') IS NOT NULL ORDER BY id LIMIT 1",
+                (session_id,)).fetchone()
+        return row[0] if row and isinstance(row[0], str) and re.fullmatch(r"[a-f0-9]{32}", row[0]) else None
 
     def owns(self, kind, resource_id, user_id=None, room_id=None):
         with self.store.connect() as db:

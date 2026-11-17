@@ -76,7 +76,8 @@ class Store:
                                json_extract(last.result,'$.hint'),'') END AS preview,
             json_extract(last.result,'$.status') AS status,
             COALESCE(json_extract(first.payload,'$.diagnostic_mode'),'ospf_rules') AS mode,
-            json_extract(last.payload,'$.room_id') AS room_id,
+            COALESCE((SELECT substr(p.owner_id,6) FROM personal_resources p WHERE p.kind='session' AND p.resource_id=g.session_id AND p.owner_id LIKE 'room:%'),
+                     json_extract(last.payload,'$.room_id'),json_extract(first.payload,'$.room_id')) AS room_id,
             (SELECT group_concat(key,' ') FROM json_each(first.payload,'$.configs')) AS material_names
             FROM grouped g JOIN attempts first ON first.id=g.first_id JOIN attempts last ON last.id=g.last_id"""
         with self.connect() as db:
