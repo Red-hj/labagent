@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 
 from .connectivity import parse_ping_records
-from .runtime_parser import parse_routes
+from .runtime_parser import FRR_ROUTE_LEGEND, parse_frr_routes, parse_routes
 from .operation_history import TIME
 
 
@@ -33,6 +33,12 @@ GOAL_TOOL = {"type": "function", "function": {
         "required": ["id", "title", "kind", "device", "target", "expected", "instruction"], "additionalProperties": False}}},
         "additionalProperties": False}}}
 
+ROUTE_TOOL = {"type": "function", "function": {
+    "name": "check_route_selection",
+    "description": "核对设备当前IPv4路由表中到指定IP或网段的路由来源和下一跳。仅使用实际运行输出；配置命令无法证明路由已选中。询问实际走哪个协议或下一跳时使用。",
+    "parameters": {"type": "object", "properties": {"device": {"type": "string"}, "target": {"type": "string"}},
+                   "required": ["device", "target"], "additionalProperties": False}}}
+
 
 def evidence_blocks(sources, *, include_history=False):
     blocks = []
@@ -55,7 +61,7 @@ def evidence_blocks(sources, *, include_history=False):
         default_device = device
         start, command, section = 0, source.get("command", ""), ""
         for index, line in enumerate(lines):
-            prompt = re.match(r"^\s*<([\w.-]+)>\s*(.*)$", line)
+            prompt = re.match(r"^\s*<([\w.-]+)>\s*(.*)$", line) or re.match(r"^\s*([\w.-]+)#\s*(show\s+ip\s+route\b.*)$", line, re.I)
             heading = DEVICE_SECTION.fullmatch(line)
             boundary = DOCUMENT_SECTION.fullmatch(line)
             if prompt or heading or boundary:
@@ -156,32 +162,58 @@ def _ping(goal, blocks):
     return ("passed" if passed else "failed"), f"到{goal['target']}的Ping{'全部通过' if passed else '仍有丢包'}。", evidence
 
 
-def _route(goal, blocks):
-    tables = []
-    for block in blocks:
+def check_route_selection(device, target, blocks):
+    network = ipaddress.IPv4Network(target, strict=False) if "/" in target else None
+    address = ipaddress.IPv4Address(target) if network is None else None
+    request = {"device": device, "information": "完整当前 IPv4 路由表（display ip routing-table 或 show ip route）",
+               "why": f"核对到 {target} 的路由来源和下一跳"}
+    result = {"device": device, "target": target, "status": "needs_evidence", "routes": [], "evidence": [],
+              "detail": f"待补 {device} 当前路由表，以确认到 {target} 的实际路由来源和下一跳。", "request": request}
+
+    for block in reversed(blocks):
+        if block["device"].casefold() != device.casefold():
+            continue
+        command = " ".join(block["command"].lower().split())
+        if re.fullmatch(r"(?:display ip routing-table|show ip route)\s+(?!\d)[a-z].*", command):
+            continue  # A protocol/VRF-filtered output cannot establish the forwarding choice.
+        text = "\n".join(block["lines"])
+        frr = FRR_ROUTE_LEGEND.search(text)
+        if frr:
+            header = next(i for i, line in enumerate(block["lines"], 1) if FRR_ROUTE_LEGEND.search(line))
+        elif re.search(r"Destination/Mask\s+Proto", text):
+            header = next(i for i, line in enumerate(block["lines"], 1) if "Destination/Mask" in line)
+        else:
+            continue
         try:
-            rows = parse_routes("\n".join(block["lines"]))
+            rows = parse_frr_routes(text) if frr else parse_routes(text, installed_only=True)
         except ValueError:
             rows = None
-        if rows is not None:
-            tables.append((block, rows))
-    if not tables:
-        return "needs_evidence", f"补充{goal['device']}的VRP路由表，核对到{goal['target']}的路由来源。", []
-    # A route is meaningful for a specific device; require it in the criterion.
-    block, rows = tables[-1]
-    if "/" in goal["target"]:
-        network = ipaddress.ip_network(goal["target"], strict=False)
-        matches = [row for row in rows if ipaddress.ip_network(row["network"]) == network]
-    else:
-        target = ipaddress.ip_address(goal["target"])
-        matches = [row for row in rows if target in ipaddress.ip_network(row["network"])]
-    if not matches:
-        header = next(index for index, line in enumerate(block["lines"], 1) if "Destination/Mask" in line)
-        return "needs_evidence", f"当前表中未找到{goal['target']}；补充包含该目标的完整路由输出。", [citation(block, header)]
-    route = max(matches, key=lambda row: ipaddress.ip_network(row["network"]).prefixlen)
-    actual, expected = route["protocol"].upper(), goal["expected"].upper()
-    passed = actual == expected or (expected == "OSPF" and actual in {"OSPF_ASE", "OSPF_NSSA"})
-    return ("passed" if passed else "failed"), f"{goal['device']}到{goal['target']}使用{actual}，实验要求{expected}。", [citation(block, route["line"])]
+        matches = []
+        for row in rows or []:
+            prefix = ipaddress.IPv4Network(row["network"])
+            if (network == prefix if network else address in prefix):
+                matches.append((prefix.prefixlen, row))
+        if not matches:
+            result["evidence"] = [citation(block, header)]
+            break
+        longest = max(length for length, _ in matches)
+        chosen = [row for length, row in matches if length == longest]
+        routes = [{key: row[key] for key in ("network", "protocol", "next_hop", "interface")} for row in chosen]
+        summary = "、".join(dict.fromkeys(f"{route['network']} {route['protocol'].upper()}"
+                           + (f" 经 {route['next_hop']}" if route["next_hop"] else "") for route in routes))
+        return {**result, "status": "observed", "routes": routes, "evidence": [citation(block, row["line"]) for row in chosen],
+                "detail": f"{device} 到 {target} 的路由表匹配项为 {summary}。", "request": None}
+    return result
+
+
+def _route(goal, blocks):
+    result = check_route_selection(goal["device"], goal["target"], blocks)
+    if result["status"] != "observed":
+        return "needs_evidence", result["detail"], result["evidence"]
+    actual = {route["protocol"].upper() for route in result["routes"]}
+    expected = goal["expected"].upper()
+    accepted = {"OSPF", "OSPF_ASE", "OSPF_NSSA"} if expected == "OSPF" else {expected}
+    return ("passed" if actual <= accepted else "failed"), f"{result['detail']} 实验要求{expected}。", result["evidence"]
 
 
 def _config(goal, blocks):

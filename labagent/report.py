@@ -196,6 +196,13 @@ def generate_open_report(history):
         rows += ["", "## 本次运行复测", "", "| 材料来源 | 目标 | 发送 | 接收 | 结果 |", "| --- | --- | --- | --- | --- |"]
         for ping in pings:
             rows.append(f"| {clean(ping.get('device', '提交输出'))} | {clean(ping['target'])} | {ping['sent']} | {ping['received']} | {'通过' if ping['passed'] else '未通过'} |")
+    routes = result.get("interaction_checks", {}).get("check_route_selection", [])
+    if routes:
+        rows += ["", "## 路由表核对", ""]
+        for lookup in routes:
+            rows.append("- " + clean(lookup["detail"]))
+            for ref in lookup["evidence"]:
+                rows.append(f"  - {clean(ref['device'])} 第{ref['line']}行：{clean(ref['quote'])}")
     pending = analysis.get("pending_requests", analysis.get("evidence_requests", []))
     if pending and result["status"] not in RESOLVED_STATUSES:
         rows += ["", "## 下一步", ""]

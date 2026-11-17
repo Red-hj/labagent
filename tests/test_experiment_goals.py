@@ -54,6 +54,73 @@ def scripted_completion(stage, *, falsely_pass=False):
 
 
 class ExperimentGoalTests(unittest.TestCase):
+    def test_live_frr_route_rows_distinguish_static_fallback_from_unselected_static(self):
+        run = json.loads((ROOT / "data/examples/frr_lab02_backup.json").read_text(encoding="utf-8"))
+        for phase, protocol in zip(run["phases"], ("Static", "OSPF")):
+            current = {"configs": {f"{router}-路由.log": data["route_output"] for router, data in phase["observations"].items()
+                                   if router in ("R1", "R2")}}
+            sources, _ = source_bundle(current)
+            for router, target, hop in (("R1", "192.168.20.10", "10.12.0.2"), ("R2", "192.168.10.10", "10.12.0.1")):
+                seen = set()
+                checked, _ = execute_tool("check_route_selection", {"device": router, "target": target}, current, sources, seen)
+                self.assertEqual(checked["status"], "observed")
+                self.assertEqual([(item["protocol"], item["next_hop"]) for item in checked["routes"]], [(protocol, hop)])
+                ref = checked["evidence"][0]
+                self.assertIn((ref["source_id"], ref["line"]), seen)
+                self.assertEqual(ref["quote"], sources[ref["source_id"]]["lines"][ref["line"] - 1])
+
+    def test_route_selection_needs_a_table_for_the_right_device_and_unfiltered_scope(self):
+        legend = "       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n"
+        route = "S>* 192.168.20.0/24 [200/0] via 10.12.0.2, transit"
+        materials = {
+            "R1.cfg": "hostname R1\nip route 192.168.20.0/24 10.12.0.2 200",
+            "R1-filtered.log": "R1# show ip route static\n" + legend + route,
+            "R1-mislabeled.log": "R2# show ip route\n" + legend + route,
+        }
+        current = {"configs": materials}
+        sources, _ = source_bundle(current)
+        checked, _ = execute_tool("check_route_selection", {"device": "R1", "target": "192.168.20.10"}, current, sources, set())
+        self.assertEqual(checked["status"], "needs_evidence")
+        self.assertEqual(checked["routes"], [])
+        self.assertIn("show ip route", checked["request"]["information"])
+
+    def test_route_selection_prefers_longest_installed_prefix_and_keeps_equal_cost_next_hops(self):
+        table = ("R1# show ip route\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n"
+                 "S>* 0.0.0.0/0 [200/0] via 10.12.0.2, transit\n"
+                 "O>  192.168.20.0/24 [110/20] via 10.12.0.2, transit\n"
+                 "O>* 192.168.20.10/32 [110/20] via 10.12.0.2, transit\n"
+                 "  *                          via 10.12.0.3, transit\n")
+        current = {"configs": {"R1.log": table}}
+        sources, _ = source_bundle(current)
+        for target, choices in (("192.168.20.10", ["10.12.0.2", "10.12.0.3"]), ("192.168.20.11", ["10.12.0.2"]),
+                                ("192.168.20.0/24", [])):
+            result, _ = execute_tool("check_route_selection", {"device": "R1", "target": target}, current, sources, set())
+            self.assertEqual([entry["next_hop"] for entry in result["routes"]], choices)
+
+    def test_vrp_route_selection_uses_the_downloaded_row_and_preserves_interface(self):
+        table = ("<R1>display ip routing-table\nDestination/Mask Proto Pre Cost Flags NextHop Interface\n"
+                 "192.168.20.0/24 OSPF 10 20 R 10.12.0.2 GigabitEthernet 1/0/1\n"
+                 "192.168.20.0/24 Static 60 0 RD 10.12.0.3 GigabitEthernet 1/0/2\n")
+        current = {"configs": {"R1.log": table}}
+        sources, _ = source_bundle(current)
+        result, _ = execute_tool("check_route_selection", {"device": "R1", "target": "192.168.20.10"}, current, sources, set())
+        self.assertEqual(result["routes"], [{"network": "192.168.20.0/24", "protocol": "Static",
+                                            "next_hop": "10.12.0.3", "interface": "GigabitEthernet 1/0/2"}])
+
+    def test_route_tool_sets_the_missing_request_and_accepts_a_complete_route_answer(self):
+        materials = {"R1.log": "<R1>display ip routing-table\nDestination/Mask Proto Pre Cost Flags NextHop Interface\n"
+                     "192.168.20.0/24 OSPF 10 20 D 10.12.0.2 GE1/0/1"}
+        for configs, expected in ((materials, "observed"), ({"R1.cfg": "sysname R1"}, "needs_evidence")):
+            current, context, seen = {"configs": configs}, {}, set()
+            sources, _ = source_bundle(current)
+            result, _ = execute_tool("check_route_selection", {"device": "R1", "target": "192.168.20.10"},
+                                    current, sources, seen, diagnostic_context=context)
+            self.assertEqual(result["status"], expected)
+            submitted, finished = execute_tool("submit_hypotheses", {"summary": result["detail"], "hypotheses": [], "evidence_requests": []},
+                                              current, sources, seen, diagnostic_context=context)
+            self.assertTrue(finished)
+            self.assertEqual(submitted["evidence_requests"], [] if expected == "observed" else [result["request"]])
+
     def test_device_config_section_in_combined_material_is_cited_and_checked(self):
         text = (ROOT / "data/examples/实验诊断材料_终端跨网段访问.txt").read_text(encoding="utf-8")
         criterion = {"id":"gateway","title":"R1网关配置","kind":"config_contains","device":"R1",
