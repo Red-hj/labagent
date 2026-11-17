@@ -97,6 +97,9 @@ class MaterialService:
             if "course_documents" in request:
                 payload["course_documents"] = validate_course_documents(
                     request["course_documents"], payload.get("knowledge_scope", "default"))
+            if "personal_memory" in request:
+                from .personal import validate_memory_context
+                payload["personal_memory"] = validate_memory_context(request["personal_memory"])
             action, message = request.get("action"), request.get("message")
             if action is not None or message is not None:
                 if message is None:
@@ -111,6 +114,7 @@ class MaterialService:
             return {"status": "success" if model["status"] == "ok" else model["status"],
                     "session_id": result["session_id"],
                     "session_recovered": restored is not None,
+                    "personal_memory_applied": True,
                     "course_document_ids": sorted(document["id"] for document in payload.get("course_documents", [])),
                     "reply": result["investigation"].get("reply") or model.get("message") or result["hint"],
                     "result": result}

@@ -1,0 +1,14 @@
+.personal-entry {border:1px solid #dce4f8;border-radius:12px;background:linear-gradient(135deg,#fff9,#eaf0ffb3);color:#425fa1;padding:8px 12px;cursor:pointer;backdrop-filter:blur(14px);max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.personal-dialog {width:min(660px,calc(100vw - 32px));max-height:85vh;border:1px solid #dce5f4;border-radius:22px;padding:24px;background:#fcfdff;color:#1e2d46;box-shadow:0 24px 90px #14284530}
+.personal-dialog::backdrop {background:#12213b4a;backdrop-filter:blur(5px)}
+.personal-heading,.personal-account-row,.memory-item-actions {display:flex;justify-content:space-between;align-items:center;gap:12px}
+.personal-heading h2 {margin:0;font-size:22px}.personal-description,.personal-note {font-size:13px;line-height:1.7;color:#68788f}
+.personal-heading {position:sticky;top:-24px;background:#fcfdff;padding:12px 0;z-index:1}.personal-dialog form label {margin:4px 0 0}.personal-dialog .primary-button {margin-top:8px}
+.personal-dialog form {display:grid;gap:9px}.personal-dialog label {font-size:13px;color:#465875}.personal-dialog input:not([type=checkbox]),.personal-dialog textarea,.personal-dialog select {box-sizing:border-box;width:100%;border:1px solid #d9e2ef;border-radius:10px;padding:10px;background:#fff;font:inherit;color:inherit}
+.personal-dialog input:focus-visible,.personal-dialog textarea:focus-visible,.personal-dialog select:focus-visible {outline:2px solid #7795f4;outline-offset:2px}
+.personal-check {display:flex;align-items:center;gap:8px;margin:12px 0}.personal-check input {width:17px;height:17px}
+.personal-memory-editor {border-top:1px solid #e4eaf4;padding-top:15px;margin-top:15px}.personal-memory-editor summary {cursor:pointer;color:#3f60ac;margin-bottom:12px}
+.personal-memory-editor .personal-editor-actions {display:flex;gap:12px}.memory-item {padding:14px 0;border-bottom:1px solid #e6ecf5}.memory-item h4 {margin:0 0 6px;font-size:15px}.memory-item p {white-space:pre-wrap;font-size:14px;line-height:1.65;margin:6px 0}.memory-item small {color:#728098}.memory-item-actions {justify-content:flex-end;margin-top:6px}
+#personal-error {font-size:13px;color:#ab3548;white-space:pre-wrap}#personal-error:empty {display:none}.personal-note {margin-bottom:0}.personal-clear-confirm {display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px;border-radius:12px;background:#fff1f3;font-size:13px}.personal-clear-confirm[hidden] {display:none}
+@media(max-width:620px){.personal-entry {font-size:12px;padding:7px 9px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.personal-dialog {padding:18px}.personal-account-row {align-items:flex-start}.header-actions {gap:7px;flex-wrap:wrap;justify-content:flex-end}}
+@media(max-width:480px){.header-actions {flex-direction:row;max-width:210px}.personal-editor-actions {flex-wrap:wrap}}

@@ -238,7 +238,10 @@ class WorkspaceApiTests(unittest.TestCase):
         result = self.call("/api/diagnose", {"diagnostic_mode": "open_network", "use_llm": False, "room_id": room["id"], "room_revision": 1, "room_actor": "甲", "question": "PC1为什么无法访问服务器？"})
         room = self.call(path)
         self.assertEqual(room["session"]["session_id"], result["session_id"])
-        history = self.call("/api/sessions/" + result["session_id"])
+        with self.assertRaises(HTTPError) as denied:
+            self.call("/api/sessions/" + result["session_id"])
+        self.assertEqual(denied.exception.code, 404)
+        history = self.call("/api/sessions/" + result["session_id"] + "?room=" + room["id"])
         self.assertEqual(history["attempts"][0]["input"]["room_actor"], "甲")
         with self.assertRaises(HTTPError) as caught: self.call(path, update)
         self.assertEqual(caught.exception.code, 409)

@@ -29,6 +29,7 @@ const measuredDemos = new Map([
   ["repair_comparison", {name: "FRR修复实验.json", question: "比较这次实际实验中两种修复方案的效果：为什么Ping通了仍可能没有完成实验？推荐满足全部目标的方案，并解释配置改动。"}],
   ["ospf_area_measured", {name: "FRR区域复测.json", question: "根据两阶段 FRRouting 记录，解释 R2 的区域改动怎样影响邻接、远端路由和双向 Ping。为什么直连 Ping 在故障阶段仍然成功？"}],
   ["ospf_shutdown_measured", {name: "FRR接口复测.json", question: "根据 FRRouting 实测记录，说明 R2 的接口管理状态如何影响直连 Ping、OSPF 邻接和两端的远端路由。用哪些证据确认接口重新启用后已经恢复？"}],
+  ["ospf_backup_measured", {name: "FRR备用路由复测.json", question: "为什么 OSPF 区域不一致时，两端 Ping 仍然成功？请根据各阶段实际选中的路由来源和邻居输出，比较备用静态路由与 OSPF 恢复后的实验目标完成情况。"}],
 ]);
 
 function element(tag, text, className) {
@@ -53,7 +54,8 @@ function message(text, error = false) {
 $("close-feedback").addEventListener("click", dismissToast);
 document.addEventListener("keydown", event => { if (event.key === "Escape") dismissToast(); });
 async function api(path, body, options = {}) {
-  const response = await fetch(path, {...(body === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}), ...options});
+  const headers = {...(body === undefined ? {} : {"Content-Type":"application/json"}), ...options.headers, ...roomHeaders()};
+  const response = await fetch(path, {...(body === undefined ? {} : {method:"POST", body:JSON.stringify(body)}), ...options, headers});
   const data = (response.headers.get("Content-Type") || "").includes("application/json") ? await response.json() : {};
   if (!response.ok) {
     const error = new Error(response.status === 413 ? "材料较多，请先保留与本次问题相关的内容。" : data.error || "服务暂时无法响应，请稍后重试。");
@@ -61,6 +63,16 @@ async function api(path, body, options = {}) {
   }
   if (!Array.isArray(data) && !Object.keys(data).length) throw new Error("服务尚未返回完整结果，请稍后重试。");
   return data;
+}
+function roomHeaders() {
+  const room = new URLSearchParams(location.search).get("room");
+  return /^[a-f0-9]{32}$/.test(room || "") ? {"X-LabAgent-Room":room} : {};
+}
+function mediaUrl(path) {
+  const room = roomHeaders()["X-LabAgent-Room"];
+  if (!room || !path?.startsWith("/api/recordings/")) return path;
+  const url = new URL(path, location.origin); url.searchParams.set("room", room);
+  return url.pathname + url.search;
 }
 function serviceStatus() {
   $("service-status").textContent = busy ? "正在处理请求" : sessionProblem ? "会话已失效 · 可新建排查" : requestFailed ? "本次诊断失败 · 可重试" :
@@ -78,7 +90,7 @@ function receiveProgress(event) {
 }
 async function diagnose(input) {
   await window.LabWorkspace.prepareDiagnosis(input);
-  const response = await fetch("/api/diagnose/stream", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(input)});
+  const response = await fetch("/api/diagnose/stream", {method:"POST", headers:{"Content-Type":"application/json", ...roomHeaders()}, body:JSON.stringify(input)});
   if (!response.ok) {
     const data = (response.headers.get("Content-Type") || "").includes("application/json") ? await response.json() : {};
     throw new Error(data.error || "本次诊断未能开始，请稍后重试。");
@@ -155,7 +167,7 @@ function renderMaterials() {
     row.append(element("span", screenshot ? "IMG" : "TXT", "file-icon"), info, remove);
     if (screenshot) {
       const show = element("button", undefined, "screenshot-thumbnail"); show.type = "button"; show.setAttribute("aria-label", "查看截图 " + screenshot.name);
-      const img = element("img"); img.src = screenshot.image_url; img.alt = screenshot.name; img.loading = "lazy";
+      const img = element("img"); img.src = mediaUrl(screenshot.image_url); img.alt = screenshot.name; img.loading = "lazy";
       show.append(img, element("span", "查看原图 · 引用可定位画面")); show.addEventListener("click", () => showScreenshot(screenshot)); item.append(show);
     }
     const preview = element("details");
@@ -199,8 +211,8 @@ function showScreenshot(screenshot, citation) {
   const dialog = $("screenshot-dialog"), svg = $("screenshot-svg"), highlight = $("screenshot-highlight");
   $("screenshot-title").textContent = screenshot.name;
   svg.setAttribute("viewBox", "0 0 " + screenshot.width + " " + screenshot.height);
-  for (const [key, value] of Object.entries({href:screenshot.image_url, width:screenshot.width, height:screenshot.height})) $("screenshot-image").setAttribute(key, value);
-  $("open-screenshot").href = screenshot.image_url;
+  for (const [key, value] of Object.entries({href:mediaUrl(screenshot.image_url), width:screenshot.width, height:screenshot.height})) $("screenshot-image").setAttribute(key, value);
+  $("open-screenshot").href = mediaUrl(screenshot.image_url);
   const region = citation && (screenshot.regions || []).find(item => item.line === citation.line && item.text === citation.quote);
   highlight.toggleAttribute("hidden", !region);
   if (region) {
@@ -362,7 +374,7 @@ function renderRecordingChoices() {
   $("recording-label").hidden = select.hidden = !recordings.size;
   $("replay-video").hidden = $("recording-note").hidden = !recordings.size;
   const recording = recordings.get(select.value);
-  if (recording && $("replay-video").getAttribute("src") !== recording.video_url) $("replay-video").src = recording.video_url;
+  if (recording && $("replay-video").getAttribute("src") !== mediaUrl(recording.video_url)) $("replay-video").src = mediaUrl(recording.video_url);
   if (!recording) { $("replay-video").removeAttribute("src"); $("replay-video").load(); }
   $("process-section").hidden = !recordings.size && !operationHistory?.event_count;
   syncWorkspaceLayout();
@@ -577,6 +589,9 @@ function renderGoalsAndPlan(analysis, status) {
   container.append(details);
 }
 function showResult(result) {
+  window.LabPersonal.setResult(result);
+  $("memory-used").hidden = !result.memory_used?.length;
+  $("memory-used").textContent = "本轮参考记忆：" + (result.memory_used || []).map(item => item.title).join("、");
   sessionId = result.session_id;
   window.LabHistory.activate(sessionId);
   window.LabHistory.refresh();
@@ -714,6 +729,7 @@ $("followup-message").addEventListener("keydown", event => {
   if (!busy && !event.repeat) $("followup-form").requestSubmit();
 });
 $("new-diagnosis").addEventListener("click", () => {
+  window.LabPersonal.setResult(null);
   window.LabWorkspace.leave();
   sessionProblem = false; requestFailed = false; legacySession = false;
   window.LabHistory.activate(null); window.LabHistory.setSnapshot(null);
@@ -865,7 +881,8 @@ async function transferWorkspace(path, file) {
   for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = true;
   $("workspace-status").textContent = file ? "正在上传并恢复工作区…" : "正在准备工作区备份…";
   try {
-    const response = await fetch(path, {method:"POST", ...(file ? {headers:{"Content-Type":"application/zip"}, body:file} : {})});
+    const response = await fetch(path, {method:"POST", ...(file ? {body:file} : {}), headers:{...(file ? {"Content-Type":"application/zip"} : {}),
+      "X-LabAgent-Maintenance":$("maintenance-password").value}});
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.error || "备份操作未完成，请稍后重试。");
@@ -890,6 +907,7 @@ async function transferWorkspace(path, file) {
   } catch (error) { transferError = error.message; $("workspace-status").textContent = error.message; message(error.message, true); }
   finally {
     workspaceTransfer = false;
+    $("maintenance-password").value = "";
     $("download-workspace").disabled = busy;
     $("workspace-file").disabled = busy; $("workspace-file").value = "";
     $("restore-workspace").disabled = busy;
@@ -909,4 +927,7 @@ window.LabKnowledge.init({api,element,message,busy:() => busy,scope:() => knowle
   knowledgeScope = scope;
   if (sessionId) $("result-state").textContent = "参考资料已更新 · 下方为上一次分析";
 }});
+window.LabPersonal.init({api,element,message,busy:() => busy || workspaceTransfer,
+  newConversation:() => $("new-diagnosis").click(), refreshHistory:() => window.LabHistory.refresh(),
+  question:() => $("problem").value, shared:() => Boolean(roomHeaders()["X-LabAgent-Room"])});
 start().catch(error => { serviceState = "unavailable"; modelReady = false; setBusy(false); message("暂时无法连接服务：" + error.message, true); });

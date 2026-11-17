@@ -29,6 +29,7 @@ class CloudWorkflow:
             started_at - platform_started_at >= max(1, self.max_age - 300))
         request = {"materials": deepcopy(payload["configs"])}
         request["course_documents"] = export_course_documents(payload.get("knowledge_scope", "default"))
+        request["personal_memory"] = deepcopy(payload.get("personal_memory", []))
         for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings", "requirements", "topology", "command_outputs", "hint_level"):
             if key in payload:
                 request[key] = deepcopy(payload[key])
@@ -64,6 +65,8 @@ class CloudWorkflow:
         if recovering and response.get("session_recovered") is not True:
             raise ValueError("云端镜像尚不支持会话恢复，请更新AgentArts镜像后重试；此前的网页记录已保留。")
         expected = sorted(document["id"] for document in request["course_documents"])
+        if request["personal_memory"] and response.get("personal_memory_applied") is not True:
+            raise ValueError("云端尚不支持个人记忆，请更新AgentArts镜像后继续；此前的网页记录已保留。")
         if expected and response.get("course_document_ids") != expected:
             raise ValueError("云端尚未接收本轮课程资料，请更新AgentArts镜像后重试；此前的网页记录已保留。")
         result = response.get("result")

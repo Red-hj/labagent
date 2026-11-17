@@ -163,6 +163,25 @@ class ApiTests(unittest.TestCase):
         self.assertIn("state UP", after["evidence"])
         self.assertEqual(repaired["commands"], {"R2": ["ip link set dev transit up"]})
 
+    def test_backup_route_demo_keeps_ping_success_separate_from_ospf_goals(self):
+        demo = self.request("/api/demos/ospf_backup_measured")[1]
+        materials = demo["materials"]
+        comparison = self.request("/api/repair-labs/inspect", {"materials": materials})[1]["comparisons"][0]
+        fault, repaired = comparison["phases"]
+        self.assertEqual((fault["passed_count"], repaired["passed_count"], repaired["total"]), (3, 7, 7))
+        checks = {check["id"]: check for check in fault["checks"]}
+        self.assertTrue(checks["PC1-ping"]["passed"])
+        self.assertTrue(checks["PC2-ping"]["passed"])
+        self.assertFalse(checks["route_R1"]["passed"])
+        self.assertIn("static", checks["route_R1"]["detail"])
+        result = self.request("/api/diagnose", {"diagnostic_mode": "open_network", "configs": materials,
+            "question": "为什么Ping通过但OSPF实验尚未完成？", "use_llm": False})[1]
+        saved = self.request("/api/sessions/" + result["session_id"])[1]
+        self.assertEqual(saved["attempts"][-1]["result"]["repair_comparisons"][0], comparison)
+        report = self.request("/api/sessions/" + result["session_id"] + "/report")[1]["markdown"]
+        self.assertIn("3/7", report)
+        self.assertIn("7/7", report)
+
     def test_recording_upload_and_status_use_the_same_saved_video(self):
         from labagent.recordings import Recordings
         with patch("labagent.recordings.available", return_value=True), patch.object(Recordings, "_process"):
