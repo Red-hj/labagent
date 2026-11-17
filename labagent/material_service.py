@@ -9,6 +9,7 @@ from .experiment_goals import validate_goal_fields
 from .session_state import RESOLVED_OUTCOMES
 from .store import Store
 from .storage import data_directory
+from .knowledge import validate_course_documents
 from .workflow import run_open_workflow
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,6 +85,8 @@ class MaterialService:
                 "use_llm": True, "configs": {}, "evidence_kind": "user_submitted"}
             payload.pop("session_id", None)
             payload.pop("interaction", None)
+            if request.get("knowledge_scope", payload.get("knowledge_scope", "default")) != payload.get("knowledge_scope", "default"):
+                payload.pop("course_documents", None)
             materials = request.get("materials", {})
             if not isinstance(materials, dict):
                 raise ValueError("materials须为材料名称与正文组成的对象")
@@ -91,6 +94,9 @@ class MaterialService:
             for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings", "requirements", "topology", "command_outputs", "hint_level"):
                 if key in request:
                     payload[key] = request[key]
+            if "course_documents" in request:
+                payload["course_documents"] = validate_course_documents(
+                    request["course_documents"], payload.get("knowledge_scope", "default"))
             action, message = request.get("action"), request.get("message")
             if action is not None or message is not None:
                 if message is None:
@@ -105,5 +111,6 @@ class MaterialService:
             return {"status": "success" if model["status"] == "ok" else model["status"],
                     "session_id": result["session_id"],
                     "session_recovered": restored is not None,
+                    "course_document_ids": sorted(document["id"] for document in payload.get("course_documents", [])),
                     "reply": result["investigation"].get("reply") or model.get("message") or result["hint"],
                     "result": result}

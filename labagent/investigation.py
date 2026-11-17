@@ -9,7 +9,7 @@ import json
 import re
 import time
 
-from .knowledge import search, validate_scope
+from .knowledge import search, validate_scope, validate_course_documents
 from .model import configured, chat_completion, ModelError, public_config, bounded_setting
 from .session_state import RESOLVED_OUTCOMES, experiment_goal
 from .progress import emit_progress
@@ -40,6 +40,8 @@ def safe_value(value):
 
 def validate_open(payload):
     validate_scope(payload.get("knowledge_scope", "default"))
+    if "course_documents" in payload:
+        validate_course_documents(payload["course_documents"], payload.get("knowledge_scope", "default"))
     configs = payload.get("configs")
     if not isinstance(configs, dict) or not 1 <= len(configs) <= 20 or not all(isinstance(key, str) and 0 < len(key) <= 120 and isinstance(value, str) and 0 < len(value) <= 200_000 for key, value in configs.items()):
         raise ValueError("开放排查需要1～20份设备材料，名称不超过120字，正文不超过200KB")
@@ -313,7 +315,8 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
     if name == "retrieve_reference":
         exact_keys(args, ("query",))
         query = short_text(args["query"], 2000)
-        found = search(query, scope=payload.get("knowledge_scope", "default"), limit=3)
+        found = search(query, scope=payload.get("knowledge_scope", "default"), limit=3,
+                       course_documents=payload.get("course_documents"))
         return {"role": "教学参考，不是设备观测", "results": [{**doc, "content": safe_text(doc["content"])} for doc in found["results"]], "warnings": found["warnings"]}, False
     if name == "submit_hypotheses":
         if not seen:

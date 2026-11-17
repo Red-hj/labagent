@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt -r requirements-workflow.txt 
 COPY --chown=app:app . .
 RUN mkdir -p runtime data/course_notes && chown -R app:app runtime data/course_notes
 USER app
+RUN python -B scripts/setup_agentarts_iam.py
 RUN python -B scripts/extract_recording.py --prepare
 
 EXPOSE 10000

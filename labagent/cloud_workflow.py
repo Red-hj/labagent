@@ -4,6 +4,7 @@ import time
 import uuid
 
 from .agentarts_client import AgentArtsClient, AgentArtsError
+from .knowledge import export_course_documents
 from .progress import emit_progress
 
 
@@ -27,6 +28,7 @@ class CloudWorkflow:
             started_at - previous.get("last_activity_at", 0) >= max(1, self.idle_timeout - 30) or
             started_at - platform_started_at >= max(1, self.max_age - 300))
         request = {"materials": deepcopy(payload["configs"])}
+        request["course_documents"] = export_course_documents(payload.get("knowledge_scope", "default"))
         for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings", "requirements", "topology", "command_outputs", "hint_level"):
             if key in payload:
                 request[key] = deepcopy(payload[key])
@@ -61,6 +63,9 @@ class CloudWorkflow:
             response = self.client_factory(platform_id).invoke(request)
         if recovering and response.get("session_recovered") is not True:
             raise ValueError("云端镜像尚不支持会话恢复，请更新AgentArts镜像后重试；此前的网页记录已保留。")
+        expected = sorted(document["id"] for document in request["course_documents"])
+        if expected and response.get("course_document_ids") != expected:
+            raise ValueError("云端尚未接收本轮课程资料，请更新AgentArts镜像后重试；此前的网页记录已保留。")
         result = response.get("result")
         if not isinstance(result, dict) or not all(key in result for key in
                 ("created_at", "config_fingerprint", "hint_level", "findings", "status")):
