@@ -76,7 +76,7 @@ def generate_report(history):
     if not result["runtime_checks"] and not ping_rows:
         rows.append("补充本次测试输出后，可在这里查看复测结果。")
     rows += ["", "## 学习与修改记录", "", f"提交 {len(history['attempts'])} 次；输入快照变化 {history['learning_record']['config_revisions']} 次；最高提示等级 {history['learning_record']['max_hint_level']}。", "",
-             "## 知识依据", ""]
+             "## 检索参考资料", "", "以下为检索返回的参考片段，是否支持结论须结合原文和本轮实验材料核对。", ""]
     for document in result["knowledge"]:
         rows.append(f"- {clean(document['title'])}（{clean(document['source_type'])}）：{document.get('reference_url', '')}")
         if "chunk_id" in document:
@@ -222,7 +222,7 @@ def generate_open_report(history):
             rows += ["- 你：" + clean(turn["user"]), "- LabAgent：" + clean(turn["assistant"])]
     documents = {doc.get("chunk_id", doc["id"]): doc for attempt in attempts for doc in attempt["result"].get("knowledge", [])}
     if documents:
-        rows += ["", "## 知识依据", ""]
+        rows += ["", "## 检索参考资料", "", "以下为检索返回的候选片段，不能据此推定设备实际参数或认定资料足以回答。", ""]
         for doc in documents.values():
             rows.append(f"- {clean(doc['title'])}：{doc.get('reference_url', '')}")
             if "chunk_id" in doc:

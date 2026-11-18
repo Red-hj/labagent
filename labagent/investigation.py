@@ -389,7 +389,9 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
         query = short_text(args["query"], 2000)
         found = search(query, scope=payload.get("knowledge_scope", "default"), limit=3,
                        course_documents=payload.get("course_documents"))
-        return {"role": "教学参考，不是设备观测", "results": [{**doc, "content": safe_text(doc["content"])} for doc in found["results"]], "warnings": found["warnings"]}, False
+        return {"role": "教学参考，不是设备观测", "match_summary": found.get("match_summary", {
+                    "status": "reference_candidates" if found["results"] else "no_match", "answerability": "not_assessed"}),
+                "results": [{**doc, "content": safe_text(doc["content"])} for doc in found["results"]], "warnings": found["warnings"]}, False
     if name == "submit_hypotheses":
         if not isinstance(args, dict):
             raise ValueError("字段不符合工具定义")
@@ -473,6 +475,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
             "conversation": safe_value((conversation or [])[-6:])}, ensure_ascii=False)}]
     messages[0]["content"] += " ask直接回答追问，repair提供具体修改步骤，update分析补充材料，verify先用compare_materials和check_submitted_pings核对改动及上传的Ping统计。用reply回答本次问题、steps提供最多4步操作。修改建议使用材料明确给出的目标参数，不猜测删除命令后的默认行为。交流轮可不提出新假设或新材料请求，避免重复报告。已排除的旧原因不当作新假设。"
     messages[0]["content"] += " 不为无证据的理论风险延长排查。verify中当原故障已排除且实验目标对应的Ping统计均通过时，提交outcome=observations_passed并列出verification_targets，hypotheses与evidence_requests置空；可以保存报告后结束本轮。repair提供步骤后可用ready_for_retest。ask回答概念时不再添加新故障。"
+    messages[0]["content"] += " retrieve_reference只返回词面相关候选，match_summary不代表资料足以回答。仅命中文档标题不能作为正文依据。用户要求依据课程资料回答，而候选正文没有相关说明或缺少必要条件时，明确说明资料不足并请求相关章节。设备实际区域、地址、路由等参数必须来自本轮配置或运行输出，不能从课程示例推定。"
     messages[0]["content"] += " 首次从材料提取具体experiment_goal和verification_targets，后续沿用实验目标。追问中的配置、测试输出和用户反馈同样是本轮证据，使用read_source读取message:current。用户明确反馈修改后目标已恢复或Ping全部成功时，提交user_reported_resolved，resolution_evidence引用本轮反馈，结束排查；summary/reply直接说明用户反馈的恢复情况。用户在追问粘贴多行Ping原始输出时，用check_submitted_pings核对，可以提交observations_passed。用户口述成功与工具核验统计分别记录；已恢复时材料请求置空，不额外索要NAT、路由或其他无关输出。概念追问保留已完成状态；用户明确报告再次失败时，引用本轮失败反馈并重新排查。"
     messages[0]["content"] += " 读取实验说明后，使用check_experiment_goals提取可检查的目标：访问目标用reachability，指定路由来源用route_protocol，明确配置要求用config_contains/config_absent。仅提取原文要求，instruction引用要求原文。路由目标指定源设备、目的地址、要求协议；配置目标填写命令前缀。后续调用空对象沿用目标，不能只检查Ping就宣布协议实验完成。saved_goals为已保存目标。根据工具返回的checks回答满足了什么、还差哪项；观测全部通过才能提交observations_passed。若仅为概念追问，直接回答概念。"
     messages[0]["content"] += " 有多个合理原因时，调用plan_diagnostic_checks：用自由命名的候选原因和本轮引用更新active/supported/ruled_out状态；提出1～3项检查，填写每个原因下的预期结果标签，同一结果使用相同标签，无法预测写unknown。工具会按区分原因的能力与采集成本选择一项。下一步优先采用工具selected，用户补充后重新规划，不重复索要已有输出。预测是待检验的解释，排除原因需要本轮实际材料依据。"
@@ -596,9 +599,10 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
         if closed:
             analysis["resolution_summary"] = ((previous.get("resolution_summary") or previous.get("summary"))
                                               if previous_closed and previous["outcome"] == analysis["outcome"] and same_materials and not current_failure else analysis["summary"])
-    knowledge = {}
+    knowledge, reference_searches = {}, []
     for item in model["tool_trace"]:
         if item["tool"] == "retrieve_reference" and item["status"] == "ok":
+            reference_searches.append({"query": item["arguments"]["query"], **item["result"].get("match_summary", {})})
             for document in item["result"]["results"]:
                 knowledge[document.get("chunk_id", document.get("id"))] = document
             warnings.extend(item["result"].get("warnings", []))
@@ -627,7 +631,7 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
             "config_fingerprint": fingerprint(payload), "status": status, "findings": [], "unknowns": [], "checks": [],
             "runtime_checks": [], "runtime_missing": requests, "hint_level": payload.get("hint_level", 2),
             "hint": analysis.get("summary") or "提交材料后开始分析。", "knowledge": list(knowledge.values()), "knowledge_scope": payload.get("knowledge_scope", "default"),
-            "knowledge_retrieval": {"warnings": warnings}, "planning_knowledge": [], "command_output_parsing": {},
+            "knowledge_retrieval": {"warnings": warnings, "searches": reference_searches}, "planning_knowledge": [], "command_output_parsing": {},
             "next_steps": requests, "summary": {"faults": 0, "unknowns": 0, "static_checks_passed": 0}, "investigation": analysis,
             "source_manifest": manifest(sources), "llm": model, "interaction_checks": interaction_checks,
             "operation_history": {**operations, "focus_id": analysis.get("operation_focus") or operations["first_issue_id"]},

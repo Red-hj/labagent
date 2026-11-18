@@ -16,6 +16,9 @@ from .storage import data_directory
 ROOT = Path(__file__).resolve().parents[1]
 NOTES_DIR = ROOT / "data" / "course_notes"
 IMPORT_LOCK = threading.Lock()
+# Keep protocol names, numbers and negation; remove only common question/function words.
+SEARCH_STOPWORDS = frozenset("a an the is are be been being do does did what how why where when which please can could to of for in on at by with about from that this these those it its your my me and or 如何 什么 怎么 是否 为什 请问 哪些 一个 进行".split())
+REFERENCE_NOTE = "检索结果是词面相关的候选参考，未判断原文是否足以回答问题；设备实际参数仍需当前配置或运行输出。"
 
 
 def notes_directory():
@@ -231,6 +234,10 @@ def tokens(text):
     return values
 
 
+def search_tokens(text):
+    return [token for token in tokens(text) if token not in SEARCH_STOPWORDS]
+
+
 def search(query, codes=None, scope="default", limit=3, *, course_documents=None):
     documents, warnings = corpus(scope)
     if course_documents is not None:
@@ -249,13 +256,14 @@ def rank_documents(query, documents, codes=None, scope="default", limit=3, warni
         raise ValueError("检索数量须为1～10")
     codes = codes or []
     passages = [chunk for document in documents for chunk in chunks(document)]
-    counters = [Counter(tokens(passage["title"]) * 2 + tokens(passage["content"])) for passage in passages]
+    bodies = [Counter(search_tokens(passage["content"])) for passage in passages]
+    counters = [body + Counter(search_tokens(passage["title"]) * 2) for passage, body in zip(passages, bodies)]
     lengths = [sum(counter.values()) for counter in counters]
     average = sum(lengths) / max(len(lengths), 1) or 1
     frequency = Counter(token for counter in counters for token in counter)
-    query_tokens = set(tokens(query))
+    query_tokens = set(search_tokens(query))
     ranked = []
-    for passage, counter, length in zip(passages, counters, lengths):
+    for passage, body, counter, length in zip(passages, bodies, counters, lengths):
         lexical = 0.0
         for token in query_tokens & counter.keys():
             tf = counter[token]
@@ -264,9 +272,15 @@ def rank_documents(query, documents, codes=None, scope="default", limit=3, warni
         matched_codes = set(codes) & set(passage.get("codes", []))
         score = lexical + 20 * len(matched_codes)
         if score > 0:
-            ranked.append({**passage, "score": round(score, 5), "retrieval_reason": "故障标签与正文匹配" if matched_codes else "正文与标题匹配"})
-    ranked.sort(key=lambda item: (-item["score"], item["chunk_id"]))
-    return {"scope": scope, "method": "local_bm25_with_fault_tags", "query": query, "results": ranked[:limit],
+            match_type = "fault_tag" if matched_codes else "body" if query_tokens & body.keys() else "title_only"
+            reason = {"fault_tag": "故障标签匹配", "body": "正文关键词匹配", "title_only": "仅标题匹配，正文未命中关键词"}[match_type]
+            ranked.append({**passage, "score": round(score, 5), "retrieval_reason": reason, "match_type": match_type})
+    ranked.sort(key=lambda item: (item["match_type"] == "title_only", -item["score"], item["chunk_id"]))
+    results = ranked[:limit]
+    match_status = "no_match" if not results else "title_only" if all(p["match_type"] == "title_only" for p in results) else "reference_candidates"
+    return {"scope": scope, "method": "local_bm25_with_fault_tags", "query": query, "results": results,
+            "match_summary": {"status": match_status, "answerability": "not_assessed", "note": REFERENCE_NOTE},
+            "settings": {"question_stopwords": "v1", "body_before_title_only": True},
             "document_count": len(documents), "chunk_count": len(passages), "warnings": warnings or []}
 
 
