@@ -23,7 +23,10 @@ window.LabKnowledge = (() => {
     const button = c.element("button", document.title, "knowledge-document-title"); button.type = "button";
     button.addEventListener("click", () => showSource(document));
     row.append(button, c.element("p", location(document), "section-note"));
-    if (withContent) row.append(c.element("pre", document.content));
+    if (withContent) {
+      if (document.match_type === "title_only") row.append(c.element("p", "仅标题相关，正文未命中问题关键词。", "section-note"));
+      row.append(c.element("pre", document.content));
+    }
     return row;
   }
   async function load(scope = $("course-scope").value || c.scope()) {
@@ -83,7 +86,9 @@ window.LabKnowledge = (() => {
       const result = await c.api("/api/knowledge/search", {query, scope:$("course-scope").value, limit:3});
       if (mine !== request || !isOpen()) return;
       $("knowledge-results").replaceChildren(...result.results.map(document => passage(document,true)));
-      note((result.results.length ? `找到 ${result.results.length} 个片段，点击标题查看原文。` : "没有找到相关片段，可以换个问法或补充资料。") + (result.warnings.length ? "\n" + result.warnings.join("\n") : ""));
+      const text = result.match_summary?.status === "title_only" ? "仅找到标题相关的资料，请核对正文或补充相关章节。" :
+        result.results.length ? `找到 ${result.results.length} 个候选片段，点击标题核对原文是否覆盖问题。` : "没有找到相关片段，可以换个问法或补充资料。";
+      note(text + (result.warnings.length ? "\n" + result.warnings.join("\n") : ""));
     } catch (error) { if (mine === request && isOpen()) note("检索失败：" + error.message); }
     finally { if (mine === request) { loading = false; sync(); } }
   }

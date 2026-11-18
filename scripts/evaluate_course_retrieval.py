@@ -59,11 +59,14 @@ def run_search(version, scope, questions):
     documents, warnings = knowledge.corpus(scope)
     if warnings:
         raise ValueError('课程资料读取或校验失败，请修复后重新检索')
+    searches = {q['id']: knowledge.rank_documents(q['query'], documents, scope=scope, limit=TOP_K) for q in questions}
     result = {'version': version, 'scope': scope, 'method': 'local_bm25_with_fault_tags', 'predictions': {
         q['id']: [{field: passage[field] for field in HIT_FIELDS}
-                  for passage in knowledge.rank_documents(q['query'], documents, scope=scope, limit=TOP_K)['results']]
+                  for passage in searches[q['id']]['results']]
         for q in questions
     }}
+    result['match_summaries'] = {qid: search['match_summary'] for qid, search in searches.items()}
+    result['settings'] = next(iter(searches.values()))['settings'] if searches else {}
     result['sources'] = [knowledge.summary(doc) for doc in documents]
     return result
 
