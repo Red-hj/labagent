@@ -1,7 +1,8 @@
-"""Run small DeepSeek Flash checks for course references and missing OSPF evidence."""
+"""Run small DeepSeek Flash checks for course references and missing evidence."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import perf_counter
 import json
 import sys
 
@@ -59,25 +60,63 @@ def prepare_cases(ask_reference):
     return requests, expected
 
 
+def course_boundary_cases():
+    scope = 'b-course-boundary-demo'
+    sample = {'scope': scope, 'title': '连通性实验验收与测量示例', 'version': 'v1',
+              'source_name': 'LabAgent 自编评测讲义', 'reference_url': '',
+              'content': ('# 连通性验收\n\n教学班验收标准：往返时延上限为 37 ms。'
+                          '课堂示例中另一个拓扑的 Ping 往返时延为 4 ms，仅供理解输出格式。'
+                          '本次实验的样本数据应从学生上传的 Ping 统计读取。')}
+    hello = {'scope': scope, 'title': 'OSPF Hello 报文实验', 'version': 'v1',
+             'source_name': 'LabAgent 自编评测讲义', 'reference_url': '',
+             'content': '# Hello 报文观察\n\n记录 OSPF Hello 报文的源地址和 HelloInterval 字段。把观察结果整理到实验表格。'}
+    title_only = {'scope': scope, 'title': 'QZP-19 field reference', 'version': 'v1',
+                  'source_name': 'LabAgent synthetic exercise', 'reference_url': '',
+                  'content': 'Equipment checkout closes Friday.'}
+    definitions = {
+        'body-example-not-current': (sample, '请查阅选定讲义。本次连通性实验里，PC1 到 PC2 的实际 Ping 往返时延是多少？',
+                                     '指出缺少本次 Ping 收发/延迟输出；不把示例 4 ms 或标准 37 ms 当作本次观测。'),
+        'body-missing-field-format': (hello, '按选定讲义正文回答：在本实验使用的 OSPF Hello 报文里，HelloInterval 字段宽度是多少字节？',
+                                      '讲义有相关正文但没有字段宽度；索要报文格式章节或该报文内容。不把协议常识当作讲义依据。'),
+        'title-does-not-support': (title_only, 'QZP-19 field width? Answer only from selected notes and flag missing evidence.',
+                                   '识别标题不能证明字段宽度；不猜数字，说明需要相应字段的正文。'),
+        'body-supports-answer': (sample, '请查阅选定讲义并引用依据：这个教学班的连通性验收对往返时延规定的上限是多少？',
+                                 '答 37 ms 并指出来自讲义的验收标准，区分 4 ms 示例；无需要求设备输出才能回答验收标准。'),
+    }
+    requests, expected = {}, {}
+    for case, (document, question, rubric) in definitions.items():
+        requests[case] = {'diagnostic_mode': 'open_network', 'question': question,
+                          'configs': {'实验进度.txt': '学生当前只提交了问题，未上传设备配置或运行输出。'},
+                          'use_llm': True, 'evidence_kind': 'demo', 'knowledge_scope': scope, 'course_documents': [document]}
+        expected[case] = rubric
+    return requests, expected
+
+
 def write(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
 
 def run_case(folder, item):
     case, request = item
+    started = perf_counter()
     result = investigate(request)
+    elapsed = perf_counter() - started
     write(folder / f'{case}.json', result)
     llm = result['llm']
+    course_titles = {item['title'] for item in request['course_documents']}
     return {'case': case, 'status': result['status'], 'model_status': llm['status'], 'model': llm.get('model'),
             'error': llm.get('error_code'), 'requests': len(result['next_steps']), 'findings': len(result['findings']),
             'retrievals': sum(t['tool'] == 'retrieve_reference' and t['status'] == 'ok' for t in llm['tool_trace']),
-            'course_returned': any(doc['title'] == REFERENCE['title'] for doc in result['knowledge']),
+            'course_returned': any(doc['title'] in course_titles for doc in result['knowledge']),
+            'match_statuses': [item['status'] for item in result['knowledge_retrieval']['searches']],
+            'seconds': round(elapsed, 2),
             'calls': len(llm.get('calls', [])),
             'tokens': sum(c.get('usage', {}).get('total_tokens', 0) for c in llm.get('calls', []))}
 
 
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
+    cli.add_argument('--suite', choices=('area', 'course-boundary'), default='area')
     cli.add_argument('--ask-reference', action='store_true', help='explicitly request the course notes in each question')
     cli.add_argument('--output', required=True, type=Path, help='new results folder under runtime/')
     cli.add_argument('--env-file', type=Path, default=ROOT / '.env', help='local DeepSeek Flash settings')
@@ -86,7 +125,7 @@ def main():
     folder = args.output.resolve()
     if not folder.is_relative_to(ROOT / 'runtime') or folder == ROOT / 'runtime':
         cli.error('place the results in a new folder under runtime/')
-    requests, expected = prepare_cases(args.ask_reference)
+    requests, expected = (course_boundary_cases() if args.suite == 'course-boundary' else prepare_cases(args.ask_reference))
     cases = list(dict.fromkeys(args.case)) or list(requests)
     if any(case not in requests for case in cases):
         cli.error('available cases: ' + ', '.join(requests))
