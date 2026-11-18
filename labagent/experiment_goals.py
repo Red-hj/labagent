@@ -200,7 +200,8 @@ def check_route_selection(device, target, blocks):
         chosen = [row for length, row in matches if length == longest]
         routes = [{key: row[key] for key in ("network", "protocol", "next_hop", "interface")} for row in chosen]
         summary = "、".join(dict.fromkeys(f"{route['network']} {route['protocol'].upper()}"
-                           + (f" 经 {route['next_hop']}" if route["next_hop"] else "") for route in routes))
+                           + (f" 经 {route['next_hop']}" if route["next_hop"] else "")
+                           + (f"，出接口 {route['interface']}" if route["interface"] else "") for route in routes))
         return {**result, "status": "observed", "routes": routes, "evidence": [citation(block, row["line"]) for row in chosen],
                 "detail": f"{device} 到 {target} 的路由表匹配项为 {summary}。", "request": None}
     return result

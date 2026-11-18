@@ -121,6 +121,34 @@ class ExperimentGoalTests(unittest.TestCase):
             self.assertTrue(finished)
             self.assertEqual(submitted["evidence_requests"], [] if expected == "observed" else [result["request"]])
 
+    def test_route_table_reply_uses_only_checked_rows_even_if_model_adds_wrong_advice(self):
+        run = json.loads((ROOT / "data/examples/frr_lab02_backup.json").read_text(encoding="utf-8"))
+        table = run["phases"][0]["observations"]["R1"]["route_output"]
+        for configs in ({"R1-routes.log": table}, {"R1.cfg": "hostname R1"}):
+            with self.subTest(configs=list(configs)):
+                current, context, seen = {"configs": configs}, {}, set()
+                sources, _ = source_bundle(current)
+                query = {"device": "R1", "target": "192.168.20.10"}
+                checked, _ = execute_tool("check_route_selection", query, current, sources, seen, diagnostic_context=context)
+                wrong_reply = "管理距离 200 低于 110，删除备用静态路由。"
+                response = {"answer_mode": "route_table", "summary": wrong_reply, "reply": wrong_reply,
+                            "steps": ["删除备用静态路由"], "hypotheses": [], "evidence_requests": []}
+                submitted, finished = execute_tool("submit_hypotheses", response, current, sources, seen, diagnostic_context=context)
+                self.assertTrue(finished)
+                self.assertEqual(submitted["reply"], checked["detail"])
+                self.assertEqual(submitted["summary"], checked["detail"])
+                self.assertEqual(submitted["steps"], [])
+                self.assertEqual(submitted["evidence_requests"], [checked["request"]] if checked["request"] else [])
+                self.assertNotIn("200", submitted["reply"])
+                if checked["status"] == "observed":
+                    self.assertIn("出接口 transit", submitted["reply"])
+
+    def test_route_table_answer_requires_a_current_route_check(self):
+        current = {"configs": {"R1.cfg": "hostname R1"}}
+        sources, _ = source_bundle(current)
+        with self.assertRaisesRegex(ValueError, "先调用check_route_selection"):
+            execute_tool("submit_hypotheses", {"answer_mode": "route_table"}, current, sources, {("config:1", 1)})
+
     def test_device_config_section_in_combined_material_is_cited_and_checked(self):
         text = (ROOT / "data/examples/实验诊断材料_终端跨网段访问.txt").read_text(encoding="utf-8")
         criterion = {"id":"gateway","title":"R1网关配置","kind":"config_contains","device":"R1",
