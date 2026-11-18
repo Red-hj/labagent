@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NOTES_DIR = ROOT / "data" / "course_notes"
 IMPORT_LOCK = threading.Lock()
 # Keep protocol names, numbers and negation; remove only common question/function words.
-SEARCH_STOPWORDS = frozenset("a an the is are be been being do does did what how why where when which please can could to of for in on at by with about from that this these those it its your my me and or 如何 什么 怎么 是否 为什 请问 哪些 一个 进行".split())
+SEARCH_STOPWORDS = frozenset("a an the is are been being do does did what how why where when which please could to of for in on at by with about from that this these those it its your my me and or 如何 什么 怎么 是否 为什 请问 哪些 一个 进行".split())
 REFERENCE_NOTE = "检索结果是词面相关的候选参考，未判断原文是否足以回答问题；设备实际参数仍需当前配置或运行输出。"
 
 
@@ -235,7 +235,10 @@ def tokens(text):
 
 
 def search_tokens(text):
-    return [token for token in tokens(text) if token not in SEARCH_STOPWORDS]
+    values = [token for token in tokens(text) if token not in SEARCH_STOPWORDS]
+    # IS-IS is a protocol name, not two occurrences of the English verb "is".
+    values.extend("isis" for _ in re.finditer(r"(?<![a-z0-9_])is-is(?![a-z0-9_])", text, re.I))
+    return values
 
 
 def search(query, codes=None, scope="default", limit=3, *, course_documents=None):
