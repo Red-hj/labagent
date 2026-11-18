@@ -8,20 +8,43 @@ window.LabPersonal = (() => {
 
   function renderAccount() {
     $("personal-entry").textContent = user ? user.display_name + " · 记忆" : "登录 / 记忆";
-    $("personal-title").textContent = user ? "我的记忆" : "个人账号";
+    $("personal-dialog").dataset.view = user ? "memory" : "auth";
+    $("personal-title").textContent = user ? "我的记忆" : registering ? "创建你的工作区" : "继续你的排查";
+    $("personal-eyebrow").textContent = user ? "PERSONAL MEMORY" : registering ? "MAKE IT YOURS" : "YOUR WORKSPACE";
+    $("personal-subtitle").textContent = user ? "整理常见问题、实验环境和排查偏好。" : registering ? "从这次开始，让每次排查都有迹可循。" : "登录后，接着聊，也记得你的排查习惯。";
     $("personal-auth").hidden = Boolean(user);
+    $("personal-auth-note").hidden = Boolean(user);
+    $("personal-data-note").hidden = !user;
     $("personal-panel").hidden = !user;
     $("personal-name").textContent = user ? user.display_name + " · " + user.username : "";
     $("personal-enabled").checked = Boolean(user?.memory_enabled);
   }
   function authMode() {
+    if (saving) return;
     registering = !registering;
+    renderAuthMode();
+  }
+  function renderAuthMode() {
     $("personal-display-row").hidden = !registering;
     $("personal-register-options").hidden = !registering;
+    $("personal-username-hint").hidden = !registering;
     $("personal-auth-submit").textContent = registering ? "创建个人账号" : "登录";
     $("personal-auth-switch").textContent = registering ? "已有账号，去登录" : "没有账号，创建一个";
     $("personal-password").autocomplete = registering ? "new-password" : "current-password";
+    resetPasswordVisibility();
+    renderAccount();
     $("personal-error").textContent = "";
+  }
+  function resetPasswordVisibility() {
+    $("personal-password").type = "password";
+    $("personal-password-toggle").textContent = "显示";
+    $("personal-password-toggle").setAttribute("aria-label", "显示密码");
+    $("personal-password-toggle").setAttribute("aria-pressed", "false");
+  }
+  function authPending(pending) {
+    $("personal-auth").setAttribute("aria-busy", String(pending));
+    for (const id of ["personal-auth-submit", "personal-auth-switch", "personal-username", "personal-password", "personal-password-toggle", "personal-display", "personal-register-memory"]) $(id).disabled = pending;
+    $("personal-auth-submit").textContent = pending ? (registering ? "正在创建…" : "正在登录…") : (registering ? "创建个人账号" : "登录");
   }
   function resetForm() {
     editing = null; $("personal-memory-form").reset();
@@ -73,17 +96,17 @@ window.LabPersonal = (() => {
   }
   async function authenticate(event) {
     event.preventDefault(); if (!guard()) return; saving = true;
-    $("personal-auth-submit").disabled = true;
+    authPending(true);
     try {
       const credentials = {username:$("personal-username").value.trim(), password:$("personal-password").value};
       if (registering) Object.assign(credentials, {display_name:$("personal-display").value.trim() || credentials.username,
         memory_enabled:$("personal-register-memory").checked});
       await c.api(registering ? "/api/account/register" : "/api/account/login", credentials);
-      $("personal-password").value = ""; latest = null; c.newConversation();
-      await refresh(); await c.refreshHistory(); channel?.postMessage("changed");
+      $("personal-password").value = ""; resetPasswordVisibility(); latest = null; c.newConversation();
+      await refresh(); registering = false; renderAuthMode(); await c.refreshHistory(); channel?.postMessage("changed");
       c.message("个人账号已登录，后续排查将使用你的记忆设置。");
     } catch (error) { $("personal-error").textContent = error.message; }
-    finally { saving = false; $("personal-auth-submit").disabled = false; }
+    finally { saving = false; authPending(false); }
   }
   async function logout() {
     if (!guard()) return; saving = true;
@@ -96,9 +119,19 @@ window.LabPersonal = (() => {
     $("personal-entry").addEventListener("click", async () => {
       $("personal-error").textContent = ""; $("personal-dialog").showModal();
       try { await refresh(); } catch (error) { $("personal-error").textContent = error.message; }
+      if (!user && $("personal-dialog").open) $("personal-username").focus();
     });
     $("personal-close").addEventListener("click", () => $("personal-dialog").close());
-    $("personal-dialog").addEventListener("close", () => $("personal-entry").focus());
+    $("personal-dialog").addEventListener("close", () => {
+      $("personal-password").value = ""; resetPasswordVisibility(); $("personal-entry").focus();
+    });
+    $("personal-password-toggle").addEventListener("click", () => {
+      const visible = $("personal-password").type === "password";
+      $("personal-password").type = visible ? "text" : "password";
+      $("personal-password-toggle").textContent = visible ? "隐藏" : "显示";
+      $("personal-password-toggle").setAttribute("aria-label", visible ? "隐藏密码" : "显示密码");
+      $("personal-password-toggle").setAttribute("aria-pressed", String(visible));
+    });
     $("personal-auth-switch").addEventListener("click", authMode);
     $("personal-auth").addEventListener("submit", authenticate);
     $("personal-logout").addEventListener("click", logout);

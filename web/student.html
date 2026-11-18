@@ -80,16 +80,17 @@
     <footer><span>LabAgent / 从读懂问题开始</span><span id="cloud-save-status" role="status" aria-live="polite">正在检查保存状态…</span></footer>
   </main>
   </div>
-  <dialog id="personal-dialog" class="personal-dialog" aria-labelledby="personal-title">
-    <div class="personal-heading"><h2 id="personal-title">个人账号</h2><button id="personal-close" class="text-button" type="button">关闭</button></div>
-    <p class="personal-description">记住你的排查偏好和常见问题，下次从熟悉的地方继续。</p>
+  <dialog id="personal-dialog" class="personal-dialog" aria-labelledby="personal-title" aria-describedby="personal-subtitle" data-view="auth">
+    <div class="personal-heading"><div class="personal-brand"><span class="personal-mark" aria-hidden="true">L<span></span></span><span>LabAgent</span></div><button id="personal-close" class="personal-close" type="button" aria-label="关闭个人账号窗口"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button></div>
+    <div class="personal-intro"><p id="personal-eyebrow" class="personal-eyebrow">YOUR WORKSPACE</p><h2 id="personal-title">继续你的排查</h2><p id="personal-subtitle">登录后，接着聊，也记得你的排查习惯。</p></div>
     <form id="personal-auth">
-      <label for="personal-username">用户名</label><input id="personal-username" required minlength="3" maxlength="32" pattern="[A-Za-z][A-Za-z0-9_.\-]{2,31}" autocomplete="username" placeholder="3～32位字母、数字或 . _ -">
-      <label for="personal-password">密码</label><input id="personal-password" type="password" required minlength="10" maxlength="128" autocomplete="current-password" placeholder="至少10个字符">
-      <div id="personal-display-row" hidden><label for="personal-display">昵称</label><input id="personal-display" maxlength="40" autocomplete="nickname" placeholder="选填，默认使用用户名"></div>
-      <div id="personal-register-options" hidden><label class="personal-check"><input id="personal-register-memory" type="checkbox" checked>开启个人记忆，可随时关闭或清空</label></div>
-      <button id="personal-auth-submit" class="primary-button" type="submit">登录</button><button id="personal-auth-switch" class="text-button" type="button">没有账号，创建一个</button>
+      <div class="personal-field"><label for="personal-username">用户名</label><input id="personal-username" required minlength="3" maxlength="32" pattern="[A-Za-z][A-Za-z0-9_.\-]{2,31}" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="输入你的用户名"><p id="personal-username-hint" class="personal-field-hint" hidden>3～32位，以字母开头，可包含数字和 . _ -</p></div>
+      <div class="personal-field"><label for="personal-password">密码</label><div class="personal-password-field"><input id="personal-password" type="password" required minlength="10" maxlength="128" autocomplete="current-password" placeholder="输入密码，至少10个字符"><button id="personal-password-toggle" class="personal-password-toggle" type="button" aria-label="显示密码" aria-pressed="false">显示</button></div></div>
+      <div id="personal-display-row" class="personal-field" hidden><label for="personal-display">昵称 <span>选填</span></label><input id="personal-display" maxlength="40" autocomplete="nickname" placeholder="希望我们怎么称呼你？"></div>
+      <div id="personal-register-options" hidden><label class="personal-check personal-register-check"><input id="personal-register-memory" type="checkbox" checked><span>开启个人记忆<small>记住排查偏好，随时可以关闭或清空。</small></span></label></div>
+      <button id="personal-auth-submit" class="primary-button" type="submit">登录</button><button id="personal-auth-switch" class="personal-auth-switch" type="button">没有账号，创建一个</button>
     </form>
+    <p id="personal-auth-note" class="personal-auth-note">你的记忆随账号保存，共享排查不携带个人记忆。</p>
     <section id="personal-panel" hidden>
       <div class="personal-account-row"><strong id="personal-name"></strong><button id="personal-logout" class="text-button" type="button">退出账号</button></div>
       <label class="personal-check"><input id="personal-enabled" type="checkbox">使用并自动记录个人记忆</label>
@@ -106,7 +107,7 @@
       <button id="personal-clear" class="text-button" type="button">清空全部记忆</button><div id="personal-clear-confirm" class="personal-clear-confirm" hidden><span>清空后无法撤销，确定清空？</span><button id="personal-clear-yes" class="text-button" type="button">确认清空</button><button id="personal-clear-cancel" class="text-button" type="button">取消</button></div>
     </section>
     <p id="personal-error" role="alert"></p>
-    <p class="personal-note">新建个人对话与记忆随账号保存。旧团队记录仍按原方式共享，邀请链接可共享协作排查。云端保存进度见页面底部；显示“已保存到云端”后，重建服务可恢复到该版本。团队维护备份包含账号与记忆，请由维护人员保管。</p>
+    <details id="personal-data-note" class="personal-data-note" hidden><summary>数据保存与共享范围</summary><p class="personal-note">新建个人对话与记忆随账号保存。旧团队记录仍按原方式共享，邀请链接可共享协作排查。云端保存进度见页面底部；显示“已保存到云端”后，重建服务可恢复到该版本。团队维护备份包含账号与记忆，请由维护人员保管。</p></details>
   </dialog>
   <dialog id="course-knowledge-dialog" class="course-knowledge-dialog" aria-labelledby="course-knowledge-heading">
     <div class="dialogue-heading"><h2 id="course-knowledge-heading">实验资料库</h2><button id="close-knowledge" class="secondary-button" type="button">关闭</button></div>
