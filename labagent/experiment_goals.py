@@ -8,8 +8,8 @@ from pathlib import Path
 import re
 
 from .connectivity import parse_ping_records
-from .runtime_parser import FRR_ROUTE_LEGEND, parse_frr_routes, parse_routes
-from .operation_history import TIME
+from .runtime_parser import FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW, parse_frr_routes, parse_linux_routes, parse_routes
+from .operation_history import TIME, prompt_info
 
 
 KINDS = ("reachability", "route_protocol", "config_contains", "config_absent")
@@ -21,7 +21,7 @@ DOCUMENT_SECTION = re.compile(r"^\s*(?:[一二三四五六七八九十百]+[、�
 
 GOAL_TOOL = {"type": "function", "function": {
     "name": "check_experiment_goals",
-    "description": "从实验说明建立有原文依据的实验目标，并用实际材料检查。首次传goals；后续传空对象沿用全部目标。返回Ping、VRP路由来源、配置命令的检查状态。实验要求与恢复连通性分别核对。",
+    "description": "从实验说明建立有原文依据的实验目标，并用实际材料检查。首次传goals；后续传空对象沿用全部目标。返回Ping、VRP/FRRouting/Linux路由来源、配置命令的检查状态。实验要求与恢复连通性分别核对。",
     "parameters": {"type": "object", "properties": {"goals": {"type": "array", "maxItems": 8, "items": {
         "type": "object", "properties": {
             "id": {"type": "string"}, "title": {"type": "string"}, "kind": {"type": "string", "enum": list(KINDS)},
@@ -61,7 +61,7 @@ def evidence_blocks(sources, *, include_history=False):
         default_device = device
         start, command, section = 0, source.get("command", ""), ""
         for index, line in enumerate(lines):
-            prompt = re.match(r"^\s*<([\w.-]+)>\s*(.*)$", line) or re.match(r"^\s*([\w.-]+)#\s*(show\s+ip\s+route\b.*)$", line, re.I)
+            prompt = prompt_info(line)
             heading = DEVICE_SECTION.fullmatch(line)
             boundary = DOCUMENT_SECTION.fullmatch(line)
             if prompt or heading or boundary:
@@ -69,7 +69,7 @@ def evidence_blocks(sources, *, include_history=False):
                     blocks.append(_block(source, device, command, start, index, section))
                 start = index
                 if prompt:
-                    device, command, section = prompt[1], prompt[2], ""
+                    device, command, section = prompt[0], prompt[3], ""
                 elif heading:
                     device, command = heading[1], ""
                     section = "configuration" if "配置" in heading[2] else ""
@@ -165,7 +165,7 @@ def _ping(goal, blocks):
 def check_route_selection(device, target, blocks):
     network = ipaddress.IPv4Network(target, strict=False) if "/" in target else None
     address = ipaddress.IPv4Address(target) if network is None else None
-    request = {"device": device, "information": "完整当前 IPv4 路由表（display ip routing-table 或 show ip route）",
+    request = {"device": device, "information": "完整当前 IPv4 路由表（display ip routing-table、show ip route 或 ip -4 route show table main）",
                "why": f"核对到 {target} 的路由来源和下一跳"}
     result = {"device": device, "target": target, "status": "needs_evidence", "routes": [], "evidence": [],
               "detail": f"待补 {device} 当前路由表，以确认到 {target} 的实际路由来源和下一跳。", "request": request}
@@ -174,18 +174,28 @@ def check_route_selection(device, target, blocks):
         if block["device"].casefold() != device.casefold():
             continue
         command = " ".join(block["command"].lower().split())
+        linux_command = bool(LINUX_ROUTE_COMMAND.fullmatch(command))
+        if re.match(r"ip(?: -\d)? route\b", command) and not linux_command:
+            continue  # Filtered, non-main and route-changing commands are not a main-table observation.
         if re.fullmatch(r"(?:display ip routing-table|show ip route)\s+(?!\d)[a-z].*", command):
             continue  # A protocol/VRF-filtered output cannot establish the forwarding choice.
         text = "\n".join(block["lines"])
         frr = FRR_ROUTE_LEGEND.search(text)
+        vrp = re.search(r"Destination/Mask\s+Proto", text)
+        linux = not frr and not vrp and (linux_command or not command and any(LINUX_ROUTE_ROW.fullmatch(line) for line in block["lines"]))
         if frr:
             header = next(i for i, line in enumerate(block["lines"], 1) if FRR_ROUTE_LEGEND.search(line))
-        elif re.search(r"Destination/Mask\s+Proto", text):
+        elif vrp:
             header = next(i for i, line in enumerate(block["lines"], 1) if "Destination/Mask" in line)
+        elif linux:
+            header = next((i for i, line in enumerate(block["lines"], 1) if LINUX_ROUTE_ROW.fullmatch(line)), 1)
         else:
+            if command in {"display ip routing-table", "show ip route"}:
+                result["evidence"] = [citation(block, 1)]
+                break  # Never fall back to an older table after a new unsupported capture.
             continue
         try:
-            rows = parse_frr_routes(text) if frr else parse_routes(text, installed_only=True)
+            rows = parse_frr_routes(text) if frr else parse_linux_routes(text) if linux else parse_routes(text, installed_only=True)
         except ValueError:
             rows = None
         matches = []
@@ -198,6 +208,9 @@ def check_route_selection(device, target, blocks):
             break
         longest = max(length for length, _ in matches)
         chosen = [row for length, row in matches if length == longest]
+        if linux:
+            metric = min(row["metric"] for row in chosen)
+            chosen = [row for row in chosen if row["metric"] == metric]
         routes = [{key: row[key] for key in ("network", "protocol", "next_hop", "interface")} for row in chosen]
         summary = "、".join(dict.fromkeys(f"{route['network']} {route['protocol'].upper()}"
                            + (f" 经 {route['next_hop']}" if route["next_hop"] else "")
@@ -212,6 +225,8 @@ def _route(goal, blocks):
     if result["status"] != "observed":
         return "needs_evidence", result["detail"], result["evidence"]
     actual = {route["protocol"].upper() for route in result["routes"]}
+    if any(protocol == "UNKNOWN" or protocol.isdecimal() for protocol in actual):
+        return "needs_evidence", result["detail"] + " 当前输出未提供可核对的协议名称，请补充带协议来源的路由表。", result["evidence"]
     expected = goal["expected"].upper()
     accepted = {"OSPF", "OSPF_ASE", "OSPF_NSSA"} if expected == "OSPF" else {expected}
     return ("passed" if actual <= accepted else "failed"), f"{result['detail']} 实验要求{expected}。", result["evidence"]
