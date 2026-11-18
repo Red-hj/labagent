@@ -1,4 +1,4 @@
-"""Bounded VRP command-output parsing. Inputs remain user-supplied evidence."""
+"""Bounded VRP, FRRouting and Linux output parsing from submitted evidence."""
 from copy import deepcopy
 import ipaddress
 import re
@@ -12,6 +12,9 @@ FRR_ROUTE_LEGEND = re.compile(r">\s*-\s*selected route,\s*\*\s*-\s*FIB route", r
 FRR_ROUTE = re.compile(r"^\s*([A-Za-z])([>*qrbto ]*)\s+(\d+(?:\.\d+){3}/\d+)\s+(.*)$")
 FRR_CONTINUATION = re.compile(r"^\s+\*\s+((?:via\s|is directly connected,).*)$")
 FRR_PROTOCOLS = dict(K="Kernel", C="Direct", L="Local", S="Static", R="RIP", O="OSPF", I="ISIS", B="BGP", E="EIGRP", N="NHRP")
+LINUX_ROUTE_COMMAND = re.compile(r"ip(?: -4)? route(?: (?:show|list))?(?: table (?:main|254))?", re.I)
+LINUX_ROUTE_ROW = re.compile(r"\s*(default|\d+(?:\.\d+){3}(?:/\d+)?)\s+(.+)")
+LINUX_PROTOCOLS = dict(kernel="Direct", static="Static", boot="Boot", ospf="OSPF", bgp="BGP", rip="RIP", isis="ISIS", dhcp="DHCP")
 
 
 def parse_neighbors(text):
@@ -81,6 +84,53 @@ def parse_frr_routes(text):
         interface = (via[2] if via else connected[1] if connected else "").rstrip(",")
         records.append({"network": current[0], "protocol": current[1], "next_hop": gateway,
                         "interface": interface, "line": number, "text": line.strip()})
+    return records
+
+
+def parse_linux_routes(text):
+    """Read main-table IPv4 unicast rows, preserving metrics and exact line numbers.
+
+    Unknown or incomplete rows invalidate the table rather than allowing a less
+    specific route to hide an unsupported entry. A missing proto stays unknown.
+    """
+    records = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        prompt = re.fullmatch(r"\s*(?:<[\w.-]+>|[\w.-]+#)\s*(.*)", line)
+        if LINUX_ROUTE_COMMAND.fullmatch(prompt[1] if prompt else line.strip()):
+            continue
+        row = LINUX_ROUTE_ROW.fullmatch(line)
+        if not row:
+            return None
+        network = str(ipaddress.IPv4Network("0.0.0.0/0" if row[1] == "default" else row[1], strict=False))
+        tokens, fields, position = row[2].split(), {}, 0
+        while position < len(tokens):
+            key = tokens[position]
+            if key == "onlink":
+                position += 1
+                continue
+            if key not in {"via", "dev", "proto", "scope", "src", "metric", "nhid", "table", "mtu", "advmss", "pref"} or key in fields:
+                return None
+            position += 1
+            if key == "via" and position < len(tokens) and tokens[position] == "inet":
+                position += 1
+            if position >= len(tokens):
+                return None
+            fields[key] = tokens[position]
+            position += 1
+        if not fields.get("dev") or fields.get("table", "main") not in {"main", "254"}:
+            return None
+        gateway = str(ipaddress.IPv4Address(fields["via"])) if "via" in fields else None
+        if "src" in fields:
+            ipaddress.IPv4Address(fields["src"])
+        metric = fields.get("metric", "0")
+        if not metric.isdecimal() or int(metric) > 2 ** 32 - 1:
+            return None
+        protocol = fields.get("proto", "Unknown")
+        records.append({"network": network, "protocol": LINUX_PROTOCOLS.get(protocol.lower(), protocol),
+                        "next_hop": gateway, "interface": fields["dev"], "metric": int(metric),
+                        "line": number, "text": line.strip()})
     return records
 
 
