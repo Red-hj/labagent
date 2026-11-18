@@ -76,6 +76,14 @@ class RelevanceTests(unittest.TestCase):
         self.assertEqual(found["results"], [])
         self.assertEqual(found["match_summary"]["status"], "no_match")
 
+    def test_protocol_and_qos_names_are_not_removed_as_english_function_words(self):
+        documents = [document("Link-state protocol", "IS-IS exchanges link-state information."),
+                     document("Controller network", "CAN bus arbitration."),
+                     document("Traffic classes", "BE is a traffic service class.")]
+        for query, expected in (("What is IS-IS?", 0), ("IS-IS协议是什么", 0), ("ISIS", 0), ("CAN", 1), ("BE", 2)):
+            with self.subTest(query=query):
+                self.assertEqual(search(query, documents)["results"][0]["id"], documents[expected]["id"])
+
     def test_model_tool_receives_the_same_matching_boundary_as_the_search_api(self):
         payload = stages()[0]
         sources, _ = source_bundle(payload)
