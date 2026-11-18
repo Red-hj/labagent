@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent
 
 def main():
     load_env(ROOT / ".env")
+    load_env(ROOT / "runtime/supabase.env")
     parser = argparse.ArgumentParser(description="LabAgent local OSPF assistant")
     commands = parser.add_subparsers(dest="command")
     serve = commands.add_parser("serve", help="Start local web UI and HTTP API")

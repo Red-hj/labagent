@@ -140,7 +140,9 @@ class Handler(BaseHTTPRequestHandler):
             user = self.personal_user(required=True)
             return self.reply({"enabled": user["memory_enabled"], "memories": self.server.personal.list_memories(user["id"])})
         if path == "/api/workspace":
-            return self.reply(self.server.workspace.summary())
+            return self.reply({**self.server.workspace.summary(), "persistence": self.server.persistence.status() if self.server.persistence else {"enabled": False, "state": "local"}})
+        if path == "/api/persistence":
+            return self.reply(self.server.persistence.status() if self.server.persistence else {"enabled": False, "state": "local"})
         if match := re.fullmatch(r"/api/rooms/([a-f0-9]{32})", path):
             room = self.server.rooms.get(match[1])
             return self.reply(room if room else {"error": "协作实验不存在，请检查邀请链接"}, 200 if room else 404)
@@ -582,6 +584,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
 
+class LabAgentServer(ThreadingHTTPServer):
+    persistence = None
+
+    def server_close(self):
+        if self.persistence:
+            self.persistence.close()
+        super().server_close()
+
+
 def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None, team_password="",
                   diagnosis_backend=None, cloud_client_factory=None):
     if public_url:
@@ -592,7 +603,7 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
         if not team_password:
             raise ValueError("请设置LABAGENT_TEAM_PASSWORD作为三人测试访问口令")
     store = Store(database)
-    server = ThreadingHTTPServer((host, port), partial(Handler, store=store))
+    server = LabAgentServer((host, port), partial(Handler, store=store))
     server.rooms = Rooms(store)
     server.personal = Personal(store)
     server.public_url, server.team_password = public_url, team_password
@@ -652,6 +663,15 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
         with log_lock, path.open("a", encoding="utf-8") as file:
             file.write(stamp + " " + message + "\n")
     server.write_log = write_log
+    if os.environ.get("LABAGENT_CLOUD_PERSISTENCE") == "1":
+        from .cloud_storage import CloudPersistence, SupabaseStorage
+        try:
+            server.persistence = CloudPersistence(server.workspace, SupabaseStorage.from_environment())
+            server.persistence.bootstrap()
+            server.persistence.start()
+        except Exception:
+            server.server_close()
+            raise
     write_log("LabAgent " + __version__ + " started on " + host + ":" + str(server.server_port))
     server.daemon_threads = True
     return server
