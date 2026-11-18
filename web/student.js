@@ -879,8 +879,23 @@ window.LabWorkspace.init({api, element, message, materials, recordings, screensh
 async function refreshWorkspace() {
   const saved = await api("/api/workspace");
   $("workspace-status").textContent = `已保存 ${saved.sessions} 个会话、${saved.rooms} 个协作实验、${saved.recordings} 份图片或录屏、${saved.documents} 份课程资料。`;
+  if (saved.persistence?.message) $("workspace-status").textContent += ` 云端：${saved.persistence.message}`;
+  showCloudSave(saved.persistence);
   $("restore-workspace").disabled = busy || workspaceTransfer || !saved.can_restore;
 }
+function showCloudSave(saved) {
+  const labels = {local:"保存在当前服务端 · 可下载工作区备份", pending:"已保存到服务端 · 等待云端同步", saving:"正在保存到云端…", saved:"已保存到云端", error:"云端保存失败 · 稍后自动重试", conflict:"云端版本冲突 · 请联系维护人员"};
+  const status = $("cloud-save-status");
+  status.textContent = labels[saved?.state] || labels.local;
+  status.title = saved?.message || (saved?.last_saved ? `最近云端保存：${new Date(saved.last_saved).toLocaleString()}` : "");
+  status.dataset.state = saved?.state || "local";
+}
+async function refreshCloudSave() {
+  try { showCloudSave(await api("/api/persistence")); }
+  catch { $("cloud-save-status").textContent = "暂时无法确认云端保存状态"; }
+}
+refreshCloudSave();
+setInterval(() => { if (!document.hidden) refreshCloudSave(); }, 10000);
 $("workspace-backup").addEventListener("toggle", () => {
   if ($("workspace-backup").open && !workspaceTransfer) refreshWorkspace().catch(error => { $("workspace-status").textContent = error.message; });
 });

@@ -203,6 +203,7 @@ pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#fafbfd; padding:
 footer { display:flex; justify-content:space-between; gap:15px; font-size:9px; color:#8d9bad; margin-top:25px; padding:0 3px; }
 .workspace-backup { margin-top:24px; padding:16px 20px; border:1px solid #e8edf3; border-radius:8px; background:#fff; font-size:12px; }
 .workspace-backup summary { cursor:pointer; color:#536e8a; }
+#cloud-save-status[data-state="error"], #cloud-save-status[data-state="conflict"] { color:#a34d32; }
 .backup-actions,.restored-sessions { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
 .restored-sessions a { color:#365779; overflow-wrap:anywhere; }
 [hidden] { display:none!important; }
