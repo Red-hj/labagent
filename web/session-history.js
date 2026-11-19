@@ -5,25 +5,38 @@ window.LabHistory = (() => {
   const narrow = matchMedia("(max-width:1100px)");
   let c, rows = [], current = null, token = 0, timer, controller, snapshot = null, materialToken = 0;
   let deleteTarget = null, deleting = false;
+  let desktopHidden = false;
+  try { desktopHidden = localStorage.getItem("labagent-history-hidden") === "true"; } catch {}
   const labels = {needs_information:"继续排查", verified_from_observations:"已核验", resolved_by_user_report:"已恢复", goals_pending:"目标待完成", comparison_complete:"对照完成"};
 
-  function drawer(open) {
-    open = Boolean(open && narrow.matches);
-    $("session-sidebar").classList.toggle("history-open", open);
-    $("history-backdrop").hidden = !open;
+  function drawer(open, focus = true) {
+    open = Boolean(open);
+    const modal = open && narrow.matches;
+    $("session-sidebar").hidden = !open;
+    $("session-sidebar").classList.toggle("history-open", modal);
+    document.querySelector(".app-layout").classList.toggle("history-collapsed", !open && !narrow.matches);
+    $("history-backdrop").hidden = !modal;
     $("toggle-session-history").setAttribute("aria-expanded", String(open));
-    document.querySelector("main").inert = open;
-    document.querySelector("header").inert = open;
-    if (open) {
+    $("toggle-session-history").setAttribute("aria-label", open ? "隐藏历史对话" : "显示历史对话");
+    $("toggle-session-history").title = (open ? "隐藏" : "显示") + "历史对话（Ctrl+B）";
+    document.querySelector("main").inert = modal;
+    document.querySelector("header").inert = modal;
+    if (!narrow.matches) {
+      desktopHidden = !open;
+      try { localStorage.setItem("labagent-history-hidden",String(desktopHidden)); } catch {}
+    }
+    if (modal) {
       $("session-sidebar").setAttribute("role", "dialog");
       $("session-sidebar").setAttribute("aria-modal", "true");
-      $("history-search").focus();
+      if (focus) $("history-search").focus();
     } else {
       $("session-sidebar").removeAttribute("role");
       $("session-sidebar").removeAttribute("aria-modal");
     }
+    if (!open && focus) $("toggle-session-history").focus();
   }
-  function closeDrawer() { drawer(false); if (narrow.matches) $("toggle-session-history").focus(); }
+  function closeDrawer() { if (narrow.matches) drawer(false); }
+  function toggleDrawer() { drawer($("session-sidebar").hidden); }
   function dayLabel(value) {
     const date = new Date(value), now = new Date();
     const sameDay = (a,b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
@@ -149,12 +162,12 @@ window.LabHistory = (() => {
         const item = result.value;
         if (item.kind === "image") {
           const button = c.element("button", undefined); button.type = "button";
-          const image = c.element("img"); image.src = item.image_url; image.alt = item.name; image.loading = "lazy";
+          const image = c.element("img"); image.src = c.mediaUrl(item.image_url); image.alt = item.name; image.loading = "lazy";
           button.append(image, c.element("span", "查看原图 · " + item.name));
           button.addEventListener("click", () => c.showScreenshot(item, citation?.device === item.material_name ? citation : null));
           media.append(button);
         } else {
-          const link = c.element("a", "打开录屏 · " + item.name); link.href = item.video_url; link.target = "_blank"; link.rel = "noopener"; media.append(link);
+          const link = c.element("a", "打开录屏 · " + item.name); link.href = c.mediaUrl(item.video_url); link.target = "_blank"; link.rel = "noopener"; media.append(link);
         }
       }
     } catch (error) { if (mine === materialToken) $("history-material-note").textContent = error.message; }
@@ -200,15 +213,20 @@ window.LabHistory = (() => {
     $("confirm-delete-session").addEventListener("click", confirmDelete);
     $("cancel-delete-session").addEventListener("click", () => { $("delete-session-dialog").close(); deleteTarget = null; });
     $("delete-session-dialog").addEventListener("cancel", event => { if (deleting) event.preventDefault(); else deleteTarget = null; });
-    $("toggle-session-history").addEventListener("click", () => drawer(true));
-    for (const id of ["close-session-history","history-backdrop"]) $(id).addEventListener("click",closeDrawer);
+    $("toggle-session-history").addEventListener("click", toggleDrawer);
+    $("close-session-history").addEventListener("click", () => drawer(false));
+    $("history-backdrop").addEventListener("click",closeDrawer);
     $("close-history-materials").addEventListener("click", () => $("history-material-dialog").close());
     $("new-conversation").addEventListener("click", () => { if (!c.busy()) { closeDrawer(); c.newConversation(); } });
     $("refresh-session-history").addEventListener("click", () => refresh());
     $("more-session-history").addEventListener("click", () => refresh(true));
     $("history-search").addEventListener("input", () => { clearTimeout(timer); controller?.abort(); ++token; timer = setTimeout(() => refresh(),250); });
-    narrow.addEventListener("change", () => drawer(false));
+    narrow.addEventListener("change", () => drawer(!narrow.matches && !desktopHidden, false));
+    drawer(!narrow.matches && !desktopHidden, false);
     document.addEventListener("keydown", event => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && !event.repeat && !event.isComposing && event.key.toLowerCase() === "b" && !document.querySelector("dialog[open]")) {
+        event.preventDefault(); toggleDrawer(); return;
+      }
       if (!$("session-sidebar").classList.contains("history-open") || $("delete-session-dialog").open || $("history-material-dialog").open) return;
       if (event.key === "Escape") { event.preventDefault(); closeDrawer(); }
       if (event.key === "Tab") {

@@ -313,6 +313,34 @@ class PersonalHttpTests(unittest.TestCase):
             headers={"Origin": "https://other.test"})[0], 403)
         self.assertEqual(self.request("/api/memories", {}, cookie="labagent_personal=invalid")[0], 401)
 
+    def test_expired_personal_cookie_does_not_block_invited_collaboration_or_previews(self):
+        expired = "labagent_personal=invalid"
+        room_status, headers, room = self.request("/api/rooms", {"name": "过期登录协作", "actor": "访客"}, cookie=expired)
+        self.assertEqual(room_status, 201)
+        self.assertIn("Max-Age=0", headers["Set-Cookie"])
+        status, _, updated = self.request("/api/rooms/" + room["id"],
+            {"action": "task", "actor": "访客", "member_id": "visitor", "title": "补路由输出", "assignee": "队友"}, cookie=expired)
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["tasks"][0]["title"], "补路由输出")
+        demo = self.request("/api/demos/operation_history")[2]
+        for endpoint in ("/api/network/inspect", "/api/operations/inspect", "/api/repair-labs/inspect"):
+            with self.subTest(endpoint=endpoint):
+                status, headers, _ = self.request(endpoint, {"materials": demo["materials"]}, cookie=expired)
+                self.assertEqual(status, 200)
+                self.assertIn("Max-Age=0", headers["Set-Cookie"])
+        # The same expired identity cannot read any private account data.
+        status, headers, _ = self.request("/api/memories", cookie=expired)
+        self.assertEqual(status, 401)
+        self.assertIn("Max-Age=0", headers["Set-Cookie"])
+        rid = "b" * 32
+        with self.store.connect() as db:
+            db.execute("INSERT INTO personal_resources VALUES ('recording',?,?)", (rid, self.user["id"]))
+        with patch.object(self.server.recordings, "status", return_value={"id": rid, "status": "ready"}):
+            self.assertEqual(self.request("/api/recordings/" + rid, cookie=expired)[0], 404)
+            self.request("/api/rooms/" + room["id"], {"action":"materials", "actor":"Alice", "member_id":"alice",
+                "patches":[], "recordings":[rid]}, cookie=self.cookie)
+            self.assertEqual(self.request("/api/recordings/" + rid + "?room=" + room["id"], cookie=expired)[0], 200)
+
     def test_personal_accounts_require_independent_maintenance_password_for_global_backup(self):
         self.assertEqual(self.request("/api/workspace/backup", {})[0], 403)
         with patch.dict(os.environ, {"LABAGENT_MAINTENANCE_PASSWORD": "test-maintenance-password"}):

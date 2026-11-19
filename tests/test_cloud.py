@@ -1,4 +1,7 @@
 import base64
+import hashlib
+import hmac
+import time
 import json
 from pathlib import Path
 import tempfile
@@ -74,6 +77,32 @@ class CloudApiTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(HTTPError) as denied:
                 self.request("/api/sessions", headers={"Authorization": value})
             self.assertEqual(denied.exception.code, 401)
+
+    def test_team_cookie_authenticates_media_without_basic_header_and_rejects_invalid_sessions(self):
+        with urlopen(Request(self.base + "/", headers={"Authorization":self.authorization}), timeout=5) as response:
+            cookie = response.headers["Set-Cookie"]
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertIn("Secure", cookie)
+        cookie = cookie.split(";", 1)[0]
+        with urlopen(Request(self.base + "/api/demos/operation_history/video", headers={"Cookie":cookie, "Range":"bytes=0-15"}), timeout=5) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(len(response.read()), 16)
+        expires = str(int(time.time()) - 1)
+        signature = hmac.new(b"test-team-password", ("team-v1:" + expires).encode(), hashlib.sha256).hexdigest()
+        for invalid in (cookie + "bad", "labagent_team=" + expires + "." + signature):
+            with self.subTest(cookie=invalid), self.assertRaises(HTTPError) as denied:
+                self.request("/api/rooms", {"name":"blocked", "actor":"visitor"}, auth=False, headers={"Cookie":invalid})
+            self.assertEqual(denied.exception.code, 401)
+            self.assertIsNone(denied.exception.headers.get("WWW-Authenticate"))
+            self.assertEqual(json.loads(denied.exception.read())["code"], "team_sign_in_required")
+
+    def test_background_requests_do_not_open_basic_auth_dialogs(self):
+        with self.assertRaises(HTTPError) as denied:
+            self.request("/api/rooms/" + "a" * 32, auth=False)
+        self.assertEqual(denied.exception.code, 401)
+        self.assertIsNone(denied.exception.headers.get("WWW-Authenticate"))
+        self.assertEqual(json.loads(denied.exception.read())["code"], "team_sign_in_required")
 
     def test_online_configuration_requires_https_and_team_password(self):
         for url, password in (("http://example.com", "test"), ("https://example.com/path", "test"), ("https://example.com", "")):

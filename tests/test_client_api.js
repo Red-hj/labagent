@@ -9,7 +9,7 @@ const client = source.slice(source.indexOf("async function api("),source.indexOf
 async function main() {
   let status = 200, payload = [], request;
   const location = {search:"", origin:"https://labagent.test"};
-  const context = vm.createContext({URLSearchParams, URL, location, fetch:async (url,options) => {
+  const context = vm.createContext({URLSearchParams, URL, AbortSignal, location, fetch:async (url,options) => {
     request = {url,options};
     return {ok:status < 400,status,headers:{get:()=>"application/json"},json:async()=>payload};
   }});

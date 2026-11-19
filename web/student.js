@@ -12,6 +12,8 @@ let modelReady = false;
 let diagnosisBackend = "local";
 let online = false;
 let busy = false;
+let materialLoading = false;
+let replaySeek = 0;
 let workspaceTransfer = false;
 let evidenceKind = "user_submitted";
 let knowledgeScope = "default";
@@ -55,7 +57,7 @@ $("close-feedback").addEventListener("click", dismissToast);
 document.addEventListener("keydown", event => { if (event.key === "Escape") dismissToast(); });
 async function api(path, body, options = {}) {
   const headers = {...(body === undefined ? {} : {"Content-Type":"application/json"}), ...options.headers, ...roomHeaders()};
-  const response = await fetch(path, {...(body === undefined ? {} : {method:"POST", body:JSON.stringify(body)}), ...options, headers});
+  const response = await fetch(path, {credentials:"same-origin", signal:AbortSignal.timeout(60000), ...(body === undefined ? {} : {method:"POST", body:JSON.stringify(body)}), ...options, headers});
   const data = (response.headers.get("Content-Type") || "").includes("application/json") ? await response.json() : {};
   if (!response.ok) {
     const error = new Error(response.status === 413 ? "材料较多，请先保留与本次问题相关的内容。" : data.error || "服务暂时无法响应，请稍后重试。");
@@ -115,17 +117,17 @@ async function diagnose(input) {
   } finally { reader.releaseLock(); }
 }
 function syncWorkspaceLayout() {
-  const hasOutput = sessionId || busy || sessionProblem || !$("request-status").hidden || !$("process-section").hidden || !$("repair-section").hidden;
+  const hasOutput = materials.size || sessionId || busy || sessionProblem || !$("request-status").hidden || !$("process-section").hidden || !$("repair-section").hidden;
   $("diagnosis-workspace").classList.toggle("is-start", !hasOutput);
 }
 function setBusy(value) {
-  busy = value;
+  busy = value || materialLoading;
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "followup-message", "send-followup", "load-demo"]) $(id).disabled = busy;
   for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = busy || workspaceTransfer;
   $("new-conversation").disabled = busy;
   for (const id of ["followup-message", "send-followup"]) $(id).disabled = busy || legacySession;
   $("demo-case").disabled = busy || Boolean(sessionId) || demoActive;
-  $("load-demo").disabled = busy || Boolean(sessionId);
+  $("load-demo").disabled = busy || Boolean(sessionId) || demoActive;
   $("load-demo-repair").disabled = busy || !demoActive || !sessionId;
   $("load-demo-repair").hidden = $("demo-case").value === "operation_history";
   const measured = measuredDemos.has($("demo-case").value);
@@ -151,6 +153,7 @@ function materialChanged(detail) {
   if (sessionId) $("result-state").textContent = "材料已更新 · 下方为上一次分析";
 }
 function renderMaterials() {
+  syncWorkspaceLayout();
   $("material-list").replaceChildren(); materialViews = new Map();
   $("material-source").hidden = evidenceKind !== "demo";
   $("material-count").textContent = materials.size ? "已添加 " + materials.size + " 份材料" : "尚未添加材料";
@@ -225,15 +228,20 @@ function showScreenshot(screenshot, citation) {
 async function loadDemo(repaired = false, final = false) {
   if (busy) return;
   if (!repaired && (sessionId || materials.size)) return message("点击“新的排查”后，可带入完整示例材料。");
+  const choice = $("demo-case").value;
+  materialLoading = true; setBusy(true);
+  $("demo-status").textContent = "正在载入示例，请稍候…";
   try {
-    const goalsDemo = $("demo-case").value === "ospf_goals";
-    const demo = await api("/api/demos/" + $("demo-case").value);
-    const measuredDemo = measuredDemos.get($("demo-case").value);
+    const goalsDemo = choice === "ospf_goals";
+    const demo = await api("/api/demos/" + choice);
+    const measuredDemo = measuredDemos.get(choice);
+    const stage = measuredDemo || choice === "operation_history" ? demo : demo.stages?.[final ? 2 : repaired ? 1 : 0];
+    if (!stage?.materials || !Object.keys(stage.materials).length || Object.values(stage.materials).some(text => typeof text !== "string" || !text.trim())) throw new Error("示例材料未完整返回，请重新载入。");
     if (measuredDemo) {
       for (const [name,text] of Object.entries(demo.materials)) materials.set(name,text);
       evidenceKind = "user_submitted"; demoActive = true;
       $("problem").value = measuredDemo.question;
-      renderMaterials(); await previewOperations(); setBusy(false);
+      renderMaterials(); await previewOperations();
       $("demo-status").textContent = "已载入 FRRouting 实测记录。右侧重新核对故障与修复结果，可展开查看依据。";
       return materialChanged("实验运行记录已载入，右侧可查看实际对照结果。");
     }
@@ -242,18 +250,20 @@ async function loadDemo(repaired = false, final = false) {
       recordings.set("demo", {id:"demo", name:"合成终端演示录屏", video_url:"/api/demos/operation_history/video"});
       evidenceKind = "demo"; demoActive = true;
       $("problem").value = "R1 ping不通10.2.2.2，请回溯操作记录，找到关键错误步骤并说明怎样继续。";
-      renderMaterials(); renderRecordingChoices(); await previewOperations(); setBusy(false);
+      renderMaterials(); renderRecordingChoices(); await previewOperations();
+      window.LabWorkspace.resultsAvailable(true);
       $("demo-status").textContent = "已带入操作记录和配套录屏。可点击时间点回放，再开始诊断。";
       return materialChanged("操作记录与配套录屏已带入，点击时间点即可回放。");
     }
-    const stage = demo.stages[final ? 2 : repaired ? 1 : 0];
     for (const [name, text] of Object.entries(stage.materials)) materials.set(name, text);
     evidenceKind = "demo"; demoActive = true; renderMaterials();
     if (!repaired) $("problem").value = goalsDemo ? "按实验说明排查R1到10.3.3.3的访问，并核对OSPF要求。" : "PC1取得DHCP地址后，为什么访问不了10.30.0.10？";
     $("demo-status").textContent = repaired ? "复测材料已更新。点击“核对修改结果”，沿用当前会话继续。" : "故障材料已就绪。点击“开始诊断”，随后可追问原因、获取修改步骤。";
     materialChanged(repaired ? "修改与复测材料已带入，点击“核对修改结果”继续。" : "示例材料已带入，点击“开始诊断”。");
-    setBusy(false);
-  } catch (error) { message("示例载入失败：" + error.message, true); }
+  } catch (error) {
+    $("demo-status").textContent = "示例载入未完成，可点击按钮重试。";
+    message("示例载入失败：" + error.message, true);
+  } finally { materialLoading = false; setBusy(false); }
 }
 
 function renderTools(result) {
@@ -282,6 +292,7 @@ function renderProgress(result) {
 }
 async function addFiles(files) {
   if (busy || !files.length) return;
+  materialLoading = true;
   setBusy(true);
   const errors = [];
   try {
@@ -306,7 +317,7 @@ async function addFiles(files) {
     else materialChanged("材料已就绪，共 " + materials.size + " 份。点击“" + (sessionId ? "继续诊断" : "开始诊断") + "”提交分析。");
     await previewOperations();
   } catch (error) { message(error.message, true); }
-  finally { setBusy(false); }
+  finally { materialLoading = false; setBusy(false); }
 }
 function requestPayload() {
   if (!materials.size) throw new Error("请先添加或粘贴需要诊断的材料。");
@@ -321,9 +332,13 @@ async function previewOperations() {
   if (!materials.size) { renderRepairComparisons([]); return renderOperationHistory({}); }
   try {
     const input = {materials:Object.fromEntries(materials)};
-    const [history, repairs] = await Promise.all([api("/api/operations/inspect",input),api("/api/repair-labs/inspect",input)]);
-    if (number === previewNumber) { renderOperationHistory(history); renderRepairComparisons(repairs.comparisons); }
-  } catch (error) { message(error.message, true); }
+    const results = await Promise.allSettled([api("/api/operations/inspect",input),api("/api/repair-labs/inspect",input)]);
+    if (number !== previewNumber) return;
+    renderOperationHistory(results[0].status === "fulfilled" ? results[0].value : {});
+    renderRepairComparisons(results[1].status === "fulfilled" ? results[1].value.comparisons : []);
+    const failed = results.map((result,index) => result.status === "rejected" ? ["操作时间线", "修复对照"][index] + "：" + result.reason.message : "").filter(Boolean);
+    if (failed.length) message("材料已保留，部分预览未完成。" + failed.join("；"), true);
+  } catch (error) { if (number === previewNumber) message(error.message, true); }
 }
 
 function renderRepairComparisons(comparisons) {
@@ -374,19 +389,27 @@ function renderRecordingChoices() {
   $("recording-label").hidden = select.hidden = !recordings.size;
   $("replay-video").hidden = $("recording-note").hidden = !recordings.size;
   const recording = recordings.get(select.value);
-  if (recording && $("replay-video").getAttribute("src") !== mediaUrl(recording.video_url)) $("replay-video").src = mediaUrl(recording.video_url);
-  if (!recording) { $("replay-video").removeAttribute("src"); $("replay-video").load(); }
+  const video = $("replay-video");
+  if (recording && video.getAttribute("src") !== mediaUrl(recording.video_url)) {
+    ++replaySeek; video.pause(); video.src = mediaUrl(recording.video_url); video.load();
+    $("replay-status").textContent = "正在准备回放，加载完成后点击播放。";
+  }
+  if (!recording) { ++replaySeek; video.pause(); video.removeAttribute("src"); video.load(); }
+  $("replay-controls").hidden = !recording;
   $("process-section").hidden = !recordings.size && !operationHistory?.event_count;
   syncWorkspaceLayout();
 }
 function locateOperation(event) {
-  const recording = [...recordings.values()].find(item => item.material_name === event.material);
+  const recording = [...recordings.values()].find(item => item.material_name === event.material || item.id === "demo" && event.material === "终端操作.log");
   if (recording) { $("replay-recording").value = recording.id; renderRecordingChoices(); }
   const video = $("replay-video");
-  if (event.seconds !== null && recordings.size) {
+  if (event.seconds !== null && recording) {
+    const seekNumber = ++replaySeek;
     const seek = () => {
+      if (seekNumber !== replaySeek) return;
       if (Number.isFinite(video.duration) && event.seconds > video.duration) return message("这个时间点超出当前录屏长度，请选择对应录屏。", true);
-      video.currentTime = event.seconds; video.pause();
+      video.currentTime = event.seconds;
+      video.play().catch(() => { $("replay-status").textContent = "已定位到对应画面，点击“播放回放”继续。"; });
       video.scrollIntoView({block:"center"});
       message("已跳到 " + event.time_label + " 的画面。");
     };
@@ -686,6 +709,21 @@ $("load-demo").addEventListener("click", () => loadDemo());
 $("load-demo-repair").addEventListener("click", () => loadDemo(true));
 $("load-demo-final").addEventListener("click", () => loadDemo(true, true));
 $("replay-recording").addEventListener("change", renderRecordingChoices);
+$("play-replay").addEventListener("click", () => {
+  const video = $("replay-video");
+  if (video.error) video.load();
+  video.play().catch(() => { $("replay-status").textContent = "暂时无法播放。请点击“重新加载回放”，仍失败时刷新页面后重试。"; });
+});
+$("retry-replay").addEventListener("click", () => {
+  ++replaySeek; const video = $("replay-video"); video.load();
+  $("replay-status").textContent = "正在重新加载回放…";
+  video.play().catch(() => { $("replay-status").textContent = "请等待加载后再点“播放回放”；仍失败时刷新页面重新载入示例。"; });
+});
+$("replay-video").addEventListener("loadedmetadata", () => { $("replay-status").textContent = "回放已就绪，可以播放或点击操作时间点。"; });
+$("replay-video").addEventListener("playing", () => { $("replay-status").textContent = "正在播放回放。"; });
+$("replay-video").addEventListener("error", () => {
+  if ($("replay-video").getAttribute("src")) $("replay-status").textContent = "回放加载失败，点击“重新加载回放”重试。若网站访问已过期，请刷新页面重新登录。";
+});
 $("demo-case").addEventListener("change", () => setBusy(false));
 $("choose-files").addEventListener("click", () => $("material-files").click());
 $("material-files").addEventListener("change", async event => { await addFiles(event.target.files); event.target.value = ""; });
@@ -708,6 +746,7 @@ $("drop-zone").addEventListener("dragleave", () => $("drop-zone").classList.remo
 $("drop-zone").addEventListener("drop", async event => { event.preventDefault(); $("drop-zone").classList.remove("dragging"); await addFiles(event.dataTransfer.files); });
 $("paste-toggle").addEventListener("click", () => { $("paste-panel").hidden = !$("paste-panel").hidden; $("paste-toggle").setAttribute("aria-expanded", String(!$("paste-panel").hidden)); if (!$("paste-panel").hidden) $("pasted-material").focus(); });
 $("add-pasted").addEventListener("click", () => {
+  if (busy) return;
   const text = $("pasted-material").value;
   if (!text.trim()) return message("请先粘贴材料内容。", true);
   if (materials.size >= 20 || text.length > 200000) return message("请保留与本次问题相关的材料，每份200 KB以内，最多20份。", true);
@@ -739,6 +778,8 @@ $("followup-message").addEventListener("keydown", event => {
   if (!busy && !event.repeat) $("followup-form").requestSubmit();
 });
 $("new-diagnosis").addEventListener("click", () => {
+  if (busy) return;
+  ++previewNumber;
   window.LabPersonal.setResult(null);
   window.LabWorkspace.leave();
   sessionProblem = false; requestFailed = false; legacySession = false;
@@ -845,17 +886,19 @@ window.LabWorkspace.init({api, element, message, materials, recordings, screensh
     if (replace) { materials.clear(); for (const [name, entry] of Object.entries(room.materials)) materials.set(name, entry.content); $("problem").value = room.question; }
     renderMaterials(); previewOperations();
   },
-  restore:async room => {
+  restore:async (room, isCurrent = () => true) => {
     recordings.clear(); screenshots.clear();
     for (const id of room.recordings) {
       try {
         const media = await api("/api/recordings/" + id);
+        if (!isCurrent()) return;
         if (!room.materials[media.material_name]) continue;
         const collection = media.kind === "image" ? screenshots : recordings;
         for (const [oldId, old] of collection) if (old.material_name === media.material_name) collection.delete(oldId);
         collection.set(id, media);
       } catch {}
     }
+    if (!isCurrent()) return;
     renderMaterials(); renderRecordingChoices();
     if (!room.session) {
       sessionId = null; window.LabHistory.activate(null); window.LabHistory.setSnapshot(null);
@@ -864,6 +907,7 @@ window.LabWorkspace.init({api, element, message, materials, recordings, screensh
       setBusy(false); return;
     }
     const saved = await api("/api/sessions/" + room.session.session_id);
+    if (!isCurrent()) return;
     knowledgeScope = saved.attempts.at(-1).input.knowledge_scope || "default";
     legacySession = false; window.LabHistory.setSnapshot(saved);
     showResult({...saved.attempts.at(-1).result, dialogue:saved.dialogue, session_id:room.session.session_id}); setBusy(false);
@@ -946,7 +990,7 @@ $("workspace-file").addEventListener("change", event => {
   const file = event.target.files[0];
   if (file) transferWorkspace("/api/workspace/restore", file);
 });
-window.LabHistory.init({api,element,message,busy:() => busy,showScreenshot,
+window.LabHistory.init({api,element,message,busy:() => busy,showScreenshot,mediaUrl,
   newConversation:() => $("new-diagnosis").click(), showDiagnosis:() => window.LabWorkspace.showDiagnosis()});
 window.LabKnowledge.init({api,element,message,busy:() => busy,scope:() => knowledgeScope,setScope:scope => {
   knowledgeScope = scope;

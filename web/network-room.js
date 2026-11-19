@@ -3,6 +3,7 @@ window.LabWorkspace = (() => {
   let c, room = null, base = null, memberId, actor = "", pollTimer, polling = false;
   let network = null, selectedSource = "", target = "", previewId = 0, selectedNode = "", seenResult = "";
   let conflict = null, pending = false, challenge = null;
+  let roomEpoch = 0;
   let view = "diagnosis";
   const $ = id => document.getElementById(id);
   const el = (tag, text, cls) => c.element(tag, text, cls);
@@ -13,8 +14,11 @@ window.LabWorkspace = (() => {
   async function run(action) {
     if (pending || c.busy()) return c.message("当前请求完成后可继续操作。");
     pending = true;
-    try { await action(); } catch (error) { c.message(error.message, true); }
-    finally { pending = false; }
+    $("collaboration").setAttribute("aria-busy", "true");
+    $("room-status").textContent = "正在提交协作操作…";
+    try { await action(); }
+    catch (error) { renderRoom(); $("room-status").textContent = "操作未完成 · " + error.message; c.message(error.message, true); }
+    finally { pending = false; $("collaboration").setAttribute("aria-busy", "false"); }
   }
   function getActor() {
     actor = $("room-actor").value.trim();
@@ -57,10 +61,17 @@ window.LabWorkspace = (() => {
   function sessionUrl(id) { return "/?" + (room ? "room=" + room.id + "&" : "") + "session=" + id; }
   function resultKey(value) { return value.session ? [value.session.session_id, value.session.attempts, value.session.revision, value.revision].join(":") : ""; }
   async function apply(value, restore = true) {
+    const epoch = roomEpoch;
     room = value; base = structuredClone(value);
+    // Establish the invite context before restoring shared sessions and media.
+    history.replaceState(null, "", room.session ? sessionUrl(room.session.session_id) : "/?room=" + room.id);
     c.apply(room); renderRoom();
-    if (restore && resultKey(room) !== seenResult) { await c.restore(room); seenResult = resultKey(room); }
-    else if (!room.session && restore) await c.restore(room);
+    const isCurrent = () => epoch === roomEpoch && room?.id === value.id && room.revision === value.revision;
+    if (restore && (resultKey(room) !== seenResult || !room.session)) {
+      await c.restore(room, isCurrent);
+      if (!isCurrent()) return;
+      seenResult = resultKey(room);
+    }
     history.replaceState(null, "", room.session ? sessionUrl(room.session.session_id) : "/?room=" + room.id);
   }
   async function update(body) { return c.api("/api/rooms/" + room.id, {actor:getActor(), member_id:memberId, ...body}); }
@@ -150,13 +161,15 @@ window.LabWorkspace = (() => {
   async function poll() {
     if (!room || polling || pending || c.busy() || document.hidden || conflict) return;
     polling = true;
+    const epoch = roomEpoch, id = room.id;
     try {
-      const latest = await c.api("/api/rooms/" + room.id);
+      const latest = await c.api("/api/rooms/" + id);
+      if (epoch !== roomEpoch || room?.id !== id) return;
       if (dirty()) {
         if (latest.revision !== base.revision) $("room-status").textContent = "队友有更新 · 你的草稿已保留，点击同步合并";
       } else if (latest.revision !== base.revision || resultKey(latest) !== seenResult) await apply(latest);
       else if (JSON.stringify([latest.tasks,latest.activity,latest.members]) !== JSON.stringify([room.tasks,room.activity,room.members])) { room = latest; renderRoom(); }
-    } catch (error) { $("room-status").textContent = "同步暂时中断 · " + error.message; }
+    } catch (error) { if (epoch === roomEpoch && room?.id === id) $("room-status").textContent = "同步暂时中断 · " + error.message; }
     finally { polling = false; }
   }
   function svg(tag, attrs) { const node = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const [key,value] of Object.entries(attrs || {})) node.setAttribute(key,value); return node; }
@@ -261,7 +274,12 @@ window.LabWorkspace = (() => {
     const title = el("h2", "协作排障室"); title.id = "room-title"; const status = el("span"); status.id = "room-status"; status.setAttribute("role","status"); heading.append(title,status);
     const controls = el("div", undefined, "room-toolbar"), name = field("你的姓名",actor), lab = field("实验名称","网络实验小组"); name.id = "room-actor"; name.maxLength = 40; lab.id = "room-name";
     name.addEventListener("change", () => { actor = name.value.trim(); storage("labagent-actor",actor); tabStorage("labagent-actor",actor); });
-    const create = button("创建协作实验",async () => { const value = await c.api("/api/rooms", {name:lab.value,actor:getActor()}); room = value; base = structuredClone(value); await publish(); startPoll(); }); create.id = "create-room";
+    const create = button("创建协作实验",async () => {
+      const value = await c.api("/api/rooms", {name:lab.value,actor:getActor()});
+      room = value; base = structuredClone(value);
+      history.replaceState(null, "", "/?room=" + room.id); renderRoom(); startPoll();
+      await publish();
+    }); create.id = "create-room";
     controls.append(name,lab,create,button("加入 / 更新姓名",async () => { if (!room) throw new Error("先创建实验，或打开队友发来的邀请链接。"); room = await update({action:"join"}); renderRoom(); c.message("已加入协作实验。"); }));
     const practice = el("details",undefined,"challenge-entry"); practice.append(el("summary","找错小练习"),button("载入一道网关练习",async () => { const demo = await c.api("/api/challenges/new"); if (!c.challenge(demo)) return; challenge = demo; const answers = $("challenge-answers"); answers.replaceChildren(el("p",demo.question),button("查看练习材料",() => showView("diagnosis"))); for (const [index,text] of demo.choices.entries()) answers.append(button(text,async () => { const result = await c.api("/api/challenges/check",{id:challenge.id,choice:index}); $("challenge-feedback").textContent = result.reply; })); answers.append(el("p", "", "section-note")); answers.lastElementChild.id = "challenge-feedback"; c.message("练习已载入，可查看材料或打开网络地图，再选择故障环节。"); }));
     const answers = el("div"); answers.id = "challenge-answers"; practice.append(answers);
@@ -291,6 +309,6 @@ window.LabWorkspace = (() => {
       room_id:room.id, room_revision:room.revision, room_actor:getActor()});
     if (room.session) input.session_id = room.session.session_id; else delete input.session_id;
   }
-  function leave() { clearInterval(pollTimer); room = null; base = null; conflict = null; seenResult = ""; challenge = null; selectedNode = ""; target = ""; renderRoom(); renderConflict(); $("challenge-answers").replaceChildren(); showDiagnosis(); }
+  function leave() { clearInterval(pollTimer); ++roomEpoch; ++previewId; room = null; base = null; conflict = null; seenResult = ""; challenge = null; selectedNode = ""; target = ""; renderRoom(); renderConflict(); $("challenge-answers").replaceChildren(); showDiagnosis(); }
   return {init,start,changed,preview,sessionUrl,prepareDiagnosis,leave,resultsAvailable,showDiagnosis};
 })();
