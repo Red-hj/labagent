@@ -186,6 +186,13 @@ button:focus-visible,a:focus-visible,summary:focus-visible { outline:3px solid #
 .chat-failed { padding:12px 15px; border:1px solid #efdcd5; border-radius:12px; background:#fff9f7; }
 .chat-error-text { margin:5px 0; font-size:12px; line-height:1.8; }
 .chat-new-reply { display:block; width:fit-content; margin:-5px auto 12px; padding:7px 13px; border:1px solid #e1e6f2; border-radius:20px; background:#fff; color:#596bc4; font-size:11px; box-shadow:0 2px 7px #3049610b; }
+.continuation-status { margin:12px 0; padding:10px 12px; border-radius:8px; background:#f5f7fc; color:#718099; font-size:11px; line-height:1.8; }
+.continuation-status[data-state="updated"] { background:#f0f3ff; color:#5366aa; }
+.chat-shortcuts { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 10px; }
+.chat-shortcuts button { padding:7px 10px; font-size:11px; }
+.chat-shortcuts span { margin-left:auto; color:#929caf; font-size:10px; }
+.records-help { margin:0 0 16px; color:#8490a4; font-size:11px; }
+.records-help summary { cursor:pointer; }.records-help p { font-size:12px; line-height:1.9; }
 @keyframes chat-typing { 0%,70%,100% { transform:translateY(0); opacity:.45; } 35% { transform:translateY(-3px); opacity:1; } }
 @media(prefers-reduced-motion:reduce) { .typing-dots i,.chat-delivery.sending::before { animation:none; } }
 @media(prefers-reduced-motion:no-preference) { .new-conversation,.workspace-nav button,.upload-button,.secondary-button,.history-toggle,.primary-button,.send-button,.personal-entry { transition:background .15s ease,border-color .15s ease,color .15s ease,box-shadow .15s ease; } }

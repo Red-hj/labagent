@@ -7,6 +7,7 @@ let operationHistory = null;
 let previewNumber = 0;
 let videoReady = false;
 let sessionId = null;
+let materialsPending = false;
 let legacySession = false;
 let modelReady = false;
 let diagnosisBackend = "local";
@@ -123,6 +124,13 @@ function syncWorkspaceLayout() {
   const hasOutput = materials.size || sessionId || busy || sessionProblem || !$("request-status").hidden || !$("process-section").hidden || !$("repair-section").hidden;
   $("diagnosis-workspace").classList.toggle("is-start", !hasOutput);
 }
+function syncContinuation() {
+  const continuing = Boolean(sessionId) && !legacySession;
+  $("continuation-status").hidden = !continuing;
+  $("chat-shortcuts").hidden = !continuing;
+  $("continuation-status").dataset.state = materialsPending ? "updated" : "saved";
+  $("continuation-status").textContent = materialsPending ? "新材料已加入当前排查，对话仍保留。点击“核对新结果”比较修改并检查实验目标。" : "当前排查会话已保留。修改后直接补充新配置或测试输出，再点“核对新结果”。";
+}
 function setBusy(value) {
   busy = value || materialLoading;
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "send-followup", "load-demo"]) $(id).disabled = busy;
@@ -143,19 +151,22 @@ function setBusy(value) {
   $("load-demo-final").hidden = $("demo-case").value !== "ospf_goals";
   $("load-demo-repair").textContent = $("demo-case").value === "ospf_goals" ? "② 带入静态路由复测" : "② 带入修改与复测材料";
   $("analyze").disabled = busy || !modelReady || sessionProblem || legacySession;
-  $("analyze").replaceChildren(document.createTextNode(busy ? "正在处理…" : sessionId ? "继续诊断" : "开始诊断"), element("span", "→"));
+  $("analyze").replaceChildren(document.createTextNode(busy ? "正在处理…" : sessionId ? (materialsPending ? "分析新材料" : "继续排查") : "开始诊断"), element("span", "→"));
   $("send-followup").textContent = busy && activeRequest ? "等待回复" : "发送 ↗";
   serviceStatus();
   $("analysis-result").setAttribute("aria-busy", String(busy));
   for (const button of $("material-list").querySelectorAll("button")) button.disabled = busy;
-  for (const control of document.querySelectorAll(".interaction-actions button,.request button,.request textarea,.chat-retry,.operation-analyze")) control.disabled = busy || legacySession;
+  for (const control of document.querySelectorAll(".interaction-actions button,.chat-shortcuts button,.request button,.request textarea,.chat-retry,.operation-analyze")) control.disabled = busy || legacySession;
+  syncContinuation();
   syncWorkspaceLayout();
   window.LabKnowledge?.sync();
 }
 function materialChanged(detail) {
   window.LabWorkspace.changed();
   message(detail || (sessionId ? "材料已更新，点击继续诊断即可。" : "材料已添加，可以开始诊断。"));
-  if (sessionId) $("result-state").textContent = "材料已更新 · 下方为上一次分析";
+  if (sessionId) { materialsPending = true; $("result-state").textContent = "材料已更新 · 下方为上一次分析"; }
+  syncContinuation();
+  if (sessionId) setBusy(busy);
 }
 function renderMaterials() {
   syncWorkspaceLayout();
@@ -653,6 +664,7 @@ function renderGoalsAndPlan(analysis, status) {
   container.append(details);
 }
 function showResult(result) {
+  materialsPending = result.llm?.status !== "ok";
   $("analysis-details").hidden = false;
   window.LabPersonal.setResult(result);
   $("memory-used").hidden = !result.memory_used?.length;
@@ -758,6 +770,7 @@ $("replay-video").addEventListener("error", () => {
 });
 $("demo-case").addEventListener("change", () => setBusy(false));
 $("choose-files").addEventListener("click", () => $("material-files").click());
+$("add-followup-materials").addEventListener("click", () => { if (!busy) $("material-files").click(); });
 $("material-files").addEventListener("change", async event => { await addFiles(event.target.files); event.target.value = ""; });
 document.addEventListener("paste", async event => {
   const images = [...(event.clipboardData?.items || [])].filter(item => item.kind === "file" && item.type.startsWith("image/"));
@@ -797,7 +810,7 @@ $("analyze").addEventListener("click", async () => {
   } finally { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
 });
 for (const button of document.querySelectorAll("[data-intent]")) button.addEventListener("click", () => {
-  const text = {ask:"请解释当前疑点为什么会造成这个现象，用实验中的材料说明。", repair:"请基于当前材料给出具体修改步骤，以及每一步之后应观察什么。", verify:"我已更新相关材料，请先比较与上一轮的改动，再核对上传的Ping结果，说明还需要验证什么。"}[button.dataset.intent];
+  const text = {ask:"请解释当前疑点为什么会造成这个现象，用实验中的材料说明。", repair:"请基于当前材料给出具体修改步骤，以及每一步之后应观察什么。", verify:"请沿用当前排查和实验目标，比较我补充的新材料与上一轮的改动，核对修改后的配置和实际测试输出；如果仍缺新输出，请明确指出需要补充什么。"}[button.dataset.intent];
   performInteraction(button.dataset.intent, text);
 });
 $("followup-form").addEventListener("submit", event => {
@@ -822,6 +835,7 @@ $("new-diagnosis").addEventListener("click", () => {
   window.LabHistory.activate(null); window.LabHistory.setSnapshot(null);
   $("analysis-details").open = false;
   materials.clear(); sessionId = null; evidenceKind = "user_submitted"; knowledgeScope = "default"; demoActive = false;
+  materialsPending = false;
   recordings.clear(); screenshots.clear(); renderRecordingChoices(); renderOperationHistory({}); renderRepairComparisons([]);
   $("demo-case").value = "network_access";
   $("demo-status").textContent = "先带入故障材料，再点击“开始诊断”。";
@@ -947,7 +961,7 @@ window.LabWorkspace.init({api, element, message, materials, recordings, screensh
     knowledgeScope = saved.attempts.at(-1).input.knowledge_scope || "default";
     legacySession = false; window.LabHistory.setSnapshot(saved);
     showResult({...saved.attempts.at(-1).result, dialogue:saved.dialogue, session_id:room.session.session_id}); setBusy(false);
-    if (room.session.revision !== room.revision) $("result-state").textContent = "队友已补充材料 · 下方为上一次分析";
+    if (room.session.revision !== room.revision) { materialsPending = true; $("result-state").textContent = "队友已补充材料 · 下方为上一次分析"; syncContinuation(); }
   },
   locate:locateCitation,
   ask:text => { if (sessionId) performInteraction("ask", text); else { $("problem").value = text; message("已带入路径问题，点击开始诊断即可。"); } },
