@@ -32,6 +32,7 @@ from .recordings import Recordings, VIDEO_SUFFIXES, available as replay_availabl
 from .operation_history import inspect_history
 from .rooms import Rooms, RoomConflict
 from .personal import Personal, SignInError, COOKIE, LIFETIME
+from .lab_bridge import LabBridge
 
 ROOT = Path(__file__).resolve().parents[1]
 MEASURED_DEMOS = {
@@ -171,14 +172,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"enabled": os.environ.get("LABAGENT_GUIDED_WORKFLOW") == "1",
                 "solution_unlocked": bool(user) and solution_allowed(token, subject=user["id"]),
                 "can_unlock": bool(os.environ.get("LABAGENT_SOLUTION_CODE") and os.environ.get("LABAGENT_LEARNING_KEY")),
+                "bridge_available": bool(user),
                 "mcp_configured": bool(os.environ.get("LABAGENT_MCP_CONFIG"))})
+        if path == "/api/lab/bridge":
+            user = self.personal_user(required=True)
+            return self.reply({"bridge": self.server.lab_bridge.status(user["id"])})
         if path == "/api/lab/tools":
             from .mcp_client import LabMCPTools
+            user = self.personal_user(strict=False)
+            bridge = self.server.lab_bridge.status(user["id"]) if user else None
+            tools = [{**tool, "bridge_id": bridge["id"]} for tool in bridge["tools"]] if bridge and bridge["state"] == "online" else []
             config = os.environ.get("LABAGENT_MCP_CONFIG")
             if not config:
-                return self.reply({"tools": [], "warnings": ["本机尚未连接实验平台，可继续上传材料"]})
+                return self.reply({"tools": tools, "bridge": bridge, "warnings": [] if tools else ["请先连接实验电脑，也可继续上传材料"]})
             with LabMCPTools(config) as lab:
-                return self.reply({"tools": lab.tools, "warnings": lab.warnings})
+                return self.reply({"tools": tools + lab.tools, "bridge": bridge, "warnings": lab.warnings})
         if path == "/api/account":
             return self.reply({"user": self.personal_user(strict=False)}, cookie="" if self.personal_token() and not self.personal_user(strict=False) else None)
         if path == "/api/memories":
@@ -338,6 +346,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            # Outbound workstation traffic carries a narrowly scoped bridge token,
+            # never the website's team password or a student's account cookie.
+            if urlparse(self.path).path in {"/api/lab/agent/claim", "/api/lab/agent/poll", "/api/lab/agent/result"}:
+                return self.bridge_agent_request()
             if urlparse(self.path).path in ("/api/workspace/backup", "/api/workspace/restore"):
                 return self.handle_POST()
             with self.server.workspace.gate.activity():
@@ -346,6 +358,33 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"error": str(error)}, 409)
         except SignInError as error:
             return self.reply({"error": str(error)}, error.status)
+
+    def bridge_agent_request(self):
+        if not self.safe_host() or self.headers.get("Origin"):
+            return self.reply({"error": "请使用本地实验连接程序"}, 403)
+        if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+            return self.reply({"error": "请使用application/json"}, 415)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 500_000:
+                raise ValueError("连接请求过大或为空")
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("连接请求须为对象")
+            path = urlparse(self.path).path
+            if path.endswith("/claim"):
+                return self.reply(self.server.lab_bridge.claim(payload.get("code"), payload.get("tools")))
+            auth = self.headers.get("Authorization", "")
+            token = auth[7:] if auth.startswith("Bearer ") else ""
+            if path.endswith("/poll"):
+                return self.reply({"job": self.server.lab_bridge.poll(token)})
+            self.server.lab_bridge.finish(token, payload.get("id"), payload.get("result"), payload.get("error"))
+            return self.reply({"received": True})
+        except PermissionError as error:
+            return self.reply({"error": str(error)}, 401)
+        except (ValueError, UnicodeError) as error:
+            self.close_connection = True
+            return self.reply({"error": str(error)}, 400)
 
     def handle_POST(self):
         origin = self.headers.get("Origin")
@@ -371,7 +410,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"error": "请使用 application/json"}, 415)
         path = urlparse(self.path).path
         room_match = re.fullmatch(r"/api/rooms/([a-f0-9]{32})", path)
-        if not room_match and path not in ("/api/learning/unlock", "/api/lab/collect", "/api/account/register", "/api/account/login", "/api/account/logout", "/api/account/memory", "/api/memories", "/api/rooms", "/api/network/inspect", "/api/challenges/check", "/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect", "/api/repair-labs/inspect"):
+        if not room_match and path not in ("/api/lab/bridge", "/api/lab/bridge/disconnect", "/api/learning/unlock", "/api/lab/collect", "/api/account/register", "/api/account/login", "/api/account/logout", "/api/account/memory", "/api/memories", "/api/rooms", "/api/network/inspect", "/api/challenges/check", "/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect", "/api/repair-labs/inspect"):
             return self.reply({"error": "未找到接口"}, 404)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -393,6 +432,13 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/operations/inspect", "/api/repair-labs/inspect", "/api/knowledge/search", "/api/lab/collect"
             }
             user = self.personal_user(strict=not optional_identity)
+            if path in ("/api/lab/bridge", "/api/lab/bridge/disconnect"):
+                if not user:
+                    raise SignInError("请先登录个人账号，再连接自己的实验电脑")
+                if path.endswith("/disconnect"):
+                    self.server.lab_bridge.disconnect(user["id"], payload.get("id"))
+                    return self.reply({"disconnected": True})
+                return self.reply(self.server.lab_bridge.create(user["id"], payload.get("name", "我的实验电脑")), 201)
             if path == "/api/learning/unlock":
                 from .learning import grant_solution, COOKIE as LEARNING_COOKIE
                 if not user:
@@ -416,19 +462,24 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/lab/collect":
                 from .mcp_client import LabMCPTools
                 config = os.environ.get("LABAGENT_MCP_CONFIG")
-                if not config:
-                    raise ValueError("本机尚未配置实验平台连接")
-                with LabMCPTools(config) as lab:
-                    tool = payload.get("tool")
-                    if not isinstance(tool, str) or tool not in lab.bindings:
-                        raise ValueError("请选择当前实验已开放的检查")
-                    observed = lab.execute(tool, payload.get("arguments", {}))
-                    from .investigation import safe_text
-                    command_slug = re.sub(r"[^\w-]+", "_", observed["command"])[:35]
-                    name = ("MCP-" + observed["device"] + "-" + tool + "-" + command_slug + ".log")[:120]
-                    text = "设备：" + observed["device"] + "\n命令：" + observed["command"] + "\n" + safe_text(observed["text"])
-                    return self.reply({"materials": {name: text}, "source": "mcp_device_observation",
-                        "observed_at": datetime.now(timezone.utc).isoformat()})
+                tool = payload.get("tool")
+                if payload.get("bridge_id"):
+                    if not user:
+                        raise SignInError("请先登录个人账号，再采集自己的实验电脑")
+                    observed = self.server.lab_bridge.collect(user["id"], payload["bridge_id"], tool, payload.get("arguments", {}))
+                else:
+                    if not config:
+                        raise ValueError("尚未配置实验平台连接，请先连接实验电脑")
+                    with LabMCPTools(config) as lab:
+                        if not isinstance(tool, str) or tool not in lab.bindings:
+                            raise ValueError("请选择当前实验已开放的检查")
+                        observed = lab.execute(tool, payload.get("arguments", {}))
+                from .investigation import safe_text
+                command_slug = re.sub(r"[^\w-]+", "_", observed["command"])[:35]
+                name = ("MCP-" + observed["device"] + "-" + tool + "-" + command_slug + ".log")[:120]
+                text = "设备：" + observed["device"] + "\n命令：" + observed["command"] + "\n" + safe_text(observed["text"])
+                return self.reply({"materials": {name: text}, "source": "mcp_device_observation",
+                    "observed_at": datetime.now(timezone.utc).isoformat()})
             if path in ("/api/memories", "/api/account/memory"):
                 if not user:
                     raise SignInError("请先登录个人账号")
@@ -720,6 +771,7 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
     server = LabAgentServer((host, port), partial(Handler, store=store))
     server.rooms = Rooms(store)
     server.personal = Personal(store)
+    server.lab_bridge = LabBridge()
     server.public_url, server.team_password = public_url, team_password
     server.allowed_hosts = {f"127.0.0.1:{server.server_port}", f"localhost:{server.server_port}"}
     server.allowed_origins = {"http://" + item for item in server.allowed_hosts}

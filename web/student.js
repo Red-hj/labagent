@@ -885,6 +885,7 @@ async function connectService() {
 }
 async function start() {
   await window.LabLearning?.init({api, busy:() => busy || materialLoading,
+    setCollecting:value => { materialLoading = value; setBusy(value); },
     ask:(text, type = "ask") => {
       if (busy || materialLoading) return;
       if (sessionId) performInteraction(type, text);

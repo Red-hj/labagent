@@ -32,6 +32,17 @@
         <p id="material-source" class="material-source" hidden>当前包含合成演示材料</p>
         <div id="paste-panel" class="paste-panel" hidden><label for="pasted-material">粘贴诊断材料</label><textarea id="pasted-material" rows="5" placeholder="粘贴设备配置、命令输出或实验说明…"></textarea><button id="add-pasted" class="secondary-button">添加这份材料</button></div>
         <div id="material-list" class="material-list" aria-live="polite"></div><p id="continuation-status" class="continuation-status" role="status" hidden></p>
+        <details id="lab-connection" class="learning-panel" hidden>
+          <summary>连接我的实验电脑</summary>
+          <p class="section-note">在实验电脑上运行本地连接程序，网站便可读取你选择的设备输出。输出加入当前材料后，继续核对正在做的这一步。</p>
+          <details><summary>第一次连接</summary>
+            <p class="section-note">先登录个人账号。实验电脑需已配置本地 MCP 检查工具；生成连接码后，在该电脑的项目目录运行下面的程序，按提示输入连接码。</p>
+            <code class="lab-command">python scripts/connect_lab.py runtime/mcp.json</code>
+            <label for="lab-computer-name">实验电脑名称</label><input id="lab-computer-name" maxlength="60" value="我的实验电脑">
+            <button id="lab-pair" type="button" class="secondary-button">生成连接码</button>
+            <p id="lab-pair-code" class="lab-pair-code" hidden></p>
+            <p class="section-note">连接码5分钟内有效，只在自己的实验电脑输入；重新生成会断开旧连接。本地配置与设备凭据留在电脑上。</p>
+          </details>
         <label for="problem">想解决什么？ <span class="optional">选填</span></label><textarea id="problem" rows="2" placeholder="例如：拿到了 IP 地址，但还是访问不了其他网段…"></textarea>
         <button id="analyze" class="primary-button" disabled>开始诊断 <span aria-hidden="true">→</span></button>
         <p id="message" class="message" role="status" aria-live="polite"></p>
@@ -62,7 +73,11 @@
           <div class="learning-actions"><button id="learning-smaller" type="button" class="secondary-button">我还不会</button><button id="learning-more" type="button" class="secondary-button">再具体一点</button><button id="learning-check" type="button" class="secondary-button">核对这一步</button></div>
           <details id="learning-unlock" hidden><summary>老师已允许查看解答</summary><form id="learning-unlock-form"><label for="learning-code">解答授权码</label><input id="learning-code" type="password" autocomplete="off" maxlength="128" required><button id="learning-unlock-button" type="submit" class="secondary-button">验证权限</button></form></details>
         </section>
-        <details id="lab-connection" class="learning-panel" hidden><summary>从已连接的实验平台采集</summary><p class="section-note">在运行实验的电脑上启动本地连接，选择要检查的内容。输出加入当前材料后，可继续核对同一步。</p><button id="lab-load-tools" type="button" class="secondary-button">查看可用检查</button><div id="lab-tools"></div></details>
+
+          <p id="lab-note" class="section-note" role="status"></p>
+          <div class="learning-actions"><button id="lab-load-tools" type="button" class="secondary-button">刷新连接与检查</button><button id="lab-disconnect" type="button" class="text-button" hidden>断开实验电脑</button><button id="lab-check-step" type="button" class="secondary-button" hidden>用刚采集的输出核对这一步</button></div>
+          <div id="lab-tools"></div>
+        </details>
         <section id="learning-current" class="learning-current" hidden aria-label="当前实验步骤"><h3 id="learning-current-title"></h3><p id="learning-current-observation"></p><p id="learning-current-question"></p></section>
         <div id="empty-result" class="empty-result"><span class="empty-symbol" aria-hidden="true">⌁</span><h3>准备好材料，就可以开始。</h3><p>这里会显示问题原因、材料依据和下一步操作。</p><div class="flow"><span>提供材料</span><b>→</b><span>分析问题</span><b>→</b><span>补充验证</span></div></div>
         <div id="analysis-result" hidden>
