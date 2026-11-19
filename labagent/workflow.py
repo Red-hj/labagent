@@ -134,6 +134,12 @@ def run_workflow(payload, database=None, planner=None):
 
 
 def run_open_workflow(payload, database=None, completion=None, *, previous_attempt=None):
+    from .learning import learning_access
+    with learning_access(payload):
+        return _run_open_workflow(payload, database, completion, previous_attempt=previous_attempt)
+
+
+def _run_open_workflow(payload, database=None, completion=None, *, previous_attempt=None):
     """A separate graph namespace prevents mixing rule and open checkpoints."""
     from .investigation import investigate
     validate(payload)
@@ -163,8 +169,9 @@ def run_open_workflow(payload, database=None, completion=None, *, previous_attem
         return {"result": result, "conversation": conversation, "last_materials": payload["configs"]}
 
     def wait_for_evidence(state):
-        update = interrupt({"status": "needs_information", "requests": state["result"]["runtime_missing"],
-                            "message": "等待新的材料或运行证据；模型假设尚未确认。"})
+        learning = state["result"].get("investigation", {}).get("learning")
+        update = interrupt({"status": "needs_information", "requests": [learning["question"]] if learning else state["result"]["runtime_missing"],
+                            "message": "完成当前这一小步后，提交观察结果；还不懂也可以继续问。" if learning else "等待新的材料或运行证据；模型假设尚未确认。"})
         return Command(goto="inspect_materials", update={"payload": update["payload"]})
 
     thread_id = payload.get("session_id") or uuid.uuid4().hex
@@ -187,5 +194,5 @@ def run_open_workflow(payload, database=None, completion=None, *, previous_attem
         result = dict(snapshot.values["result"])
         result["workflow"] = {"backend": "langgraph", "thread_id": thread_id, "paused": bool(snapshot.next),
                               "resumed": resumed or restored, "context_restored": restored,
-                              "phase": "waiting_for_evidence" if snapshot.next else "completed", "steps": result["trace"]}
+                              "phase": ("waiting_for_student" if result.get("investigation", {}).get("learning") else "waiting_for_evidence") if snapshot.next else "completed", "steps": result["trace"]}
         return result

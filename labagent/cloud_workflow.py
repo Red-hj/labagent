@@ -30,7 +30,7 @@ class CloudWorkflow:
         request = {"materials": deepcopy(payload["configs"])}
         request["course_documents"] = export_course_documents(payload.get("knowledge_scope", "default"))
         request["personal_memory"] = deepcopy(payload.get("personal_memory", []))
-        for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings", "requirements", "topology", "command_outputs", "hint_level"):
+        for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings", "requirements", "topology", "command_outputs", "hint_level", "learning"):
             if key in payload:
                 request[key] = deepcopy(payload[key])
         if previous:
@@ -74,6 +74,8 @@ class CloudWorkflow:
                 ("created_at", "config_fingerprint", "hint_level", "findings", "status")):
             raise ValueError("云端未返回完整诊断结果，请检查运行时镜像版本。")
         result = deepcopy(result)
+        if payload.get("learning") and not result.get("investigation", {}).get("learning"):
+            raise ValueError("云端尚未启用逐步引导版本，本轮未展示普通诊断答案；请更新现有运行时后使用。")
         result["agentarts"] = {"platform_session_id": platform_id, "session_id": response["session_id"],
                               "started_at": platform_started_at, "last_activity_at": self.clock(),
                               "session_recovered": recovering}

@@ -30,6 +30,9 @@ class Store:
             database.close()
 
     def save(self, payload, result, *, owner=None):
+        if "learning" in payload:
+            # A solution grant must never enter history, exports or shared rooms.
+            payload = {**payload, "learning": {"level": payload["learning"].get("level", 1)}}
         session_id = payload.get("session_id") or result.get("workflow", {}).get("thread_id") or uuid.uuid4().hex
         with self.connect() as db:
             if payload.get("session_id") and not db.execute("SELECT 1 FROM attempts WHERE session_id=?", (session_id,)).fetchone():
