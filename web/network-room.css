@@ -53,10 +53,11 @@
 .map-link { stroke:#8d9bad; stroke-width:2; }
 .map-link.inferred { stroke-dasharray:6 5; }
 .map-link.active { stroke:#376caa; stroke-width:4; }
-.map-node { cursor:pointer; }
+.map-node { cursor:pointer; outline:none; }
 .map-node rect { fill:white; stroke:#bdcddd; stroke-width:1.7; }
 .map-node.active rect,.map-node:focus rect,.map-node:hover rect { fill:#f0f4f8; stroke:#376caa; stroke-width:2.5; }
 .map-node.failed rect { fill:#fff5e8; stroke:#cc8a48; stroke-width:2.5; }
+.map-node:focus-visible rect { stroke:#5264df; stroke-width:3.5; }
 .map-node text { fill:#304961; font-size:18px; font-weight:650; }
 .map-node .map-ip { font-size:11px; font-weight:400; fill:#687c92; }
 .map-detail { min-width:0; padding:4px 8px; }
