@@ -213,3 +213,13 @@ footer { display:flex; justify-content:space-between; gap:15px; font-size:9px; c
 @media(max-width:900px) { header{padding:22px} main{padding:6px 22px 25px} .intro{padding:10px 0 26px}.intro-note{display:none} h1{font-size:35px}.workspace{grid-template-columns:1fr}.card{padding:23px}.result-card{min-height:320px}.empty-result{padding:28px 0 35px} }
 @media(max-width:480px) { .brand{font-size:20px}.brand small{font-size:9px}.header-actions{gap:6px;flex-direction:column;align-items:flex-end}.service-status{font-size:9px;padding:6px 9px}.motion-toggle{font-size:9px}header{padding:18px}.intro p{font-size:11px} main{padding:4px 15px 25px}h1{font-size:31px}.card{padding:19px}.card-heading h2{font-size:14px}.composer-footer span{display:none}footer{flex-direction:column;align-items:center;gap:5px}.dialogue-heading span{display:none} }
 @media(prefers-reduced-motion:no-preference) { button{transition:background .16s ease,color .16s ease}.drop-zone{transition:background .16s ease} }
+
+.learning-panel { margin: 14px 0; padding: 14px; border: 1px solid var(--line, #dbe2eb); border-radius: 14px; background: var(--surface, #fff); }
+.learning-controls, .learning-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.learning-controls select { width: auto; max-width: 100%; }
+.learning-current { border-left: 3px solid #3975c6; margin: 12px 0; padding: 4px 14px; }
+.learning-current h3 { margin: 4px 0; font-size: 15px; }
+.learning-current p { margin: 7px 0; line-height: 1.6; }
+#lab-tools form { padding: 12px 0; border-top: 1px solid var(--line, #dbe2eb); }
+#lab-tools select, #learning-code { width: 100%; margin: 6px 0 10px; }
+@media (max-width: 640px) { .learning-controls { align-items: stretch; flex-direction: column; } .learning-controls select { width: 100%; } }
