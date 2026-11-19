@@ -477,8 +477,35 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
                 if request not in requests:
                     requests.append(request)
             result["evidence_requests"] = requests[:6]
+        if not pending_config and result["outcome"] in {"investigating", "ready_for_retest"}:
+            missing_routes = [lookup for lookup in route_selection if lookup["status"] == "no_match"]
+            for check in assessment.get("checks", []):
+                if check["kind"] == "route_protocol" and check["status"] == "failed":
+                    lookup = check_route_selection(check["device"], check["target"],
+                                                   evidence_blocks(sources, include_history=payload["configs"] == previous_materials))
+                    if lookup["status"] == "no_match":
+                        missing_routes.append(lookup)
+            result["evidence_requests"] = [request for request in result["evidence_requests"]
+                                           if not covered_current_route_request(request, missing_routes)]
         return result, True
     raise ValueError("不支持的工具")
+
+
+def covered_current_route_request(request, missing_routes):
+    """Drop redundant requests for the current table; retain retests and combined requests."""
+    text = " ".join(request["information"].split())
+    if re.search(r"修改后|修复后|复测|改后|更新后|恢复后|after\b|post.repair", text + " " + request["why"], re.I):
+        return False
+    match = re.fullmatch(r"(?:完整\s*)?(?:当前\s*)?(?:完整\s*)?(?:(?:IPv4\s*)?路由表|display ip routing-table)"
+                         r"\s*(\d+(?:\.\d+){3}(?:/\d+)?)?\s*(?:的?\s*(?:完整\s*)?(?:输出|原始输出|表项))?", text, re.I)
+    if not match:
+        return False
+    for lookup in missing_routes:
+        if lookup["device"].casefold() != request["device"].casefold():
+            continue
+        if not match[1] or match[1] == lookup["target"] or match[1] == lookup["target"] + "/32":
+            return True
+    return False
 
 
 def assess_goals(context, sources, seen, payload, previous_materials):
@@ -522,6 +549,7 @@ def run_investigator(payload, sources, previous=None, completion=None, *, conver
     messages[0]["content"] += " 课程资料用于核对规则，当前设备的值取自本轮配置或运行输出。检查OSPF区域时，只有两端的区域都有材料依据，才判断该链路是否失配。缺一端时先要缺失设备的display ospf interface输出或完整配置；仅查看接口配置可能看不到OSPF进程下的network匹配规则。两端区域一致时，在正文写明已排除区域失配。提交排除依据时用hypotheses的state=ruled_out，不要只在标题标注已排除。两端失配时，改哪端、改成哪个值需要实验指定的区域或明确的拓扑设计依据；缺少依据就索要区域规划。目标区已知且问题出在network时，只移动为目标接口选错区域的network语句，保留其他区域和接口配置。"
     messages[0]["content"] += " read_source的configuration_coverage标记配置覆盖范围，range_complete只表示读到了所求的行。配置为partial_or_unconfirmed或没有读全时，未看到命令不代表设备缺少该命令。比如R3只有Loopback节选，即使对端没有OSPF路由，也不能确认R3漏宣告或给添加命令的改法；正文将它保留为可能原因，先请求R3完整OSPF配置或等价接口输出。看到失败的运行现象可以直接说明；已有现象不用重复采集，修改之后的复测另算。"
     messages[0]["content"] += " 用户问当前有没有目标路由、实际走哪个协议或下一跳时，先调用check_route_selection，按设备和目标IP或网段核对。若只问当前选路（可包括缺什么材料），下一步用submit_hypotheses的answer_mode=route_table，summary写‘核对当前路由’，hypotheses与evidence_requests填空数组。程序按核对结果直接答复或索要路由表。若用户还要求解释故障、给修改步骤或核对Ping，省略answer_mode继续正常分析。缺路由表时，配置中的静态路由只能描述为候选；已安装的路由仍需按表项核对。Ping用实际收发统计。若仅有网段、缺端点IP，索要实际端点IP。完整实验导出JSON的阶段对照使用compare_repair_candidates。"
+    messages[0]["content"] += " 路由核对返回no_match表示已核对完整当前公用表，目标没有匹配的已安装路由。使用这个现象继续定位，不再索取同一当前表；改完后可以要求新路由表复测。needs_evidence表示当前材料还不足。"
     messages[0]["content"] += " 表达风格：直接、自然、简洁的技术说明，不扮演老师、助教或导师，不称呼同学，不用鼓励、训导和角色开场。先回答问题，再说明关键原因与下一步；reply通常2～4句，用户要求一句话就只写一句。正文用设备名和关键参数解释，不堆砌第几行，行号留在evidence字段供界面展开。概念追问只回答概念，不重新复述整份诊断，summary也概括本次回答。材料相同时也直接回答本次问题，界面已经显示材料变化，不反复声明结论不变。不要添加‘未在设备上验证’‘仅为推断’‘不代表真实设备或全网已验证’等固定免责声明。确有缺项时直接写缺什么、补什么；不要编造设备操作或测试结果。合成案例的来源保留在材料来源中，不在每次回复重复。面向用户的功能介绍直接说明支持什么、需要提供什么、下一步怎样操作。例如：上传配置和测试输出后，可分析原因、给出修改步骤并核对复测结果。省去能力排除清单及“不连接设备、不执行命令、不做什么”等旁白；围绕当前任务给出有用信息。"
     if payload.get("interaction"):
         messages.append({"role": "user", "content": "本次请求：" + safe_text(payload["interaction"]["message"]) + "\n以上JSON中的question是最初实验背景，conversation是历史记录。reply和summary请直接回答本次请求，不重新回答最初问题。"})
