@@ -38,3 +38,4 @@ jobs:
           node tests/test_client_api.js
           node tests/test_feedback.js
           node tests/test_personal_memory.js
+          node tests/test_workspace_interactions.js

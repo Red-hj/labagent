@@ -26,7 +26,10 @@
 .session-preview { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; line-height:1.8; margin-top:4px; color:#758598; }
 .session-meta { display:flex; justify-content:space-between; gap:8px; font-size:9px; color:#8d9bad; margin-top:5px; }
 #more-session-history { margin:15px 7px 0; }
-.history-toggle,#close-session-history { display:none; }
+.history-toggle { display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; flex-shrink:0; padding:7px; }
+.history-toggle svg { width:18px; height:18px; }
+#close-session-history { display:block; }
+.app-layout.history-collapsed { grid-template-columns:minmax(0,1fr); }
 .history-backdrop { position:fixed; inset:0; z-index:19; background:#1c2e4652; border-radius:0; }
 .dialogue-section { margin-top:0; padding-top:0; border-top:0; }
 .conversation { max-height:64dvh; min-height:140px; padding:0 5px 6px 0; gap:20px; }
@@ -58,7 +61,7 @@
 @media(max-width:1100px) {
   .app-layout { display:block; }
   .app-layout main { padding-left:24px; padding-right:24px; }
-  .history-toggle { display:inline-block; padding:7px 10px; border:1px solid #dce4ee; border-radius:7px; background:#fff; color:#536e8a; font-size:11px; }
+  .history-toggle { display:inline-flex; border:1px solid #dce4ee; border-radius:7px; background:#fff; color:#536e8a; }
   .session-sidebar { display:none; position:fixed; inset:0 auto 0 0; top:0; margin:0; padding:22px 18px; width:min(300px,88vw); height:100dvh; max-height:none; border-radius:0 12px 12px 0; z-index:20; }
   .session-sidebar.history-open { display:block; }
   #close-session-history { display:block; }

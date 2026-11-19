@@ -5,6 +5,7 @@ import json
 import os
 import base64
 import hmac
+import hashlib
 from pathlib import Path
 import re
 import threading
@@ -53,6 +54,19 @@ class Handler(BaseHTTPRequestHandler):
         print(time.strftime("%H:%M:%S"), format % args, flush=True)
         self.server.write_log(format % args)
 
+    def end_headers(self):
+        # Native media requests do not consistently reuse browser Basic credentials.
+        # Keep the same team access in an HttpOnly, signed, short-lived session.
+        if getattr(self, "_team_authenticated", False):
+            expires = str(int(time.time()) + 12 * 3600)
+            signature = hmac.new(self.server.team_password.encode(), ("team-v1:" + expires).encode(), hashlib.sha256).hexdigest()
+            self.send_header("Set-Cookie", "labagent_team=" + expires + "." + signature + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200" +
+                ("; Secure" if self.server.public_url else ""))
+        if getattr(self, "_clear_personal_cookie", False):
+            self.send_header("Set-Cookie", COOKIE + "=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" +
+                ("; Secure" if self.server.public_url else ""))
+        super().end_headers()
+
     def reply(self, value, status=200, download=False, cookie=None):
         content = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(status)
@@ -61,6 +75,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         if cookie is not None:
+            self._clear_personal_cookie = False
             self.send_header("Set-Cookie", COOKIE + "=" + cookie + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" +
                 str(LIFETIME if cookie else 0) + ("; Secure" if self.server.public_url else ""))
         if download:
@@ -80,6 +95,8 @@ class Handler(BaseHTTPRequestHandler):
         if not hasattr(self, "_personal_identity"):
             self._personal_identity = self.server.personal.user(token)
         user = self._personal_identity
+        if token and not user:
+            self._clear_personal_cookie = True
         if (token and not user and strict) or (required and not user):
             raise SignInError("请登录个人账号后继续", 401)
         return user
@@ -89,7 +106,7 @@ class Handler(BaseHTTPRequestHandler):
         return value if re.fullmatch(r"[a-f0-9]{32}", value) else None
 
     def can_read(self, kind, resource_id):
-        user = self.personal_user()
+        user = self.personal_user(strict=False)
         return self.server.personal.owns(kind, resource_id, user["id"] if user else None, self.room_capability())
 
     def safe_host(self):
@@ -99,12 +116,24 @@ class Handler(BaseHTTPRequestHandler):
         if not self.server.team_password:
             return True
         try:
+            cookies = SimpleCookie(self.headers.get("Cookie", ""))
+            session = cookies["labagent_team"].value if "labagent_team" in cookies else ""
+            expires, signature = session.split(".", 1)
+            expected = hmac.new(self.server.team_password.encode(), ("team-v1:" + expires).encode(), hashlib.sha256).hexdigest()
+            if 0 < int(expires) - time.time() <= 12 * 3600 and hmac.compare_digest(signature, expected):
+                return True
+        except (ValueError, CookieError):
+            pass
+        try:
             scheme, value = self.headers.get("Authorization", "").split(" ", 1)
             credentials = base64.b64decode(value, validate=True).decode("utf-8")
             if scheme.lower() == "basic" and hmac.compare_digest(credentials.encode(), ("labagent:" + self.server.team_password).encode()):
+                self._team_authenticated = True
                 return True
         except (ValueError, UnicodeError):
             pass
+        if urlparse(self.path).path.startswith("/api/"):
+            return self.reply({"error": "网站访问已失效，请刷新页面重新输入团队访问口令。", "code": "team_sign_in_required"}, 401)
         content = "请输入团队访问口令".encode()
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="LabAgent", charset="UTF-8"')
@@ -244,6 +273,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'")
             self.end_headers()
@@ -339,7 +369,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/account/logout":
                 self.server.personal.logout(self.personal_token())
                 return self.reply({"signed_out": True}, cookie="")
-            user = self.personal_user()
+            # These operations work for invited teammates and anonymous examples.
+            # An expired personal identity must not disable shared operations.
+            optional_identity = bool(room_match) or path in {
+                "/api/rooms", "/api/network/inspect", "/api/challenges/check",
+                "/api/operations/inspect", "/api/repair-labs/inspect", "/api/knowledge/search"
+            }
+            user = self.personal_user(strict=not optional_identity)
             if path in ("/api/memories", "/api/account/memory"):
                 if not user:
                     raise SignInError("请先登录个人账号")
@@ -503,6 +539,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_video(path, VIDEO_SUFFIXES[status["suffix"]])
 
     def send_video(self, path, mime):
+        if not path.is_file():
+            return self.reply({"error": "回放文件暂时不可用，请重新载入示例或材料。"}, 404)
         size = path.stat().st_size
         start, end = 0, size - 1
         requested = self.headers.get("Range")
