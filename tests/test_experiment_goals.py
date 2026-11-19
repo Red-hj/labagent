@@ -54,6 +54,34 @@ def scripted_completion(stage, *, falsely_pass=False):
 
 
 class ExperimentGoalTests(unittest.TestCase):
+    def test_explicit_backup_repair_replaces_wrong_mixed_diagnosis(self):
+        from scripts.evaluate_diagnostic_workflow import cases
+
+        current = cases()[0]["frr-static-fallback"]
+        sources = source_bundle(current)[0]
+        line = sources["config:1"]["lines"]
+        criteria = [{"id": str(n), "title": line[n - 1], "kind": kind, "device": device,
+                     "target": "192.168.20.10", "expected": expected,
+                     "instruction": {"source_id": "config:1", "line": n, "quote": line[n - 1]}}
+                    for n, kind, device, expected in ((1, "reachability", "PC1", ""), (2, "route_protocol", "R1", "OSPF"))]
+        submission = {"summary": "静态 200 会压过 OSPF 110", "reply": "删掉备用静态路由。",
+                      "hypotheses": [], "evidence_requests": [{"device": "R1", "information": "删除后路由表", "why": "复测"}],
+                      "steps": ["在 R1 删除静态路由。"]}
+        for permission in (True, False):
+            if not permission:
+                current["configs"]["实验说明.txt"] = "\n".join(line[:3])
+                sources = source_bundle(current)[0]
+            context, seen = {}, {("config:1", 1), ("config:1", 2)}
+            execute_tool("check_experiment_goals", {"goals": criteria}, current, sources, seen, diagnostic_context=context)
+            result, _ = execute_tool("submit_hypotheses", submission, current, sources, seen, diagnostic_context=context)
+            if permission:
+                self.assertEqual(result["outcome"], "ready_for_retest")
+                self.assertIn("保留允许的备用静态路由", result["reply"])
+                self.assertIn("no ip ospf area 0.0.0.1", result["steps"][1])
+                self.assertNotIn("删除", json.dumps([result["reply"], result["steps"]], ensure_ascii=False))
+            else:
+                self.assertEqual(result["outcome"], "investigating")
+
     def test_explicit_frr_area_goal_expands_both_endpoints_despite_weak_model_extraction(self):
         from scripts.evaluate_diagnostic_workflow import cases
 

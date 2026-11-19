@@ -15,7 +15,7 @@ from .model import configured, chat_completion, ModelError, public_config, bound
 from .session_state import RESOLVED_OUTCOMES, experiment_goal
 from .progress import emit_progress
 from .experiment_goals import (GOAL_TOOL, ROUTE_TOOL, area_instruction_supports_goal, validate_goal_fields,
-                               check_goals, check_route_selection, complete_config, evidence_blocks,
+                               check_goals, check_route_selection, checked_frr_area_repair, complete_config, evidence_blocks,
                                explicit_area_goals, is_config_block, submitted_pings)
 from .diagnostic_planner import PLAN_TOOL, validate_plan
 from .operation_history import HISTORY_TOOL, inspect_history, model_history
@@ -434,7 +434,15 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
         if args.get("outcome") == "observations_passed" and assessment and assessment["status"] != "passed":
             missing = "；".join(item["detail"] for item in assessment["checks"] if item["status"] != "passed")
             raise ValueError("实验目标还未全部满足，请据此继续排查：" + missing)
-        result = validate_submission(args, sources, seen, conversational=bool(payload.get("interaction")), checked_pings=checked_pings,
+        interaction = payload.get("interaction")
+        asks_for_repair = (interaction["type"] == "repair" if interaction else
+                           bool(re.search(r"修复|修改|改法|修正|若要改|怎么改|如何改|怎样改", payload.get("question", ""))))
+        repair = (checked_frr_area_repair(assessment, sources)
+                  if not route_table_answer and args.get("outcome", "investigating") in {"investigating", "ready_for_retest"}
+                  and asks_for_repair else None)
+        if repair:
+            args = {**repair, "experiment_goal": args.get("experiment_goal", "")}
+        result = validate_submission(args, sources, seen, conversational=bool(interaction) or bool(repair), checked_pings=checked_pings,
                                      verifying=checked_pings is not None, required_targets=required_targets,
                                      comparing=context.get("repair_compared", False), route_checked=bool(route_selection))
         if args.get("operation_focus"):
@@ -452,7 +460,7 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
                 result["outcome"] = "goals_pending"
                 result["evidence_requests"] = [item["request"] for item in pending]
                 result["summary"] = result["reply"] = "访问恢复反馈已记录。实验目标还需完成：" + "；".join(item["detail"] for item in pending)
-        if context.get("plan") and not route_table_answer:
+        if context.get("plan") and not route_table_answer and not repair:
             result["diagnostic_plan"] = context["plan"]
             selected = context["plan"]["selected"]
             if selected and result["outcome"] == "investigating":

@@ -283,6 +283,59 @@ def _route(goal, blocks):
     return ("passed" if actual <= accepted else "failed"), f"{result['detail']} 实验要求{expected}。", result["evidence"]
 
 
+def checked_frr_area_repair(assessment, sources):
+    """Describe a narrow, evidenced repair for an explicitly allowed static fallback."""
+    checks = assessment.get("checks", [])
+    if len(checks) != 4:
+        return None
+    area = [g for g in checks if g["kind"] == "ospf_interface_area"]
+    route = [g for g in checks if g["kind"] == "route_protocol"]
+    ping = [g for g in checks if g["kind"] == "reachability"]
+    if len(area) != 2 or len(route) != 1 or len(ping) != 1:
+        return None
+    if (route[0]["status"] != "failed" or route[0]["expected"].upper() != "OSPF"
+            or ping[0]["status"] != "passed" or ping[0]["target"] != route[0]["target"]):
+        return None
+    good = next((g for g in area if g["status"] == "passed"), None)
+    bad = next((g for g in area if g["status"] == "failed"), None)
+    if not good or not bad or good["device"].casefold() != route[0]["device"].casefold() or good["device"].casefold() == bad["device"].casefold():
+        return None
+    explicit = explicit_area_goals(sources)
+    if (not {good["id"], bad["id"]} <= {g["id"] for g in explicit}
+            or good["instruction"] != bad["instruction"] or good["target"] != bad["target"] or good["expected"] != bad["expected"]):
+        return None
+    requirements = sources[bad["instruction"]["source_id"]]["lines"]
+    # Match a standalone positive permission. Do not infer permission from a generic static route mention.
+    allowance = [match[1] for line in requirements if (match := re.fullmatch(
+        r"\s*允许保留管理距离\s*(\d{1,3})\s*的备用静态路由[。.]?\s*", line))]
+    if len(allowance) != 1 or any(re.search(r"(?:禁止|不得|不允许|不保留|删除).{0,18}(?:静态路由|ip route(?:-static)?)", line, re.I)
+                                  for line in requirements):
+        return None
+    actual_area = next((match[1] for ref in bad["evidence"] if (match := re.fullmatch(
+        r"\s*ip ospf area\s+(\S+)\s*", ref["quote"], re.I))), None)
+    good_area = any(re.fullmatch(r"\s*ip ospf area\s+\S+\s*", ref["quote"], re.I) for ref in good["evidence"])
+    if not actual_area or not good_area:
+        return None  # This repair sequence is for FRRouting interface commands only.
+    installed = [re.fullmatch(r"\s*S>\*\s+\S+\s+\[(\d+)/\d+\]\s+via\s+\S+,\s*([^,\s]+).*", ref["quote"])
+                 for ref in route[0]["evidence"]]
+    if (len(installed) != 1 or not installed[0] or installed[0][1] != allowance[0]
+            or installed[0][2].casefold() != good["target"].casefold()):
+        return None
+    peer, interface, expected, old = bad["device"], bad["target"], bad["expected"], area_id(actual_area)
+    destination = ping[0]["target"]
+    return {
+        "summary": f"Ping 已通过，但静态备份正在转发；{peer} 的 {interface} 区域不达标。",
+        "reply": (f"Ping 已通过，但 {good['device']} 到 {destination} 当前走管理距离 {allowance[0]} 的静态备份，"
+                  f"还没有满足 OSPF 路由要求。{peer} 的 {interface} 在 Area {old}，实验要求 Area {expected}。"
+                  f"只调整 {peer} 的这个接口区域，保留允许的备用静态路由。改后核对 OSPF 选路并复测 Ping。"),
+        "steps": [f"{peer}：进入 configure terminal → interface {interface}",
+                  f"执行 no ip ospf area {old}，再执行 ip ospf area {expected}",
+                  f"{good['device']}：show ip route {destination}，确认选中的路由来自 OSPF",
+                  f"从实验指定的源端重新 ping {destination}，核对收发统计"],
+        "hypotheses": [], "evidence_requests": [], "outcome": "ready_for_retest",
+    }
+
+
 def is_config_block(block):
     command = " ".join(block["command"].lower().split())
     return (block.get("section") == "configuration" or command.startswith(("display current-configuration", "show running-config"))

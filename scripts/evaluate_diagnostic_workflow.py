@@ -25,9 +25,10 @@ def demo(name):
     return json.loads((ROOT / 'data/examples' / f'{name}.json').read_text(encoding='utf-8'))
 
 
-def cases():
+def cases(frr_capture=None):
     down, static, healthy = [row['materials'] for row in demo('ospf_goals')['stages']]
-    captured = {phase['id']: phase['observations'] for phase in demo('frr_lab02_backup')['phases']}
+    sample = json.loads(frr_capture.read_text(encoding='utf-8-sig')) if frr_capture else demo('frr_lab02_backup')
+    captured = {phase['id']: phase['observations'] for phase in sample['phases']}
     configs = {
         'vrp-partial': down,
         'vrp-supplemented': {**down, 'R3.cfg': static['R3.cfg']},
@@ -124,8 +125,9 @@ def main():
     cli.add_argument('--output', required=True, type=Path)
     cli.add_argument('--case', action='append', default=[], help='repeat to select multiple case IDs')
     cli.add_argument('--mode', action='append', choices=MODES, default=[], help='repeat to select modes; defaults to all three')
+    cli.add_argument('--frr-capture', type=Path, help='optional export of a fresh lab_02_backup capture; use isolated lab materials')
     args = cli.parse_args()
-    requests, expected = cases()
+    requests, expected = cases(args.frr_capture)
     selected = list(dict.fromkeys(args.case)) or list(requests)
     if any(name not in requests for name in selected):
         cli.error('available cases: ' + ', '.join(requests))
