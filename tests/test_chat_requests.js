@@ -82,6 +82,17 @@ async function main(){
     p.run("renderConversation([])");assert.equal(c.scrollTop,100);assert.equal(p.$("chat-new-reply").hidden,false);
     c.scrollTop=790;p.run("renderConversation([])");assert.equal(c.scrollTop,900,"following the bottom should continue showing new replies");
   }
+  {
+    const p=fixture(),calls=[];p.context.sessionId="a".repeat(32);
+    p.context.materials.set("R1.cfg","new configuration and fresh test output");
+    p.context.requestPayload=()=>({session_id:p.context.sessionId,configs:Object.fromEntries(p.context.materials)});
+    p.context.diagnose=async input=>{calls.push(input);return {llm:{status:"ok"}};};
+    await p.run('performInteraction("verify","核对修改后的新结果")');
+    assert.equal(calls[0].session_id,"a".repeat(32));
+    assert.equal(calls[0].configs["R1.cfg"],"new configuration and fresh test output");
+    assert.equal(calls[0].interaction.type,"verify");
+    assert.equal(p.context.sessionId,"a".repeat(32),"retests must keep the active conversation");
+  }
   console.log("Chat requests passed: first-message feedback, acknowledgements, heartbeat waits, inline retry, preserved drafts and review scroll position");
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});
