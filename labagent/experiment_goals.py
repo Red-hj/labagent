@@ -10,14 +10,33 @@ import re
 from .connectivity import parse_ping_records
 from .runtime_parser import FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW, parse_frr_routes, parse_linux_routes, parse_routes
 from .operation_history import TIME, prompt_info
+from .parser import area_id, interface_id, ospf_bindings, parse_config
 
 
-KINDS = ("reachability", "route_protocol", "config_contains", "config_absent")
+KINDS = ("reachability", "route_protocol", "config_contains", "config_absent", "ospf_interface_area")
 LABELS = {"passed": "已满足", "failed": "未满足", "needs_evidence": "待补充输出"}
 SECTION_NUMBER = r"(?:(?:[一二三四五六七八九十百]+[、．.]|\d+[、．.]\s+)\s*)?"
 DEVICE_SECTION = re.compile(r"^\s*" + SECTION_NUMBER + r"([A-Za-z][A-Za-z0-9_.-]*)\s*(?:的)?(?:相关|当前|最新)?\s*"
                             r"(配置(?:节选|摘录|片段)?|完整配置|地址信息|运行记录|运行结果|输出)\s*[:：]?\s*$")
 DOCUMENT_SECTION = re.compile(r"^\s*(?:[一二三四五六七八九十百]+[、．.]|\d+[、．.]\s+)\s*\S.{0,65}$")
+PARTIAL_CONFIG = re.compile(r"节选|摘录|片段|配置未提供|配置待补充|尚未提供|\b(?:excerpt|truncated|partial)\b|^\s*(?:\.{3}|…+)(?:\s|$)", re.I | re.M)
+AREA_REQUIREMENT = re.compile(
+    r"(?P<devices>[A-Z][\w.-]*(?:\s*[、,，]\s*[A-Z][\w.-]*)*)\s*的\s*"
+    r"(?P<interface>[\w./-]+?)\s*(?:互联)?接口\s*(?:统一使用|必须(?:使用|位于|属于|在)|应(?:使用|位于|属于|在))\s*"
+    r"Area\s+(?P<area>\d+(?:\.\d+){0,3})(?=\s|[。；，、,.!?！？;]|$)", re.I)
+INSTRUCTION_FILE = re.compile(r"(?:实验|课程)(?:说明|要求|指导)|\b(?:instructions?|requirements?)\b", re.I)
+
+
+def area_instruction_supports_goal(instruction, device, interface, expected):
+    compact = re.sub(r"(?i)GigabitEthernet(?=\d)", "GE", re.sub(r"(?i)(GigabitEthernet|GE)\s+(?=\d)", r"\1", instruction))
+    def names(value):
+        return re.search(r"(?<![A-Za-z0-9_./-])" + re.escape(value) + r"(?![A-Za-z0-9_./-])", compact, re.I)
+
+    try:
+        areas = {area_id(value) for value in re.findall(r"(?:\bArea|区域)\s*(\d+(?:\.\d+){0,3})(?![\d.])", instruction, re.I)}
+        return bool(names(device) and names(interface_id(interface)) and areas == {area_id(expected.strip())})
+    except ValueError:
+        return False
 
 GOAL_TOOL = {"type": "function", "function": {
     "name": "check_experiment_goals",
@@ -26,8 +45,8 @@ GOAL_TOOL = {"type": "function", "function": {
         "type": "object", "properties": {
             "id": {"type": "string"}, "title": {"type": "string"}, "kind": {"type": "string", "enum": list(KINDS)},
             "device": {"type": "string", "description": "从原文提取设备名；reachability可为空，其他类型必填。"},
-            "target": {"type": "string", "description": "reachability填目的IP；route_protocol填目的IP或网段；config类型填命令前缀。"},
-            "expected": {"type": "string", "description": "route_protocol填要求的协议，如OSPF；其他类型填空字符串。"},
+            "target": {"type": "string", "description": "reachability填目的IP；route_protocol填目的IP或网段；config类型填命令前缀；ospf_interface_area填接口名，每台设备一项。"},
+            "expected": {"type": "string", "description": "route_protocol填协议，如OSPF；ospf_interface_area填区域号，如0；其他类型填空字符串。"},
             "instruction": {"type": "object", "properties": {"source_id": {"type": "string"}, "line": {"type": "integer"}, "quote": {"type": "string"}},
                             "required": ["source_id", "line", "quote"], "additionalProperties": False}},
         "required": ["id", "title", "kind", "device", "target", "expected", "instruction"], "additionalProperties": False}}},
@@ -122,13 +141,22 @@ def submitted_pings(sources):
 
 def check_goals(criteria, sources, *, include_history=False):
     blocks = evidence_blocks(sources, include_history=include_history)
+    explicit = explicit_area_goals(sources)
+    area_lines = {(g["instruction"]["source_id"], g["instruction"]["line"]) for g in explicit}
+    area_keys = {(g["device"].casefold(), interface_id(g["target"]), g["expected"]) for g in explicit}
+    active = [g for g in criteria if not (
+        (g["kind"] == "ospf_interface_area" and (g["device"].casefold(), interface_id(g["target"]), area_id(g["expected"].strip())) in area_keys)
+        or (g["kind"] == "config_contains" and g["target"].strip().lower().startswith("interface ")
+            and (g["instruction"]["source_id"], g["instruction"]["line"]) in area_lines))] + explicit
     checks = []
-    for goal in criteria:
+    for goal in active:
         matching = [block for block in blocks if not goal["device"] or block["device"].casefold() == goal["device"].casefold()]
         if goal["kind"] == "reachability":
             status, detail, evidence = _ping(goal, blocks)
         elif goal["kind"] == "route_protocol":
             status, detail, evidence = _route(goal, matching)
+        elif goal["kind"] == "ospf_interface_area":
+            status, detail, evidence = _ospf_interface_area(goal, matching)
         else:
             status, detail, evidence = _config(goal, matching)
         checks.append({"id": goal["id"], "title": goal["title"], "kind": goal["kind"],
@@ -137,6 +165,29 @@ def check_goals(criteria, sources, *, include_history=False):
                        "instruction": goal["instruction"], "request": goal_request(goal)})
     return {"criteria": criteria, "checks": checks,
             "status": "passed" if checks and all(item["status"] == "passed" for item in checks) else "in_progress"}
+
+
+def explicit_area_goals(sources):
+    """Keep each endpoint of a common, explicitly worded lab requirement."""
+    goals = {}
+    for source_id, source in sources.items():
+        if source_id != "question:initial" and not (source["kind"] == "submitted_material" and INSTRUCTION_FILE.search(source["device"])):
+            continue
+        for number, line in enumerate(source["lines"], 1):
+            for match in AREA_REQUIREMENT.finditer(line):
+                try:
+                    area = area_id(match["area"])
+                except ValueError:
+                    continue
+                interface = match["interface"]
+                for device in re.split(r"\s*[、,，]\s*", match["devices"]):
+                    key = device.casefold(), interface_id(interface), area
+                    goals[key] = {"id": f"area:{device}:{interface}:{area}", "kind": "ospf_interface_area", "device": device,
+                                  "title": f"{device} 的 {interface} 属于 OSPF Area {area}", "target": interface, "expected": area,
+                                  "instruction": {"source_id": source_id, "device": source["device"], "line": number, "quote": line}}
+                    if len(goals) == 8:
+                        return list(goals.values())
+    return list(goals.values())
 
 
 def _ping(goal, blocks):
@@ -232,10 +283,24 @@ def _route(goal, blocks):
     return ("passed" if actual <= accepted else "failed"), f"{result['detail']} 实验要求{expected}。", result["evidence"]
 
 
+def is_config_block(block):
+    command = " ".join(block["command"].lower().split())
+    return (block.get("section") == "configuration" or command.startswith(("display current-configuration", "show running-config"))
+            or any(re.match(r"\s*(?:sysname|hostname|frr version)\s+", line, re.I) for line in block["lines"])
+            or Path(block["material"]).suffix.lower() in {".cfg", ".conf"} and not command)
+
+
+def complete_config(block):
+    command = " ".join(block["command"].lower().split())
+    if ((command and command not in {"display current-configuration", "show running-config"})
+            or PARTIAL_CONFIG.search(block["material"]) or PARTIAL_CONFIG.search("\n".join(block["lines"]))):
+        return False
+    last = next((line.strip().lower() for line in reversed(block["lines"]) if line.strip()), "")
+    return last == "return" or last == "end" and any(re.match(r"\s*frr version\s+", line, re.I) for line in block["lines"])
+
+
 def _config(goal, blocks):
-    candidates = [block for block in blocks if block.get("section") == "configuration" or "current-configuration" in block["command"].lower()
-                  or any(re.match(r"\s*sysname\s+", line, re.I) for line in block["lines"])
-                  or Path(block["material"]).suffix.lower() in {".cfg", ".conf"} and not block["command"]]
+    candidates = [block for block in blocks if is_config_block(block)]
     if not candidates:
         return "needs_evidence", f"补充{goal['device']}的当前配置。", []
     block = candidates[-1]
@@ -243,14 +308,52 @@ def _config(goal, blocks):
     found = [index for index, line in enumerate(block["lines"], 1)
              if (normalized := " ".join(line.lower().split())) == prefix or normalized.startswith(prefix + " ")]
     present = bool(found)
-    complete = any(line.strip().lower() == "return" for line in block["lines"])
+    complete = complete_config(block)
     if not present and not complete:
         return "needs_evidence", f"补充{goal['device']}完整当前配置，以核对命令“{goal['target']}”。", []
     passed = present if goal["kind"] == "config_contains" else not present
     evidence = [citation(block, index) for index in found[:3]]
     if not evidence:
-        evidence = [citation(block, index) for index, line in enumerate(block["lines"], 1) if line.strip().lower() == "return"]
+        evidence = [citation(block, index) for index, line in enumerate(block["lines"], 1) if line.strip().lower() in {"return", "end"}][-1:]
     return ("passed" if passed else "failed"), f"{goal['device']}当前配置{'包含' if present else '没有'}命令“{goal['target']}”。", evidence
+
+
+def _ospf_interface_area(goal, blocks):
+    device, target, expected = goal["device"], goal["target"], area_id(goal["expected"].strip())
+    candidates = [block for block in blocks if is_config_block(block)]
+    pending = "needs_evidence", f"补充 {device} 的 {target} 接口配置及 OSPF 区域设置。", []
+    if not candidates:
+        return pending
+    block = candidates[-1]
+    wanted = interface_id(target)
+    interface_line, matched, in_interface = None, [], False
+    for number, raw in enumerate(block["lines"], 1):
+        line = raw.strip()
+        if match := re.fullmatch(r"interface\s+(.+)", line, re.I):
+            in_interface = interface_id(match[1]) == wanted
+            if in_interface:
+                interface_line = number
+            continue
+        if re.fullmatch(r"[!#].*|exit|quit|end|return|router\s+.*|ospf\s+\d+.*", line, re.I):
+            in_interface = False
+        if in_interface and (match := re.fullmatch(r"(?:ip ospf area|ospf enable\s+\d+\s+area)\s+(\S+)", line, re.I)):
+            try:
+                matched.append((area_id(match[1]), [interface_line, number]))
+            except ValueError:
+                return pending
+    if not matched and complete_config(block):
+        parsed = parse_config(device, "\n".join(block["lines"]))
+        interface = parsed.interfaces.get(wanted)
+        if interface and not parsed.errors and not interface.unsupported and not any(p.unsupported for p in parsed.processes.values()):
+            for _, area, evidence in ospf_bindings(parsed, interface):
+                numbers = [interface.lines["interface"]["line"], interface.lines["ip"]["line"],
+                           evidence["area_evidence"]["line"], evidence["line"]]
+                matched.append((area, numbers))
+    if not matched or len({area for area, _ in matched}) != 1:
+        return pending
+    actual = matched[0][0]
+    refs = [citation(block, number) for number in sorted(set(matched[0][1]))]
+    return ("passed" if actual == expected else "failed"), f"{device} 的 {target} 为 OSPF Area {actual}；实验要求 Area {expected}。", refs
 
 
 def goal_request(goal):
@@ -258,6 +361,8 @@ def goal_request(goal):
         information = f"ping {goal['target']} 的完整收发统计"
     elif goal["kind"] == "route_protocol":
         information = f"display ip routing-table {goal['target'].split('/')[0]}"
+    elif goal["kind"] == "ospf_interface_area":
+        information = f"{goal['target']} 接口配置与 OSPF 区域设置"
     else:
         information = "display current-configuration"
     return {"device": goal["device"] or "源设备", "information": information,
@@ -280,3 +385,5 @@ def validate_goal_fields(goal):
         raise ValueError("路由和配置目标须指定设备")
     if goal["kind"] == "route_protocol" and not goal["expected"].strip():
         raise ValueError("请填写实验要求的路由协议")
+    if goal["kind"] == "ospf_interface_area":
+        area_id(goal["expected"].strip())

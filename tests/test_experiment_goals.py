@@ -54,6 +54,77 @@ def scripted_completion(stage, *, falsely_pass=False):
 
 
 class ExperimentGoalTests(unittest.TestCase):
+    def test_explicit_frr_area_goal_expands_both_endpoints_despite_weak_model_extraction(self):
+        from scripts.evaluate_diagnostic_workflow import cases
+
+        requests, _ = cases()
+        for name, statuses in (("frr-static-fallback", ["passed", "failed"]),
+                               ("frr-healthy-with-backup", ["passed", "passed"])):
+            current = requests[name]
+            sources, _ = source_bundle(current)
+            weak = {"id": "weak", "title": "接口存在", "kind": "config_contains", "device": "R1",
+                    "target": "interface transit", "expected": "", "instruction": {
+                        "source_id": "config:1", "line": 3, "quote": sources["config:1"]["lines"][2]}}
+            seen = {("config:1", 3)}
+            result, _ = execute_tool("check_experiment_goals", {"goals": [weak]}, current, sources, seen)
+            self.assertEqual([(g["device"], g["target"], g["expected"], g["status"]) for g in result["checks"]],
+                             [(device, "transit", "0.0.0.0", status) for device, status in zip(("R1", "R2"), statuses)])
+            for goal in result["checks"]:
+                self.assertEqual(len(goal["evidence"]), 2)
+                for ref in goal["evidence"]:
+                    self.assertEqual(ref["quote"], sources[ref["source_id"]]["lines"][ref["line"] - 1])
+            if name == "frr-static-fallback":
+                with self.assertRaisesRegex(ValueError, "实验目标还未全部满足"):
+                    execute_tool("submit_hypotheses", {"outcome": "observations_passed"}, current, sources, {("config:1", 3)})
+
+    def test_missing_endpoint_or_unrelated_area_line_cannot_pass(self):
+        current = {"configs": {"实验说明.txt": "R1、R2 的 transit 接口必须在 Area 0。",
+                               "R1.cfg": "interface transit\n ip ospf area 0\nexit",
+                               "R2.cfg": "interface transit\nexit\ninterface lan\n ip ospf area 0\nexit"}}
+        sources, _ = source_bundle(current)
+        result = check_goals([], sources)
+        self.assertEqual([g["status"] for g in result["checks"]], ["passed", "needs_evidence"])
+        self.assertEqual(result["status"], "in_progress")
+
+    def test_area_goal_does_not_invent_an_interface_from_topology_only(self):
+        current = payload()
+        sources, _ = source_bundle(current)
+        goal = {"id": "a1", "title": "区域", "kind": "ospf_interface_area", "device": "R3",
+                "target": "GigabitEthernet0/0/0", "expected": "0", "instruction": {
+                    "source_id": "config:1", "line": 4, "quote": sources["config:1"]["lines"][3]}}
+        with self.assertRaisesRegex(ValueError, "原文须同时写出设备、接口"):
+            execute_tool("check_experiment_goals", {"goals": [goal]}, current, sources, {("config:1", 4)})
+
+    def test_vrp_interface_area_can_follow_network_wildcard_and_keeps_original_citations(self):
+        current = {"question": "R1 的 GE0/0/0 接口必须在 Area 1。", "configs": {"R1.cfg":
+                   "sysname R1\n#\ninterface GigabitEthernet0/0/0\n ip address 10.1.2.3 255.255.255.0\n#\n"
+                   "ospf 1\n area 0.0.0.1\n  network 10.1.2.0 0.0.0.255\n#\nreturn"}}
+        result = check_goals([], source_bundle(current)[0])["checks"][0]
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual([ref["line"] for ref in result["evidence"]], [3, 4, 7, 8])
+
+    def test_marked_excerpt_with_return_cannot_prove_command_absent(self):
+        current = payload(2)
+        current["configs"]["R1.cfg"] = "sysname R1\n# 配置摘录\n#\nreturn"
+        sources, _ = source_bundle(current)
+        result = check_goals(goals(), sources)
+        self.assertEqual(result["checks"][2]["status"], "needs_evidence")
+        read, _ = execute_tool("read_source", {"source_id": "config:2", "start_line": 1, "end_line": 4}, current, sources, set())
+        self.assertTrue(read["range_complete"])
+        self.assertEqual(read["configuration_coverage"], [{"device": "R1", "start_line": 1, "end_line": 4,
+                                                               "scope": "partial_or_unconfirmed", "all_lines_read": True}])
+
+    def test_reading_some_lines_of_complete_config_does_not_prove_absence_to_model(self):
+        current = payload(2)
+        sources, _ = source_bundle(current)
+        seen = set()
+        last = len(sources["config:2"]["lines"])
+        for first, end, read_full in ((1, 2, False), (3, last, True)):
+            read, _ = execute_tool("read_source", {"source_id": "config:2", "start_line": first, "end_line": end}, current, sources, seen)
+            self.assertTrue(read["range_complete"])
+            self.assertEqual(read["configuration_coverage"][0]["scope"], "complete_snapshot")
+            self.assertEqual(read["configuration_coverage"][0]["all_lines_read"], read_full)
+
     def test_live_frr_route_rows_distinguish_static_fallback_from_unselected_static(self):
         run = json.loads((ROOT / "data/examples/frr_lab02_backup.json").read_text(encoding="utf-8"))
         for phase, protocol in zip(run["phases"], ("Static", "OSPF")):
