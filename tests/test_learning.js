@@ -14,13 +14,15 @@ const context = {window:{}, document:{getElementById:node, createElement:() => n
 vm.runInNewContext(fs.readFileSync("web/learning.js", "utf8"), context);
 const learning = context.window.LabLearning;
 (async () => {
-  let granted = false, asked = [], collected = null;
-  await learning.init({busy:() => false, ask:(...args) => asked.push(args), addMaterials:value => {collected = value;},
+  let granted = false, asked = [], collected = null, bridge = null, collecting = false, resolveCollection = null, delayCollection = false;
+  await learning.init({busy:() => collecting, setCollecting:value => { collecting = value; }, ask:(...args) => asked.push(args), addMaterials:value => {collected = value;},
     api:async (path, input) => {
-      if (path === "/api/learning") return {enabled:true, solution_unlocked:granted, can_unlock:true, mcp_configured:true};
+      if (path === "/api/learning") return {enabled:true, solution_unlocked:granted, can_unlock:true, mcp_configured:true, bridge_available:true};
       if (path === "/api/learning/unlock") { assert.equal(input.code, "teacher-code"); granted = true; return {solution_unlocked:true}; }
-      if (path === "/api/lab/tools") return {tools:[{function:{name:"lab_ensp_r1",description:"读取R1接口",parameters:{properties:{command:{enum:["display ip interface brief"]}}}}}]};
-      if (path === "/api/lab/collect") { assert.equal(input.tool, "lab_ensp_r1"); assert.equal(input.arguments.command, "display ip interface brief"); return {materials:{"R1.log":"synthetic observation"}}; }
+      if (path === "/api/lab/bridge") { bridge = {id:"workstation", name:"课堂电脑", state:"online"}; return {id:bridge.id,code:"AABBCCDDEEFF0011"}; }
+      if (path === "/api/lab/bridge/disconnect") { assert.equal(input.id,bridge.id); bridge = null; return {disconnected:true}; }
+      if (path === "/api/lab/tools") return {bridge, tools:[{...(bridge ? {bridge_id:bridge.id} : {}),function:{name:"lab_ensp_r1",description:"读取R1接口",parameters:{properties:{command:{enum:["display ip interface brief"]}}}}}]};
+      if (path === "/api/lab/collect") { assert.equal(input.tool, "lab_ensp_r1"); assert.equal(input.arguments.command, "display ip interface brief"); if (bridge) assert.equal(input.bridge_id,bridge.id); if(delayCollection) return new Promise(resolve => {resolveCollection = resolve;}); return {materials:{"R1.log":"synthetic observation"}}; }
       throw new Error("Unexpected request " + path);
     }});
   assert.equal(learning.enabled(), true);
@@ -39,6 +41,24 @@ const learning = context.window.LabLearning;
   const form = node("lab-tools").children[0]; form.children[1].children[0].value = "display ip interface brief";
   await form.handlers.submit({preventDefault(){}});
   assert.equal(collected["R1.log"], "synthetic observation");
+  assert.equal(collecting,false,"Collection must release the busy state");
+  assert.match(node("lab-note").textContent,/核对这一步/);
+  assert.equal(node("lab-check-step").hidden,false);
+  node("lab-check-step").handlers.click(); assert.equal(asked.at(-1)[1],"verify");
+  node("lab-computer-name").value = "课堂电脑";
+  await node("lab-pair").handlers.click();
+  assert.match(node("lab-pair-code").textContent,/AABBCCDDEEFF0011/);
+  await node("lab-load-tools").handlers.click();
+  assert.equal(node("lab-pair-code").hidden,true,"An online bridge clears the pairing code");
+  const remoteForm = node("lab-tools").children[0]; remoteForm.children[1].children[0].value = "display ip interface brief";
+  await remoteForm.handlers.submit({preventDefault(){}});
+  delayCollection = true; collected = null;
+  const stale = remoteForm.handlers.submit({preventDefault(){}});
+  learning.reset(); resolveCollection({materials:{"late.log":"old account output"}}); await stale;
+  assert.equal(collected,null,"An account/conversation reset ignores late collection results");
+  assert.equal(collecting,false);
+  await node("lab-load-tools").handlers.click();
+  await node("lab-disconnect").handlers.click(); assert.equal(bridge,null);
   granted = false; learning.reset(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(node("learning-solution-option").disabled, true);
   assert.equal(node("learning-current").hidden, true);
