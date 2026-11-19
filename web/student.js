@@ -336,11 +336,13 @@ async function addFiles(files) {
   finally { materialLoading = false; setBusy(false); }
 }
 function requestPayload() {
-  if (!materials.size) throw new Error("请先添加或粘贴需要诊断的材料。");
-  return {diagnostic_mode:"open_network", use_llm:true, question:$("problem").value.trim() || defaultQuestion,
+  if (!materials.size && !window.LabLearning?.enabled()) throw new Error("请先添加或粘贴需要诊断的材料。");
+  if (!materials.size && !$("problem").value.trim()) throw new Error("先说说正在做哪一步、哪里不懂，或补充实验说明。");
+  const input = {diagnostic_mode:"open_network", use_llm:true, question:$("problem").value.trim() || defaultQuestion,
     configs:Object.fromEntries(materials), knowledge_scope:knowledgeScope, evidence_kind:evidenceKind,
     recordings:[...recordings.keys(), ...screenshots.keys()].filter(id => id !== "demo"),
     ...(sessionId ? {session_id:sessionId} : {})};
+  return window.LabLearning?.apply(input) || input;
 }
 
 async function previewOperations() {
@@ -664,6 +666,9 @@ function renderGoalsAndPlan(analysis, status) {
   container.append(details);
 }
 function showResult(result) {
+  for (const [name, text] of Object.entries(result.collected_materials || {})) materials.set(name, text);
+  if (Object.keys(result.collected_materials || {}).length) renderMaterials();
+  window.LabLearning?.show(result);
   materialsPending = result.llm?.status !== "ok";
   $("analysis-details").hidden = false;
   window.LabPersonal.setResult(result);
@@ -828,6 +833,7 @@ $("followup-message").addEventListener("keydown", event => {
 });
 $("new-diagnosis").addEventListener("click", () => {
   if (busy) return;
+  window.LabLearning?.reset();
   ++previewNumber;
   window.LabPersonal.setResult(null);
   window.LabWorkspace.leave();
@@ -878,6 +884,25 @@ async function connectService() {
   } finally { clearTimeout(wakeup); }
 }
 async function start() {
+  await window.LabLearning?.init({api, busy:() => busy || materialLoading,
+    ask:(text, type = "ask") => {
+      if (busy || materialLoading) return;
+      if (sessionId) performInteraction(type, text);
+      else {
+        const current = $("problem").value.trim();
+        if (!current && !materials.size) { message("先说说正在做什么、卡在哪里，或添加实验说明。"); $("problem").focus(); return; }
+        $("problem").value = (current ? current + "\n\n" : "") + text;
+        $("analyze").click();
+      }
+    },
+    addMaterials:incoming => {
+      const next = new Map(materials);
+      for (const [name, text] of Object.entries(incoming)) next.set(name, text);
+      if (next.size > 20) throw new Error("当前材料已满20份，请先精简材料。");
+      for (const [name, text] of Object.entries(incoming)) materials.set(name, text);
+      evidenceKind = "user_submitted"; renderMaterials(); materialChanged("设备输出已加入，可在当前会话核对这一步。");
+    }});
+
   const health = await connectService(); serviceState = "ready"; diagnosisBackend = health.diagnosis_backend || "local"; modelReady = health.diagnosis_configured ?? health.llm_configured; online = health.online; videoReady = health.replay_available; setBusy(false);
   if (online) {
     $("save-report").textContent = "下载实验报告";

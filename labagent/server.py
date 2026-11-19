@@ -163,6 +163,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "diagnosis_backend": self.server.diagnosis_backend, "diagnosis_configured": self.server.cloud_configured if self.server.diagnosis_backend == "agentarts" else configured(), "llm_configured": configured(), "llm": public_config(), "replay_available": replay_available()})
         if not self.team_access():
             return
+        if path == "/api/learning":
+            from .learning import solution_allowed, COOKIE as LEARNING_COOKIE
+            user = self.personal_user(strict=False)
+            cookies = SimpleCookie(self.headers.get("Cookie", ""))
+            token = cookies[LEARNING_COOKIE].value if LEARNING_COOKIE in cookies else ""
+            return self.reply({"enabled": os.environ.get("LABAGENT_GUIDED_WORKFLOW") == "1",
+                "solution_unlocked": bool(user) and solution_allowed(token, subject=user["id"]),
+                "can_unlock": bool(os.environ.get("LABAGENT_SOLUTION_CODE") and os.environ.get("LABAGENT_LEARNING_KEY")),
+                "mcp_configured": bool(os.environ.get("LABAGENT_MCP_CONFIG"))})
+        if path == "/api/lab/tools":
+            from .mcp_client import LabMCPTools
+            config = os.environ.get("LABAGENT_MCP_CONFIG")
+            if not config:
+                return self.reply({"tools": [], "warnings": ["本机尚未连接实验平台，可继续上传材料"]})
+            with LabMCPTools(config) as lab:
+                return self.reply({"tools": lab.tools, "warnings": lab.warnings})
         if path == "/api/account":
             return self.reply({"user": self.personal_user(strict=False)}, cookie="" if self.personal_token() and not self.personal_user(strict=False) else None)
         if path == "/api/memories":
@@ -260,6 +276,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(history, download=bool(match[2]))
             return self.reply({"code": "session_not_found", "error": "这次会话已不存在，请开始新的排查并重新提供材料。"}, 404)
         assets = {"/": ("student.html", "text/html; charset=utf-8"), "/student.js": ("student.js", "text/javascript; charset=utf-8"), "/student.css": ("student.css", "text/css; charset=utf-8"),
+                  "/learning.js": ("learning.js", "text/javascript; charset=utf-8"),
                   "/network-room.js": ("network-room.js", "text/javascript; charset=utf-8"), "/network-room.css": ("network-room.css", "text/css; charset=utf-8"),
                   "/session-history.js": ("session-history.js", "text/javascript; charset=utf-8"), "/session-history.css": ("session-history.css", "text/css; charset=utf-8"),
                   "/course-knowledge.js": ("course-knowledge.js", "text/javascript; charset=utf-8"), "/course-knowledge.css": ("course-knowledge.css", "text/css; charset=utf-8"),
@@ -354,7 +371,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"error": "请使用 application/json"}, 415)
         path = urlparse(self.path).path
         room_match = re.fullmatch(r"/api/rooms/([a-f0-9]{32})", path)
-        if not room_match and path not in ("/api/account/register", "/api/account/login", "/api/account/logout", "/api/account/memory", "/api/memories", "/api/rooms", "/api/network/inspect", "/api/challenges/check", "/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect", "/api/repair-labs/inspect"):
+        if not room_match and path not in ("/api/learning/unlock", "/api/lab/collect", "/api/account/register", "/api/account/login", "/api/account/logout", "/api/account/memory", "/api/memories", "/api/rooms", "/api/network/inspect", "/api/challenges/check", "/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect", "/api/repair-labs/inspect"):
             return self.reply({"error": "未找到接口"}, 404)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -373,9 +390,45 @@ class Handler(BaseHTTPRequestHandler):
             # An expired personal identity must not disable shared operations.
             optional_identity = bool(room_match) or path in {
                 "/api/rooms", "/api/network/inspect", "/api/challenges/check",
-                "/api/operations/inspect", "/api/repair-labs/inspect", "/api/knowledge/search"
+                "/api/operations/inspect", "/api/repair-labs/inspect", "/api/knowledge/search", "/api/lab/collect"
             }
             user = self.personal_user(strict=not optional_identity)
+            if path == "/api/learning/unlock":
+                from .learning import grant_solution, COOKIE as LEARNING_COOKIE
+                if not user:
+                    raise SignInError("请先登录个人账号，再输入老师提供的解答授权码")
+                with self.server.learning_lock:
+                    attempts = self.server.learning_attempts.get(user["id"], [])
+                    attempts = [stamp for stamp in attempts if time.monotonic() - stamp < 60]
+                    if len(attempts) >= 5:
+                        return self.reply({"error": "授权码尝试过多，请一分钟后重试"}, 429)
+                    self.server.learning_attempts[user["id"]] = attempts + [time.monotonic()]
+                token = grant_solution(payload.get("code"), user["id"])
+                self.send_response(200)
+                content = b'{"solution_unlocked": true}'
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Set-Cookie", LEARNING_COOKIE + "=" + token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=7200" + ("; Secure" if self.server.public_url else ""))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+            if path == "/api/lab/collect":
+                from .mcp_client import LabMCPTools
+                config = os.environ.get("LABAGENT_MCP_CONFIG")
+                if not config:
+                    raise ValueError("本机尚未配置实验平台连接")
+                with LabMCPTools(config) as lab:
+                    tool = payload.get("tool")
+                    if not isinstance(tool, str) or tool not in lab.bindings:
+                        raise ValueError("请选择当前实验已开放的检查")
+                    observed = lab.execute(tool, payload.get("arguments", {}))
+                    from .investigation import safe_text
+                    command_slug = re.sub(r"[^\w-]+", "_", observed["command"])[:35]
+                    name = ("MCP-" + observed["device"] + "-" + tool + "-" + command_slug + ".log")[:120]
+                    text = "设备：" + observed["device"] + "\n命令：" + observed["command"] + "\n" + safe_text(observed["text"])
+                    return self.reply({"materials": {name: text}, "source": "mcp_device_observation",
+                        "observed_at": datetime.now(timezone.utc).isoformat()})
             if path in ("/api/memories", "/api/account/memory"):
                 if not user:
                     raise SignInError("请先登录个人账号")
@@ -446,6 +499,22 @@ class Handler(BaseHTTPRequestHandler):
             for recording in payload.get("recordings", []):
                 if not self.can_read("recording", recording):
                     raise ValueError("图片或录屏不属于本次排查")
+            from .learning import solution_allowed, COOKIE as LEARNING_COOKIE
+            if payload.get("diagnostic_mode") == "open_network" and (os.environ.get("LABAGENT_GUIDED_WORKFLOW") == "1" or "learning" in payload):
+                learning = payload.get("learning", {"level": 1})
+                if not isinstance(learning, dict):
+                    raise ValueError("learning必须为对象")
+                # Browser flags and a token copied from another account cannot grant access.
+                learning = {"level": learning.get("level", 1)}
+                if learning["level"] == 3:
+                    cookies = SimpleCookie(self.headers.get("Cookie", ""))
+                    token = cookies[LEARNING_COOKIE].value if LEARNING_COOKIE in cookies else ""
+                    if shared_room := payload.get("room_id") or self.server.personal.session_room(session):
+                        raise SignInError("共享实验继续使用逐步提示；请在个人会话查看授权解答", 403)
+                    if not user or not solution_allowed(token, subject=user["id"]):
+                        raise SignInError("完整解答需要老师授权，请先使用逐步提示", 403)
+                    learning["access_token"] = token
+                payload["learning"] = learning
             payload.pop("personal_memory", None)
             shared_room = payload.get("room_id") or self.server.personal.session_room(session)
             if payload.get("diagnostic_mode") == "open_network":
@@ -484,6 +553,13 @@ class Handler(BaseHTTPRequestHandler):
             self.server.write_log(traceback.format_exc(), error=True)
 
     def save_result(self, payload, result):
+        collected = result.get("collected_materials", {})
+        if collected:
+            combined = {**payload["configs"], **collected}
+            if len(combined) > 20 or not all(isinstance(key, str) and 0 < len(key) <= 120 and
+                    isinstance(value, str) and 0 < len(value) <= 200000 for key, value in combined.items()):
+                raise ValueError("采集材料格式无效或超过当前材料上限")
+            payload["configs"] = combined
         user = self.personal_user()
         owner = "room:" + payload["room_id"] if payload.get("room_id") else user["id"] if user else None
         result["memory_used"] = [{"kind": item["kind"], "title": item["title"]} for item in payload.get("personal_memory", [])]
@@ -650,6 +726,8 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
     if public_url:
         server.allowed_hosts.add(urlparse(public_url).netloc)
         server.allowed_origins.add(public_url)
+    server.learning_lock = threading.Lock()
+    server.learning_attempts = {}
     server.diagnosis_slots = threading.BoundedSemaphore(4)
     server.session_locks = [threading.Lock() for _ in range(32)]
     server.workflow_database = store.path.with_name("workflow-" + store.path.name)

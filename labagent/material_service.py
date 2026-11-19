@@ -24,7 +24,12 @@ def validate_resume(attempt):
     """Check the portable context sent by the web server before starting a graph."""
     if not isinstance(attempt, dict) or not isinstance(attempt.get("input"), dict) or not isinstance(attempt.get("result"), dict):
         raise ValueError("resume_from须包含上一轮input和result")
-    validate(attempt["input"])
+    portable = dict(attempt["input"])
+    portable.pop("learning", None)
+    # A restored historical answer is data; it does not grant new solution access.
+    if not portable.get("configs"):
+        portable["learning"] = {"level": 1}
+    validate(portable)
     result = attempt["result"]
     if attempt["input"].get("diagnostic_mode") != "open_network" or not isinstance(result.get("investigation"), dict):
         raise ValueError("只能恢复开放排查的上下文")
@@ -91,7 +96,9 @@ class MaterialService:
             if not isinstance(materials, dict):
                 raise ValueError("materials须为材料名称与正文组成的对象")
             payload["configs"].update(materials)
-            for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings", "requirements", "topology", "command_outputs", "hint_level"):
+            # Privilege is supplied and checked afresh, never restored from history.
+            payload.pop("learning", None)
+            for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings", "requirements", "topology", "command_outputs", "hint_level", "learning"):
                 if key in request:
                     payload[key] = request[key]
             if "course_documents" in request:
