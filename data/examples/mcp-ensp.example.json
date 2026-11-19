@@ -1,0 +1,22 @@
+{
+  "servers": {
+    "ensp": {
+      "command": "ensp-mcp",
+      "args": [],
+      "cwd": ".",
+      "timeout": 20,
+      "tools": {
+        "r1_check": {
+          "name": "device_exec",
+          "effect": "observe",
+          "device": "R1",
+          "description": "读取当前 eNSP 实验 R1 的配置、接口、OSPF 邻居或路由表",
+          "arguments": {"target": "R1", "topo_path": "runtime/lab.topo"},
+          "choices": {
+            "command": ["display current-configuration", "display ip interface brief", "display ospf peer", "display ospf interface", "display ip routing-table"]
+          }
+        }
+      }
+    }
+  }
+}
