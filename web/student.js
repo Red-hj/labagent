@@ -163,7 +163,7 @@ function setBusy(value) {
 }
 function materialChanged(detail) {
   window.LabWorkspace.changed();
-  message(detail || (sessionId ? "材料已更新，点击继续诊断即可。" : "材料已添加，可以开始诊断。"));
+  message(detail || (sessionId ? "材料已更新，点击“核对新结果”继续当前排查。" : "材料已添加，可以开始诊断。"));
   if (sessionId) { materialsPending = true; $("result-state").textContent = "材料已更新 · 下方为上一次分析"; }
   syncContinuation();
   if (sessionId) setBusy(busy);
@@ -215,7 +215,7 @@ function locateCitation(citation) {
   }
   const view = materialViews.get(citation.device);
   const lines = view?.text.split(/\r?\n/);
-  if (!view || lines[citation.line - 1] !== citation.quote) return message("当前材料已更新，请继续诊断以更新原文定位。", true);
+  if (!view || lines[citation.line - 1] !== citation.quote) return message("当前材料已更新，请核对新结果以更新原文定位。", true);
   const screenshot = [...screenshots.values()].find(item => item.material_name === citation.device);
   if (screenshot) { showScreenshot(screenshot, citation); return; }
   const selected = element("mark", lines[citation.line - 1]); selected.tabIndex = -1;
@@ -274,8 +274,8 @@ async function loadDemo(repaired = false, final = false) {
     for (const [name, text] of Object.entries(stage.materials)) materials.set(name, text);
     evidenceKind = "demo"; demoActive = true; renderMaterials();
     if (!repaired) $("problem").value = goalsDemo ? "按实验说明排查R1到10.3.3.3的访问，并核对OSPF要求。" : "PC1取得DHCP地址后，为什么访问不了10.30.0.10？";
-    $("demo-status").textContent = repaired ? "复测材料已更新。点击“核对修改结果”，沿用当前会话继续。" : "故障材料已就绪。点击“开始诊断”，随后可追问原因、获取修改步骤。";
-    materialChanged(repaired ? "修改与复测材料已带入，点击“核对修改结果”继续。" : "示例材料已带入，点击“开始诊断”。");
+    $("demo-status").textContent = repaired ? "复测材料已更新。点击“核对新结果”，沿用当前会话继续。" : "故障材料已就绪。点击“开始诊断”，随后可追问原因、获取修改步骤。";
+    materialChanged(repaired ? "修改与复测材料已带入，点击“核对新结果”继续。" : "示例材料已带入，点击“开始诊断”。");
   } catch (error) {
     $("demo-status").textContent = "示例载入未完成，可点击按钮重试。";
     message("示例载入失败：" + error.message, true);
@@ -330,7 +330,7 @@ async function addFiles(files) {
     }
     evidenceKind = demoActive && !measuredDemos.has($("demo-case").value) ? "demo" : "user_submitted"; renderMaterials();
     if (errors.length) { requestState("error", errors.join("；")); message("已保留成功读取的材料。" + errors.join("；"), true); }
-    else materialChanged("材料已就绪，共 " + materials.size + " 份。点击“" + (sessionId ? "继续诊断" : "开始诊断") + "”提交分析。");
+    else materialChanged("材料已就绪，共 " + materials.size + " 份。点击“" + (sessionId ? "核对新结果" : "开始诊断") + "”提交分析。");
     await previewOperations();
   } catch (error) { message(error.message, true); }
   finally { materialLoading = false; setBusy(false); }
@@ -924,7 +924,7 @@ async function start() {
   const pendingRecording = new URLSearchParams(window.location.search).get("recording");
   if (pendingRecording && /^[a-f0-9]{32}$/.test(pendingRecording)) {
     setBusy(true);
-    try { await waitForRecording(pendingRecording); message("材料识别已恢复，可以继续诊断。"); }
+    try { await waitForRecording(pendingRecording); message("材料识别已恢复，可在当前会话继续排查。"); }
     catch (error) { requestState("error", error.message); message(error.message, true); }
     finally { setBusy(false); }
   }
