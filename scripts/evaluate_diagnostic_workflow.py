@@ -25,9 +25,10 @@ def demo(name):
     return json.loads((ROOT / 'data/examples' / f'{name}.json').read_text(encoding='utf-8'))
 
 
-def cases():
+def cases(frr_capture=None):
     down, static, healthy = [row['materials'] for row in demo('ospf_goals')['stages']]
-    captured = {phase['id']: phase['observations'] for phase in demo('frr_lab02_backup')['phases']}
+    sample = json.loads(frr_capture.read_text(encoding='utf-8-sig')) if frr_capture else demo('frr_lab02_backup')
+    captured = {phase['id']: phase['observations'] for phase in sample['phases']}
     configs = {
         'vrp-partial': down,
         'vrp-supplemented': {**down, 'R3.cfg': static['R3.cfg']},
@@ -104,7 +105,7 @@ def run(request, mode):
         except ModelError as error:
             answer = {'reply': '', 'model_status': 'unavailable', 'error': error.code}
     else:
-        result = investigate(request, completion=complete)
+        result = investigate(request, completion=complete, goal_checks=mode == 'goals')
         answer = {'reply': result['investigation'].get('reply', ''), 'model_status': result['llm']['status'],
                   'error': result['llm'].get('error_code'), 'result': result}
         # The transport menu alone cannot disallow an invented call; verify the ablation actually held.
@@ -123,16 +124,20 @@ def main():
     cli.add_argument('--env-file', type=Path, default=ROOT / '.env')
     cli.add_argument('--output', required=True, type=Path)
     cli.add_argument('--case', action='append', default=[], help='repeat to select multiple case IDs')
+    cli.add_argument('--mode', action='append', choices=MODES, default=[], help='repeat to select modes; defaults to all three')
+    cli.add_argument('--frr-capture', type=Path, help='optional export of a fresh lab_02_backup capture; use isolated lab materials')
     args = cli.parse_args()
-    requests, expected = cases()
+    requests, expected = cases(args.frr_capture)
     selected = list(dict.fromkeys(args.case)) or list(requests)
     if any(name not in requests for name in selected):
         cli.error('available cases: ' + ', '.join(requests))
     folder = args.output.resolve()
     if not folder.is_relative_to(ROOT / 'runtime') or folder == ROOT / 'runtime':
         cli.error('place results in a new folder under runtime/')
-    plan = {'cases': selected, 'models': ['deepseek-flash'], 'modes': MODES, 'max_tokens_per_request': MAX_TOKENS,
-            'max_requests_per_case': MAX_REQUESTS, 'max_total_requests': len(selected) * sum(MAX_REQUESTS.values())}
+    modes = list(dict.fromkeys(args.mode)) or list(MODES)
+    limits = {mode: MAX_REQUESTS[mode] for mode in modes}
+    plan = {'cases': selected, 'models': ['deepseek-flash'], 'modes': modes, 'max_tokens_per_request': MAX_TOKENS,
+            'max_requests_per_case': limits, 'max_total_requests': len(selected) * sum(limits.values())}
     print(json.dumps(plan, ensure_ascii=False), flush=True)
     if not args.execute:
         return 0
@@ -154,20 +159,20 @@ def main():
                 'tokens': sum(call.get('usage', {}).get('total_tokens', 0) for call in result['calls'])}
 
     # Avoid a full batch of known-bad calls if local credentials or transport fail.
-    first = evaluate((selected[0], 'direct'))
+    first = evaluate((selected[0], modes[0]))
     rows.append(first)
     print(first, flush=True)
     with ThreadPoolExecutor(max_workers=2) as pool:
         for index, case in enumerate(selected):
             if any(row['error'] in STOP_ERRORS for row in rows):
                 break
-            variants = MODES[1:] if index == 0 else MODES
+            variants = modes[1:] if index == 0 else modes
             for row in pool.map(evaluate, [(case, mode) for mode in variants]):
                 rows.append(row)
                 print(row, flush=True)
             write(folder / 'summary.json', rows)
     write(folder / 'summary.json', rows)
-    return int(len(rows) != len(selected) * len(MODES) or any(row['model_status'] != 'ok' for row in rows))
+    return int(len(rows) != len(selected) * len(modes) or any(row['model_status'] != 'ok' for row in rows))
 
 
 if __name__ == '__main__':
