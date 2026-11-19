@@ -54,6 +54,69 @@ def scripted_completion(stage, *, falsely_pass=False):
 
 
 class ExperimentGoalTests(unittest.TestCase):
+    def test_complete_public_table_proves_absence_but_partial_or_filtered_tables_do_not(self):
+        public = ("<R1>display ip routing-table\nRouting Table : Public\nDestinations : 1 Routes : 1\n"
+                  "Destination/Mask Proto Pre Cost Flags NextHop Interface\n"
+                  "10.12.0.0/24 Direct 0 0 D 10.12.0.1 GE0/0/0")
+        variants = ((public, "no_match"), (public.replace("Routes : 1", "Routes : 2"), "needs_evidence"),
+                    (public.replace("Table : Public", "Table : student-vpn"), "needs_evidence"),
+                    (public + "\n......", "needs_evidence"),
+                    (public.replace("routing-table\n", "routing-table protocol ospf\n"), "needs_evidence"),
+                    (public.replace("10.12.0.0/24 Direct", "0.0.0.0/0 Static"), "observed"))
+        for variant, status in variants:
+            with self.subTest(variant=variant):
+                current = {"configs": {"R1.log": variant}}
+                sources, _ = source_bundle(current)
+                result, _ = execute_tool("check_route_selection", {"device": "R1", "target": "10.3.3.3"}, current, sources, set())
+                self.assertEqual(result["status"], status)
+                self.assertEqual(bool(result["request"]), status == "needs_evidence")
+                if status == "no_match":
+                    self.assertTrue(any("Routes : 1" in ref["quote"] for ref in result["evidence"]))
+                    self.assertEqual(check_goals(goals()[1:2], sources)["checks"][0]["status"], "failed")
+
+    def test_current_table_request_is_removed_but_after_repair_and_other_device_requests_remain(self):
+        from scripts.evaluate_diagnostic_workflow import cases
+
+        current = cases(complete_vrp_table=True)[0]["vrp-supplemented"]
+        sources, _ = source_bundle(current)
+        context, seen = {}, set()
+        route, _ = execute_tool("check_route_selection", {"device": "R1", "target": "10.3.3.3"},
+                                current, sources, seen, diagnostic_context=context)
+        self.assertEqual(route["status"], "no_match")
+        requests = [{"device": device, "information": information, "why": why} for device, information, why in (
+            ("R1", "完整当前 IPv4 路由表", "再次确认"), ("R1", "display ip routing-table 10.3.3.3 的完整输出", "当前选路"),
+            ("R1", "display ip routing-table 10.3.3.3", "修改后复测"), ("R3", "当前路由表", "核对 R3"),
+            ("R1", "display ip routing-table 10.5.5.5", "核对另一目标"),
+            ("R1", "display ip routing-table 10.3.3.3/32", "核对当前选路"))]
+        result, _ = execute_tool("submit_hypotheses", {"summary": "当前未达标", "hypotheses": [], "evidence_requests": requests},
+                                 current, sources, seen, diagnostic_context=context)
+        self.assertEqual(result["evidence_requests"], requests[2:5])
+
+    def test_exact_prefix_absence_cannot_answer_host_lookup_that_could_use_default_route(self):
+        current = {"configs": {"R1.log": "<R1>display ip routing-table\nRouting Table : Public\nDestinations : 1 Routes : 1\n"
+                    "Destination/Mask Proto Pre Cost Flags NextHop Interface\n0.0.0.0/0 Static 60 0 D 10.12.0.1 GE0/0/0"}}
+        sources, _ = source_bundle(current)
+        seen, context = set(), {}
+        lookup, _ = execute_tool("check_route_selection", {"device": "R1", "target": "10.3.3.3/32"},
+                                 current, sources, seen, diagnostic_context=context)
+        self.assertEqual(lookup["status"], "no_match")
+        ask = {"device": "R1", "information": "display ip routing-table 10.3.3.3", "why": "查询实际选路"}
+        result, _ = execute_tool("submit_hypotheses", {"summary": "没有精确 /32", "hypotheses": [], "evidence_requests": [ask]},
+                                 current, sources, seen, diagnostic_context=context)
+        self.assertEqual(result["evidence_requests"], [ask])
+
+    def test_complete_route_absence_does_not_turn_loopback_excerpt_into_confirmed_misconfiguration(self):
+        from scripts.evaluate_diagnostic_workflow import cases
+
+        current = cases(complete_vrp_table=True)[0]["vrp-partial"]
+        sources, _ = source_bundle(current)
+        context, seen = {"criteria": goals()}, {("config:3", 4)}
+        result, _ = execute_tool("submit_hypotheses", {"summary": "R3 漏配", "hypotheses": [], "evidence_requests": []},
+                                 current, sources, seen, diagnostic_context=context)
+        self.assertEqual(result["goal_assessment"]["checks"][1]["status"], "failed")
+        self.assertIn("无法判断", result["reply"])
+        self.assertEqual([r["device"] for r in result["evidence_requests"]], ["R3"])
+
     def test_failed_ping_with_loopback_excerpt_requests_evidence_before_repair(self):
         from scripts.evaluate_diagnostic_workflow import cases
 

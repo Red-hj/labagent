@@ -25,8 +25,14 @@ def demo(name):
     return json.loads((ROOT / 'data/examples' / f'{name}.json').read_text(encoding='utf-8'))
 
 
-def cases(frr_capture=None):
+def cases(frr_capture=None, *, complete_vrp_table=False):
     down, static, healthy = [row['materials'] for row in demo('ospf_goals')['stages']]
+    if complete_vrp_table:
+        # A separate sensitivity check; keep the original six-case baseline unchanged by default.
+        log = down['R1-运行.log']
+        command = '<R1>display ip routing-table\n'
+        down = dict(down)
+        down['R1-运行.log'] = log.replace(command, command + 'Routing Table : Public\nDestinations : 1  Routes : 1\n', 1)
     sample = json.loads(frr_capture.read_text(encoding='utf-8-sig')) if frr_capture else demo('frr_lab02_backup')
     captured = {phase['id']: phase['observations'] for phase in sample['phases']}
     configs = {
@@ -126,8 +132,9 @@ def main():
     cli.add_argument('--case', action='append', default=[], help='repeat to select multiple case IDs')
     cli.add_argument('--mode', action='append', choices=MODES, default=[], help='repeat to select modes; defaults to all three')
     cli.add_argument('--frr-capture', type=Path, help='optional export of a fresh lab_02_backup capture; use isolated lab materials')
+    cli.add_argument('--complete-vrp-table', action='store_true', help='add explicit public table scope and row counts for the two failed-Ping cases')
     args = cli.parse_args()
-    requests, expected = cases(args.frr_capture)
+    requests, expected = cases(args.frr_capture, complete_vrp_table=args.complete_vrp_table)
     selected = list(dict.fromkeys(args.case)) or list(requests)
     if any(name not in requests for name in selected):
         cli.error('available cases: ' + ', '.join(requests))
@@ -136,7 +143,8 @@ def main():
         cli.error('place results in a new folder under runtime/')
     modes = list(dict.fromkeys(args.mode)) or list(MODES)
     limits = {mode: MAX_REQUESTS[mode] for mode in modes}
-    plan = {'cases': selected, 'models': ['deepseek-flash'], 'modes': modes, 'max_tokens_per_request': MAX_TOKENS,
+    plan = {'cases': selected, 'models': ['deepseek-flash'], 'modes': modes, 'complete_vrp_table': args.complete_vrp_table,
+            'max_tokens_per_request': MAX_TOKENS,
             'max_requests_per_case': limits, 'max_total_requests': len(selected) * sum(limits.values())}
     print(json.dumps(plan, ensure_ascii=False), flush=True)
     if not args.execute:

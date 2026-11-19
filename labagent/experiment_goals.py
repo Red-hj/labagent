@@ -25,6 +25,9 @@ AREA_REQUIREMENT = re.compile(
     r"(?P<interface>[\w./-]+?)\s*(?:互联)?接口\s*(?:统一使用|必须(?:使用|位于|属于|在)|应(?:使用|位于|属于|在))\s*"
     r"Area\s+(?P<area>\d+(?:\.\d+){0,3})(?=\s|[。；，、,.!?！？;]|$)", re.I)
 INSTRUCTION_FILE = re.compile(r"(?:实验|课程)(?:说明|要求|指导)|\b(?:instructions?|requirements?)\b", re.I)
+VRP_TABLE_SCOPE = re.compile(r"\s*Routing Tables?\s*:\s*(.+?)\s*", re.I)
+VRP_TABLE_COUNTS = re.compile(r"\s*Destinations\s*:\s*(\d{1,10})\s+Routes\s*:\s*(\d{1,10})\s*", re.I)
+ROUTE_EXCERPT = re.compile(r"节选|摘录|片段|截断|未显示|\b(?:excerpt|truncated|partial)\b|^\s*(?:\.{3,}|…+)|----\s*More\s*----", re.I | re.M)
 
 
 def area_instruction_supports_goal(instruction, device, interface, expected):
@@ -233,6 +236,10 @@ def check_route_selection(device, target, blocks):
         text = "\n".join(block["lines"])
         frr = FRR_ROUTE_LEGEND.search(text)
         vrp = re.search(r"Destination/Mask\s+Proto", text)
+        public_table = [(i, match[1].casefold()) for i, line in enumerate(block["lines"], 1)
+                        if (match := VRP_TABLE_SCOPE.fullmatch(line))]
+        if vrp and public_table and (len(public_table) != 1 or public_table[0][1] not in {"public", "_public_"}):
+            continue  # A named VPN table cannot establish the public forwarding choice.
         linux = not frr and not vrp and (linux_command or not command and any(LINUX_ROUTE_ROW.fullmatch(line) for line in block["lines"]))
         if frr:
             header = next(i for i, line in enumerate(block["lines"], 1) if FRR_ROUTE_LEGEND.search(line))
@@ -246,9 +253,19 @@ def check_route_selection(device, target, blocks):
                 break  # Never fall back to an older table after a new unsupported capture.
             continue
         try:
-            rows = parse_frr_routes(text) if frr else parse_linux_routes(text) if linux else parse_routes(text, installed_only=True)
+            if vrp and not frr:
+                all_rows = parse_routes(text)
+                rows = parse_routes(text, installed_only=True) if all_rows is not None else None
+            else:
+                all_rows = None
+                rows = parse_frr_routes(text) if frr else parse_linux_routes(text)
         except ValueError:
-            rows = None
+            rows = all_rows = None
+        counts = [(i, int(match[1]), int(match[2])) for i, line in enumerate(block["lines"], 1)
+                  if (match := VRP_TABLE_COUNTS.fullmatch(line))] if vrp and not frr else []
+        complete = (command == "display ip routing-table" and len(public_table) == 1 and len(counts) == 1
+                    and all_rows is not None and not ROUTE_EXCERPT.search(text) and not ROUTE_EXCERPT.search(block["material"])
+                    and counts[0][1:] == (len({row["network"] for row in all_rows}), len(all_rows)))
         matches = []
         for row in rows or []:
             prefix = ipaddress.IPv4Network(row["network"])
@@ -256,6 +273,11 @@ def check_route_selection(device, target, blocks):
                 matches.append((prefix.prefixlen, row))
         if not matches:
             result["evidence"] = [citation(block, header)]
+            if complete:
+                subject = f"没有匹配精确网段 {target} 的已安装路由" if network else f"没有可用于转发到 {target} 的已安装路由，包括默认路由"
+                return {**result, "status": "no_match", "request": None,
+                        "evidence": [citation(block, i) for i in sorted({1, header, public_table[0][0], counts[0][0]})],
+                        "detail": f"{device} 当前完整公用 IPv4 路由表中，{subject}。"}
             break
         longest = max(length for length, _ in matches)
         chosen = [row for length, row in matches if length == longest]
@@ -273,6 +295,8 @@ def check_route_selection(device, target, blocks):
 
 def _route(goal, blocks):
     result = check_route_selection(goal["device"], goal["target"], blocks)
+    if result["status"] == "no_match":
+        return "failed", f"{result['detail']} 实验要求{goal['expected'].upper()}。", result["evidence"]
     if result["status"] != "observed":
         return "needs_evidence", result["detail"], result["evidence"]
     actual = {route["protocol"].upper() for route in result["routes"]}
@@ -355,8 +379,7 @@ def complete_config(block):
 def pending_ospf_loopback_evidence(sources, assessment):
     """Separate observed loss from a missing OSPF stanza in an explicit VRP excerpt."""
     pings, _, _ = submitted_pings(sources)
-    if len(pings) != 1 or pings[0]["passed"] or any(
-            g["status"] == "failed" and g["kind"] != "reachability" for g in assessment.get("checks", [])):
+    if len(pings) != 1 or pings[0]["passed"]:
         return None
     # The goal must be OSPF-related; a failed ping to an arbitrary loopback is not enough.
     target = pings[0]["target"]
@@ -368,6 +391,13 @@ def pending_ospf_loopback_evidence(sources, assessment):
     if not goal_source:
         return None
     blocks = evidence_blocks(sources)
+    for check in assessment.get("checks", []):
+        if check["status"] != "failed" or check["kind"] == "reachability":
+            continue
+        if (check["kind"] != "route_protocol" or check["device"].casefold() != pings[0]["test_device"].casefold()
+                or ipaddress.IPv4Address(target) not in ipaddress.IPv4Network(check["target"], strict=False)
+                or check_route_selection(check["device"], check["target"], blocks)["status"] != "no_match"):
+            return None
     latest = {block["device"].casefold(): block for block in blocks if is_config_block(block)}
     owners = []
     for block in latest.values():
