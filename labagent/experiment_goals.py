@@ -352,6 +352,53 @@ def complete_config(block):
     return last == "return" or last == "end" and any(re.match(r"\s*frr version\s+", line, re.I) for line in block["lines"])
 
 
+def pending_ospf_loopback_evidence(sources, assessment):
+    """Separate observed loss from a missing OSPF stanza in an explicit VRP excerpt."""
+    pings, _, _ = submitted_pings(sources)
+    if len(pings) != 1 or pings[0]["passed"] or any(
+            g["status"] == "failed" and g["kind"] != "reachability" for g in assessment.get("checks", [])):
+        return None
+    # The goal must be OSPF-related; a failed ping to an arbitrary loopback is not enough.
+    target = pings[0]["target"]
+    goal_source = any(re.search(r"(?<![A-Za-z0-9_])OSPF(?![A-Za-z0-9_])", line, re.I)
+                      and re.search(r"(?<![\d.])" + re.escape(target) + r"(?![\d.])", line)
+                      for key, source in sources.items()
+                      if key == "question:initial" or source["kind"] == "submitted_material" and INSTRUCTION_FILE.search(source["device"])
+                      for line in source["lines"])
+    if not goal_source:
+        return None
+    blocks = evidence_blocks(sources)
+    latest = {block["device"].casefold(): block for block in blocks if is_config_block(block)}
+    owners = []
+    for block in latest.values():
+        text = "\n".join(block["lines"])
+        if not re.search(r"^\s*sysname\s+\S+", text, re.I | re.M):
+            continue
+        device = parse_config(block["device"], text)
+        owners.extend((block, device, port) for port in device.interfaces.values()
+                      if port.address == target and interface_id(port.name).startswith("loopback"))
+    if len(owners) != 1:
+        return None
+    block, device, port = owners[0]
+    if (device.name.casefold() == pings[0]["test_device"].casefold() or port.shutdown
+            or ospf_bindings(device, port) or complete_config(block)
+            or not any(PARTIAL_CONFIG.search(value) for value in (block["material"], "\n".join(block["lines"])))):
+        return None
+    for output in blocks:
+        if output["device"].casefold() != device.name.casefold() or not re.match(r"\s*display ospf(?:\s+\d+)?\s+interface\b", output["command"], re.I):
+            continue
+        if any(re.search(r"(?<![\w./-])" + re.escape(port.name) + r"(?![\w./-])", line, re.I)
+               or re.search(r"(?<![\d.])" + re.escape(target) + r"(?![\d.])", line)
+               for line in output["lines"] if not prompt_info(line)):
+            return None  # Let the normal workflow interpret the newly supplied operational evidence.
+    fact = f"{pings[0]['test_device']} 到 {target} 的 Ping 发 {pings[0]['sent']} 收 {pings[0]['received']}，连通性未达标。"
+    detail = (f"{device.name} 只提供了配置摘录，无法判断 {port.name} 是否已加入 OSPF。"
+              f"请补 {device.name} 的完整 OSPF 配置，或该接口的 display ospf interface 输出，再确定改法。")
+    return {"summary": fact, "reply": fact + detail, "steps": [], "hypotheses": [], "outcome": "investigating",
+            "evidence_requests": [{"device": device.name, "information": f"完整 OSPF 配置，或 {port.name} 的 display ospf interface 输出",
+                                   "why": f"确认 {target} 所在接口是否已加入 OSPF"}]}
+
+
 def _config(goal, blocks):
     candidates = [block for block in blocks if is_config_block(block)]
     if not candidates:

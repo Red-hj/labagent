@@ -54,6 +54,40 @@ def scripted_completion(stage, *, falsely_pass=False):
 
 
 class ExperimentGoalTests(unittest.TestCase):
+    def test_failed_ping_with_loopback_excerpt_requests_evidence_before_repair(self):
+        from scripts.evaluate_diagnostic_workflow import cases
+
+        requests, _ = cases()
+        wrong = {"summary": "R3 漏配了 OSPF", "hypotheses": [], "outcome": "ready_for_retest",
+                 "steps": ["在 R3 的 Area 0 下添加 network"],
+                 "evidence_requests": [{"device": "R1", "information": "再发一遍 Ping 结果", "why": "排查"}]}
+        for mode in (True, False):
+            for name, expected in (("vrp-partial", True), ("vrp-supplemented", False), ("vrp-static-double-fault", False)):
+                with self.subTest(goals=mode, case=name):
+                    request = requests[name]
+                    sources, _ = source_bundle(request)
+                    context, seen = {"goal_checks_disabled": not mode}, {("config:3", 3)}
+                    execute_tool("check_route_selection", {"device": "R1", "target": "10.3.3.3"}, request,
+                                 sources, seen, diagnostic_context=context)
+                    result, _ = execute_tool("submit_hypotheses", wrong, request, sources, seen, diagnostic_context=context)
+                    if expected:
+                        self.assertEqual(result["steps"], [])
+                        self.assertEqual(result["outcome"], "investigating")
+                        self.assertIn("无法判断", result["reply"])
+                        self.assertIn("发 5 收 0", result["reply"])
+                        self.assertEqual([item["device"] for item in result["evidence_requests"]], ["R3"])
+                    else:
+                        self.assertEqual(result["steps"], wrong["steps"])
+
+    def test_loopback_operational_evidence_releases_excerpt_fallback(self):
+        current = {**payload(), "question": "排查 OSPF 故障，是否需要修改？"}
+        current["configs"]["R3-ospf.log"] = "<R3>display ospf interface LoopBack0\n Interface: LoopBack0 10.3.3.3\n Area: 0.0.0.0"
+        sources, _ = source_bundle(current)
+        result, _ = execute_tool("submit_hypotheses", {"summary": "已看到 R3 的 OSPF 接口", "hypotheses": [],
+                                                      "evidence_requests": [{"device": "R2", "information": "邻居状态", "why": "继续排查"}]},
+                                 current, sources, {("config:5", 2)})
+        self.assertEqual(result["evidence_requests"][0]["device"], "R2")
+
     def test_explicit_backup_repair_replaces_wrong_mixed_diagnosis(self):
         from scripts.evaluate_diagnostic_workflow import cases
 

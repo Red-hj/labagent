@@ -16,7 +16,7 @@ from .session_state import RESOLVED_OUTCOMES, experiment_goal
 from .progress import emit_progress
 from .experiment_goals import (GOAL_TOOL, ROUTE_TOOL, area_instruction_supports_goal, validate_goal_fields,
                                check_goals, check_route_selection, checked_frr_area_repair, complete_config, evidence_blocks,
-                               explicit_area_goals, is_config_block, submitted_pings)
+                               explicit_area_goals, is_config_block, pending_ospf_loopback_evidence, submitted_pings)
 from .diagnostic_planner import PLAN_TOOL, validate_plan
 from .operation_history import HISTORY_TOOL, inspect_history, model_history
 from .repair_lab import REPAIR_TOOL, compare_run, discover_runs
@@ -437,12 +437,17 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
         interaction = payload.get("interaction")
         asks_for_repair = (interaction["type"] == "repair" if interaction else
                            bool(re.search(r"修复|修改|改法|修正|若要改|怎么改|如何改|怎样改", payload.get("question", ""))))
+        asks_for_diagnosis = (interaction["type"] in {"repair", "update", "verify"} if interaction else
+                              asks_for_repair or bool(re.search(r"排查|诊断|故障|达标|不通|漏配|未宣告", payload.get("question", ""))))
         repair = (checked_frr_area_repair(assessment, sources)
                   if not route_table_answer and args.get("outcome", "investigating") in {"investigating", "ready_for_retest"}
                   and asks_for_repair else None)
-        if repair:
-            args = {**repair, "experiment_goal": args.get("experiment_goal", "")}
-        result = validate_submission(args, sources, seen, conversational=bool(interaction) or bool(repair), checked_pings=checked_pings,
+        pending_config = (pending_ospf_loopback_evidence(sources, assessment)
+                          if not repair and not route_table_answer and asks_for_diagnosis
+                          and args.get("outcome", "investigating") in {"investigating", "ready_for_retest"} else None)
+        if grounded := repair or pending_config:
+            args = {**grounded, "experiment_goal": args.get("experiment_goal", "")}
+        result = validate_submission(args, sources, seen, conversational=bool(interaction) or bool(grounded), checked_pings=checked_pings,
                                      verifying=checked_pings is not None, required_targets=required_targets,
                                      comparing=context.get("repair_compared", False), route_checked=bool(route_selection))
         if args.get("operation_focus"):
@@ -460,13 +465,13 @@ def execute_tool(name, args, payload, sources, seen, *, previous_materials=None,
                 result["outcome"] = "goals_pending"
                 result["evidence_requests"] = [item["request"] for item in pending]
                 result["summary"] = result["reply"] = "访问恢复反馈已记录。实验目标还需完成：" + "；".join(item["detail"] for item in pending)
-        if context.get("plan") and not route_table_answer and not repair:
+        if context.get("plan") and not route_table_answer and not grounded:
             result["diagnostic_plan"] = context["plan"]
             selected = context["plan"]["selected"]
             if selected and result["outcome"] == "investigating":
                 result["evidence_requests"] = [{"device": selected["device"], "information": selected["command"],
                                                 "why": selected["purpose"] + "。" + context["plan"]["reason"]}]
-        if route_selection and result["outcome"] == "investigating":
+        if route_selection and result["outcome"] == "investigating" and not pending_config:
             requests = [lookup["request"] for lookup in route_selection if lookup["request"]]
             for request in result["evidence_requests"]:
                 if request not in requests:
