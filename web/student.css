@@ -222,4 +222,8 @@ footer { display:flex; justify-content:space-between; gap:15px; font-size:9px; c
 .learning-current p { margin: 7px 0; line-height: 1.6; }
 #lab-tools form { padding: 12px 0; border-top: 1px solid var(--line, #dbe2eb); }
 #lab-tools select, #learning-code { width: 100%; margin: 6px 0 10px; }
+.lab-command { display:block; margin:10px 0; padding:10px; background:#f3f6fa; overflow-wrap:anywhere; }
+.lab-pair-code { font-family:monospace; font-size:15px; overflow-wrap:anywhere; }
+#lab-computer-name { display:block; width:100%; margin:7px 0 10px; }
+#lab-note.error { color:#a34d32; }
 @media (max-width: 640px) { .learning-controls { align-items: stretch; flex-direction: column; } .learning-controls select { width: 100%; } }
