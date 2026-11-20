@@ -24,6 +24,8 @@ RAW_FILES = tuple(f'{router}-{suffix}.txt' for router in ROUTERS for suffix in (
     f'{pc}-ping.txt' for pc in TARGETS
 )
 REAL_SOURCES = ('vrp_device', 'vrp_simulator')
+TERMINAL_COMMANDS = {'display current-configuration': 'config', 'display ospf peer': 'ospf',
+                     'display ip routing-table': 'routes'}
 REPAIR_QUESTIONS = {
     'before': '请按实验要求核对故障阶段，指出是哪台设备的接口区域不符，并引用配置、邻居、路由表或 Ping 原文。',
     'after': '这是同一实验修改后新采集的材料。请按实验要求复测，分别核对双端邻居、路由来源和双向 Ping。',
@@ -154,9 +156,81 @@ def observation_material(device, command, raw):
     prompts = [info for line in text.splitlines() if (info := prompt_info(line)) and info[4] == 'vrp' and info[3].strip()]
     if any(info[0].casefold() != device.casefold() for info in prompts):
         raise ValueError(f'{device} 的 {command} 文件包含其他设备提示符，请核对来源。')
-    if not prompts and not any(line.lstrip().startswith(f'<{device}>') for line in text.splitlines()):
+    pc_prompt = None
+    if device in TARGETS and text and (first := prompt_info(text.splitlines()[0])) and first[4] == 'ios':
+        if first[0].casefold() not in {device.casefold(), 'pc'}:
+            raise ValueError(f'{device} 的 Ping 文件包含其他设备提示符，请核对来源。')
+        pc_prompt = first
+    if pc_prompt and pc_prompt[0].casefold() == 'pc':
+        text = f'<{device}>{command}\n' + '\n'.join(text.splitlines()[1:])
+    elif not prompts and not pc_prompt and not any(line.lstrip().startswith(f'<{device}>') for line in text.splitlines()):
         text = f'<{device}>{command}\n{text}'
     return text + '\n'
+
+
+def split_terminal(device, transcript):
+    """Extract named command blocks from one device's saved terminal text."""
+    required = (TERMINAL_COMMANDS if device in ROUTERS else {f'ping {TARGETS[device]}': 'ping'})
+    blocks = {}
+    active, lines = None, []
+
+    def save():
+        if active is None:
+            return
+        if active in blocks:
+            raise ValueError(f'{device} 的 {active} 有多次输出；请保留本阶段对应的一次。')
+        if not any(line.strip() for line in lines[1:]):
+            raise ValueError(f'{device} 的 {active} 缺少命令输出。')
+        blocks[active] = '\n'.join(lines).strip('\n') + '\n'
+
+    for line in transcript.splitlines():
+        info = prompt_info(line)
+        if info:
+            name, _, _, command, style = info
+            # Lab PC consoles may use the generic prompt PC> in each device's own log.
+            valid = name.casefold() == device.casefold() or device in TARGETS and style == 'ios' and name.casefold() == 'pc'
+            command = ' '.join(command.lower().split())
+            if not valid and not command:
+                info = None  # A bracketed output label is not a change of device.
+        if not info:
+            if active is not None:
+                lines.append(line)
+            continue
+        save()
+        if not valid:
+            raise ValueError(f'{device} 的终端原文包含其他设备命令，请按设备分别保存。')
+        active = required.get(command)
+        lines = [line]
+    save()
+    missing = [command for command, kind in required.items() if kind not in blocks]
+    if missing:
+        raise ValueError(f'{device} 缺少：' + '、'.join(missing) + '。请保留命令所在行和完整输出。')
+    return {f'{device}-{kind}.txt': text for kind, text in blocks.items()}
+
+
+def import_terminals(folder, phase, terminal_folder):
+    """Import one phase from four terminal transcripts without altering the originals."""
+    if phase not in STAGES:
+        raise ValueError('请选择 before 或 after。')
+    meta = read_json(folder / 'record.json')
+    if meta.get('case_id') != 'lab_02':
+        raise ValueError('整段终端记录导入当前用于 lab_02。')
+    destination = folder / phase
+    files = {}
+    for device in (*ROUTERS, *TARGETS):
+        source = terminal_folder / f'{device}.txt'
+        if not source.is_file():
+            raise ValueError(f'缺少 {source.name}；请分别保存 R1、R2、PC1、PC2 的原始终端记录。')
+        files.update(split_terminal(device, source.read_text(encoding='utf-8-sig')))
+    if any((destination / name).exists() for name in files):
+        raise ValueError(f'{phase} 已有采集文件；请使用新的采集目录，原有文件不会覆盖。')
+    if terminal_folder == destination:
+        raise ValueError('原始终端记录与拆分输出须放在不同目录。')
+    destination.mkdir(exist_ok=True)
+    for name, text in files.items():
+        with (destination / name).open('x', encoding='utf-8') as output:
+            output.write(text)
+    return len(files)
 
 
 def check_capture(folder, *, snapshots=None):
@@ -258,6 +332,10 @@ def main():
     init.add_argument('directory', type=Path)
     check = commands.add_parser('check', help='核验实际采集文件并输出 verification.json')
     check.add_argument('directory', type=Path)
+    ingest = commands.add_parser('import-terminals', help='将某阶段的 4 份完整终端文本拆成待核验材料')
+    ingest.add_argument('directory', type=Path)
+    ingest.add_argument('phase', choices=STAGES)
+    ingest.add_argument('terminals', type=Path, help='含 R1.txt、R2.txt、PC1.txt、PC2.txt 的本地目录')
     export = commands.add_parser('export', help='核验 lab_02 实采并导出首页材料')
     export.add_argument('directory', type=Path)
     export.add_argument('output', type=Path)
@@ -279,6 +357,13 @@ def main():
         except (ValueError, OSError) as error:
             cli.error(str(error))
         print(f'首页材料：{output}')
+        return 0
+    if args.task == 'import-terminals':
+        try:
+            count = import_terminals(folder, args.phase, args.terminals.resolve())
+        except (ValueError, OSError) as error:
+            cli.error(str(error))
+        print(f'{args.phase}：已拆分 {count} 份材料。请填写实际采集时间和来源，再运行 check。')
         return 0
     report = check_capture(folder)
     target = folder / 'verification.json'

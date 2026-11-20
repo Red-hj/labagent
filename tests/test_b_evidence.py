@@ -4,7 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from scripts.verify_b_evidence import ROOT, capture_time, check_capture, check_stage, export_capture, read_json
+from scripts.verify_b_evidence import (ROOT, TERMINAL_COMMANDS, capture_time, check_capture, check_stage,
+                                       export_capture, import_terminals, read_json, split_terminal)
 from labagent.experiment_goals import check_route_selection, evidence_blocks
 from labagent.investigation import source_bundle
 
@@ -33,6 +34,15 @@ def fixture(healthy):
 
 
 class BEvidenceTests(unittest.TestCase):
+    def test_terminal_router_requires_full_commands_and_rejects_duplicates_or_wrong_device(self):
+        good = '<R1>display current-configuration\n#\nsysname R1\nreturn\n<R1>display ospf peer\nTotal number of peer(s): 0\n<R1>display ip routing-table\nRouting Table : Public\n<R1>\n'
+        self.assertEqual(set(split_terminal('R1', good)), {'R1-config.txt', 'R1-ospf.txt', 'R1-routes.txt'})
+        for raw, problem in ((good.replace('routing-table', 'routing-table protocol ospf'), '缺少'),
+                             (good.replace('<R1>display ospf', '<R2>display ospf'), '其他设备'),
+                             (good + '<R1>display ospf peer\nTotal number of peer(s): 0\n', '多次输出')):
+            with self.subTest(problem=problem), self.assertRaisesRegex(ValueError, problem):
+                split_terminal('R1', raw)
+
     def test_real_source_mode_requires_proof_for_missing_route(self):
         case, files = fixture(False)
         expected = read_json(LAB / 'expected.json')
@@ -62,12 +72,23 @@ class BEvidenceTests(unittest.TestCase):
                 for router in ('R1', 'R2'):
                     count = 2 if healthy else 1
                     files[f'{router}-routes.txt'] = f'Routing Table : Public\nDestinations : {count} Routes : {count}\n' + files[f'{router}-routes.txt']
-                for name, text in files.items():
-                    if name == 'R1-config.txt':
-                        text += '# sample-password remove-this-value\n'
-                    (capture / phase / name).write_text(text, encoding='utf-8')
+                terminals = root / (phase + '-terminals')
+                terminals.mkdir()
+                files['R1-config.txt'] += '# sample-password remove-this-value\n'
+                for router in ('R1', 'R2'):
+                    (terminals / f'{router}.txt').write_text(''.join(
+                        f'<{router}>{command}\n' + files[f'{router}-{kind}.txt']
+                        for command, kind in TERMINAL_COMMANDS.items()), encoding='utf-8')
+                for pc, target in (('PC1', '192.168.20.10'), ('PC2', '192.168.10.10')):
+                    (terminals / f'{pc}.txt').write_text(f'PC> ping {target}\n' + files[f'{pc}-ping.txt'], encoding='utf-8')
             record = capture / 'record.json'
             record.write_text(json.dumps(meta), encoding='utf-8')
+            for phase in ('before', 'after'):
+                terminals = root / (phase + '-terminals')
+                self.assertEqual(import_terminals(capture, phase, terminals), 8)
+                with self.assertRaisesRegex(ValueError, '已有采集文件'):
+                    import_terminals(capture, phase, terminals)
+                self.assertIn('PC> ping', (terminals / 'PC1.txt').read_text(encoding='utf-8'))
             self.assertEqual(check_capture(capture)['status'], 'fixture_pass')
             with self.assertRaisesRegex(ValueError, '仅导出'):
                 export_capture(capture, output)
@@ -80,6 +101,7 @@ class BEvidenceTests(unittest.TestCase):
             self.assertNotIn('remove-this-value', (output / 'after/R1.cfg').read_text(encoding='utf-8'))
             for phase, status in (('before', 'no_match'), ('after', 'observed')):
                 config = {p.name: p.read_text(encoding='utf-8') for p in (output / phase).iterdir()}
+                self.assertTrue(config['PC1-ping.log'].startswith('<PC1>ping 192.168.20.10\n'))
                 self.assertEqual(check_route_selection('R1', '192.168.20.10', evidence_blocks(source_bundle({'configs': config})[0]))['status'], status)
     def test_area_fault_and_recovery_evidence(self):
         before, before_files = fixture(False)
