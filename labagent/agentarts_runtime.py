@@ -1,5 +1,6 @@
 """Official AgentArts SDK adapter over the existing LangGraph workflow."""
 import threading
+import uuid
 
 from .material_service import MaterialService, SessionNotFound
 
@@ -19,6 +20,10 @@ def create_app(database=None, completion=None):
     def invoke(request, context):
         try:
             platform_id = context.session_id if context else None
+            if isinstance(request, dict) and request.get("operation") == "runtime_status":
+                platform_id = platform_id or uuid.uuid4().hex
+                return {"status": "ready", "session_id": platform_id, "platform_session_id": platform_id,
+                    "runtime": service.runtime_status(request.get("expected_relay_url"))}
             with session_locks[hash(platform_id or "new") % len(session_locks)]:
                 if isinstance(request, dict) and not request.get("session_id") and "resume_from" not in request and platform_id:
                     with service.store.connect() as db:

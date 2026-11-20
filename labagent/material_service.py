@@ -2,6 +2,7 @@
 from copy import deepcopy
 from pathlib import Path
 import re
+import os
 import threading
 
 from .engine import validate
@@ -68,6 +69,16 @@ class MaterialService:
         self.workflow_database = self.store.path.with_name("workflow-" + self.store.path.name)
         self.completion = completion
         self.locks = [threading.Lock() for _ in range(32)]
+
+    def runtime_status(self, expected_relay_url=None):
+        from . import __version__
+        from .model import configured
+        from .workflow import available
+        relay_url = os.environ.get("LABAGENT_LAB_RELAY_URL", "").strip()
+        return {"version": __version__, "workflow_backend": "langgraph" if available() else "local_rules",
+            "model_configured": configured(), "guided_learning": True,
+            "lab_relay": {"supported": True, "configured": bool(relay_url),
+                "matches_expected": relay_url == expected_relay_url if expected_relay_url is not None else None}}
 
     def invoke(self, request):
         if not isinstance(request, dict):
