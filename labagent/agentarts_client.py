@@ -93,6 +93,24 @@ class AgentArtsClient:
         finally:
             record_invocation(self.monitor_path, elapsed_ms=round((time.monotonic() - started) * 1000), **outcome)
 
+    def runtime_status(self, *, expected_relay_url=None):
+        # Explicitly disable model use even when the target is an older image.
+        payload = {"operation": "runtime_status", "use_llm": False}
+        if expected_relay_url is not None:
+            payload["expected_relay_url"] = expected_relay_url
+        response = self.invoke(payload)
+        runtime = response.get("runtime")
+        if (response.get("status") != "ready" or not isinstance(runtime, dict)
+                or not isinstance(runtime.get("version"), str)
+                or type(runtime.get("model_configured")) is not bool
+                or runtime.get("workflow_backend") not in {"langgraph", "local_rules"}
+                or type(runtime.get("guided_learning")) is not bool
+                or not isinstance(runtime.get("lab_relay"), dict)
+                or any(type(runtime["lab_relay"].get(key)) is not bool for key in ("supported", "configured"))
+                or (expected_relay_url is not None and type(runtime["lab_relay"].get("matches_expected")) is not bool)):
+            raise ValueError("运行时尚未返回版本与能力状态，请更新AgentArts镜像后查询")
+        return runtime
+
     def _invoke(self, payload, outcome=None):
         headers = {"Content-Type": "application/json", SESSION_HEADER: self.platform_session_id}
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
