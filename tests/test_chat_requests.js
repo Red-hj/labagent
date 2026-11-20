@@ -25,11 +25,35 @@ class Node {
 function fixture(){
   const nodes=new Map(),intervals=new Map();let now=1000,next=0,messages=0,submissions=0;
   const $=id=>{if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id);};
+  let pending=null;
+  function paintPending(){
+    const container=$("conversation");container.querySelector(".chat-transient")?.remove();
+    const row=new Node("div",pending.text,"chat-turn chat-transient");
+    const delivery=new Node("span",pending.error?(pending.delivered?"回复未完成":"发送未完成"):(pending.delivered?"已发送":"发送中…"),"chat-delivery");
+    const answer=new Node("div","","chat-assistant");row.append(delivery,answer);
+    if(pending.error){
+      answer.append(new Node("p",pending.error));
+      const retry=new Node("button","重新发送","chat-retry");retry.events.click=pending.onRetry;answer.append(retry);
+    }else{
+      const hint=new Node("p",pending.hint||"","pending-hint");hint.hidden=!pending.hint;
+      answer.append(new Node("span",pending.message,"pending-text"),new Node("span","","typing-dots"),hint);
+    }
+    container.append(row);
+  }
+  const conversationView={
+    removeLastFailure(){},
+    getDraft:()=>$("followup-message").value,
+    setDraft:(_,text)=>{$("followup-message").value=text;},
+    beginPending:(_,input)=>{pending={...input,message:"正在发送请求…",delivered:false,hint:null};paintPending();},
+    updatePending:(_,changes)=>{if(pending){pending={...pending,...changes};paintPending();}},
+    failPending:(_,error,onRetry)=>{pending={...pending,error,onRetry};paintPending();},
+    renderProgress:(container,entries)=>{container.replaceChildren(...entries.map(entry=>{const row=new Node("li",entry.message);row.dataset.status=entry.status;return row;}));}
+  };
   const context=vm.createContext({$,sessionId:null,requestFailed:false,activeRequest:null,requestTimer:null,busy:false,
     materials:new Map([["R1.cfg","sample"]]),Date:class extends Date {static now(){return now;}},
     element:(tag,text,cls)=>new Node(tag,text||"",cls||""),setBusy:value=>{context.busy=value;},dismissToast(){},
     message:()=>messages++,setInterval:fn=>{intervals.set(++next,fn);return next;},clearInterval:id=>intervals.delete(id),
-    window:{LabExecution:require("../web/execution-state.js"),LabWorkspace:{showDiagnosis(){}},LabHistory:{renderTurns(){ $("conversation").scrollTop=900;}}},
+    window:{LabConversation:conversationView,LabExecution:require("../web/execution-state.js"),LabWorkspace:{showDiagnosis(){}},LabHistory:{renderTurns(){ $("conversation").scrollTop=900;}}},
     requestPayload:()=>({configs:{sample:"test"}}),showResult(){},diagnose:async()=>({llm:{status:"ok"}})});
   $("analyze").events.click=()=>submissions++;
   vm.runInContext(section("function receiveProgress(","async function diagnose("),context);
