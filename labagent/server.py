@@ -284,6 +284,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(history, download=bool(match[2]))
             return self.reply({"code": "session_not_found", "error": "这次会话已不存在，请开始新的排查并重新提供材料。"}, 404)
         assets = {"/": ("student.html", "text/html; charset=utf-8"), "/student.js": ("student.js", "text/javascript; charset=utf-8"), "/student.css": ("student.css", "text/css; charset=utf-8"),
+                  "/react-conversation.js": ("react-conversation.js", "text/javascript; charset=utf-8"),
+                  "/execution-state.js": ("execution-state.js", "text/javascript; charset=utf-8"),
+                  "/react-conversation.js.LEGAL.txt": ("react-conversation.js.LEGAL.txt", "text/plain; charset=utf-8"),
                   "/learning.js": ("learning.js", "text/javascript; charset=utf-8"),
                   "/network-room.js": ("network-room.js", "text/javascript; charset=utf-8"), "/network-room.css": ("network-room.css", "text/css; charset=utf-8"),
                   "/session-history.js": ("session-history.js", "text/javascript; charset=utf-8"), "/session-history.css": ("session-history.css", "text/css; charset=utf-8"),

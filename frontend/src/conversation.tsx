@@ -5,6 +5,7 @@ import {PendingTurn, ProgressList, type PendingRequest, type ProgressEntry} from
 export {mountComposer, configureComposer, getDraft, setDraft, Composer} from "./composer";
 export {PendingTurn, ProgressList} from "./request-view";
 export {mountLabConnection, LabConnectionView, createLabConnection} from "./lab-connection";
+export {renderMaterials, configureMaterials, locateMaterial, MaterialsView} from "./materials";
 
 export interface Citation {
   device?: string;
