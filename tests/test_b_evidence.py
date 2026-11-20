@@ -1,7 +1,12 @@
 """Synthetic fixtures for the evidence checker; these are not experiment captures."""
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
-from scripts.verify_b_evidence import ROOT, capture_time, check_stage, read_json
+from scripts.verify_b_evidence import ROOT, capture_time, check_capture, check_stage, export_capture, read_json
+from labagent.experiment_goals import check_route_selection, evidence_blocks
+from labagent.investigation import source_bundle
 
 
 LAB = ROOT / 'data/team_cases/lab_02'
@@ -28,6 +33,54 @@ def fixture(healthy):
 
 
 class BEvidenceTests(unittest.TestCase):
+    def test_real_source_mode_requires_proof_for_missing_route(self):
+        case, files = fixture(False)
+        expected = read_json(LAB / 'expected.json')
+        result = check_stage(case, expected, files, healthy=False, require_route_evidence=True)
+        self.assertTrue(any('未证明当前选路' in issue for issue in result['issues']))
+        for router in ('R1', 'R2'):
+            files[f'{router}-routes.txt'] = 'Routing Table : Public\nDestinations : 1 Routes : 1\n' + files[f'{router}-routes.txt']
+        checked = check_stage(case, expected, files, healthy=False, require_route_evidence=True)
+        self.assertEqual(checked['issues'], [])
+        files['R1-routes.txt'] = '<R2>display ip routing-table\n' + files['R1-routes.txt']
+        scoped = check_stage(case, expected, files, healthy=False, require_route_evidence=True)
+        self.assertTrue(any('其他设备提示符' in issue for issue in scoped['issues']))
+
+    def test_exports_only_checked_capture_and_keeps_phase_materials_separate(self):
+        # Use an ephemeral simulation of the real-source file contract, never a shared device record.
+        base = ROOT / 'runtime/tests'
+        base.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=base) as directory:
+            root = Path(directory)
+            capture, output = root / 'capture', root / 'upload'
+            capture.mkdir()
+            meta = {'case_id': 'lab_02', 'source': 'fixture', 'environment': 'local synthetic test', 'stages': {}}
+            for phase, healthy, hour in (('before', False, '09'), ('after', True, '10')):
+                (capture / phase).mkdir()
+                meta['stages'][phase] = {'captured_at': f'2026-11-19T{hour}:00:00+08:00', 'complete_route_tables': True}
+                _, files = fixture(healthy)
+                for router in ('R1', 'R2'):
+                    count = 2 if healthy else 1
+                    files[f'{router}-routes.txt'] = f'Routing Table : Public\nDestinations : {count} Routes : {count}\n' + files[f'{router}-routes.txt']
+                for name, text in files.items():
+                    if name == 'R1-config.txt':
+                        text += '# sample-password remove-this-value\n'
+                    (capture / phase / name).write_text(text, encoding='utf-8')
+            record = capture / 'record.json'
+            record.write_text(json.dumps(meta), encoding='utf-8')
+            self.assertEqual(check_capture(capture)['status'], 'fixture_pass')
+            with self.assertRaisesRegex(ValueError, '仅导出'):
+                export_capture(capture, output)
+            self.assertFalse(output.exists())
+            meta['source'] = 'vrp_simulator'
+            record.write_text(json.dumps(meta), encoding='utf-8')
+            export_capture(capture, output)
+            self.assertEqual({p.name for p in (output / 'before').iterdir()}, {p.name for p in (output / 'after').iterdir()})
+            self.assertEqual(len(list((output / 'after').iterdir())), 9)
+            self.assertNotIn('remove-this-value', (output / 'after/R1.cfg').read_text(encoding='utf-8'))
+            for phase, status in (('before', 'no_match'), ('after', 'observed')):
+                config = {p.name: p.read_text(encoding='utf-8') for p in (output / phase).iterdir()}
+                self.assertEqual(check_route_selection('R1', '192.168.20.10', evidence_blocks(source_bundle({'configs': config})[0]))['status'], status)
     def test_area_fault_and_recovery_evidence(self):
         before, before_files = fixture(False)
         after, after_files = fixture(True)
