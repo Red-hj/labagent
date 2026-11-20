@@ -38,6 +38,8 @@ MCP 实验电脑连接入口已部署：在实验电脑运行连接程序，网�
 
 ## 开发资料
 
+前端对话组件使用 React 19 + TypeScript，源码在 `frontend/src/`。修改组件后运行 `npm ci`、`npm run check:web`、`npm run build:web`；构建后的 `web/react-conversation.js` 随代码提交，Python 网站直接提供静态文件。普通启动继续使用 `start.cmd`。
+
 - [零基础使用说明](docs/零基础使用说明.md)
 - [功能与实现说明](docs/功能与实现说明.md)
 - [接口与云端接入](docs/接口说明.md)
