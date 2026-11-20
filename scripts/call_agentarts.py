@@ -23,7 +23,13 @@ def main():
     parser.add_argument("--session", help="上次显示的平台会话编号")
     parser.add_argument("--url", help="完整调用地址，默认读取项目本地环境变量")
     parser.add_argument("--no-model", action="store_true", help="检查 HTTP 和会话协议")
+    parser.add_argument("--check-runtime", action="store_true", help="查询运行时版本、模型配置与工具回传支持，不创建诊断会话")
+    parser.add_argument("--relay-url", help="状态查询时核对运行时配置的完整回传接口")
     args = parser.parse_args()
+    if args.check_runtime and (args.materials or args.question or args.message or args.action or args.session):
+        parser.error("--check-runtime 请单独使用，不提交材料、追问或会话编号")
+    if args.relay_url and not args.check_runtime:
+        parser.error("--relay-url 须与 --check-runtime 一起使用")
     load_env(ROOT / ".env")
     load_env(ROOT / "runtime/agentarts-client.env")
     url = args.url or os.environ.get("LABAGENT_AGENTARTS_URL")
@@ -31,6 +37,14 @@ def main():
         parser.error("请在 runtime/agentarts-client.env 设置 LABAGENT_AGENTARTS_URL")
     payload = {}
     try:
+        client = AgentArtsClient.from_environment(url=url, platform_session_id=args.session)
+        if args.check_runtime:
+            runtime = client.runtime_status(expected_relay_url=args.relay_url)
+            print(json.dumps(runtime, ensure_ascii=False, indent=2))
+            ready = runtime["model_configured"] and runtime["workflow_backend"] == "langgraph" and runtime["guided_learning"]
+            if args.relay_url:
+                ready = ready and all(runtime["lab_relay"][key] for key in ("supported", "configured", "matches_expected"))
+            return 0 if ready else 1
         if args.materials:
             materials = {}
             for path in args.materials:
@@ -43,7 +57,6 @@ def main():
                 payload[key] = getattr(args, key)
         if args.no_model:
             payload["use_llm"] = False
-        client = AgentArtsClient.from_environment(url=url, platform_session_id=args.session)
         result = client.invoke(payload)
     except (ValueError, OSError) as error:
         parser.exit(1, str(error) + "\n")
