@@ -30,12 +30,22 @@ class Website:
             headers["Authorization"] = "Bearer " + self.token
         try:
             with self.opener.open(Request(self.url + path, data=json.dumps(data, ensure_ascii=False).encode(), headers=headers), timeout=40) as response:
-                return json.loads(response.read(180_000))
+                raw = response.read(180_001)
+                if len(raw) > 180_000:
+                    raise MCPError("网站响应过大，请检查网站版本或本次采集状态")
+                result = json.loads(raw)
+                if not isinstance(result, dict):
+                    raise MCPError("网站响应格式无效，请确认网站地址与版本")
+                return result
         except HTTPError as error:
             if error.code == 401:
                 raise PermissionError("连接已失效，请在网站重新生成连接码") from None
             raise MCPError("网站拒绝了连接请求，请检查连接码、版本或本次采集状态") from None
-        except (URLError, OSError, ValueError):
+        except MCPError:
+            raise
+        except ValueError:
+            raise MCPError("网站未返回有效JSON，请确认网站地址与版本") from None
+        except (URLError, OSError):
             raise ConnectionError("暂时无法连接LabAgent网站") from None
 
 
@@ -58,19 +68,32 @@ def main():
     parser = argparse.ArgumentParser(description="让LabAgent网站采集本机已配置的MCP实验输出；Ctrl+C断开")
     parser.add_argument("config", type=Path, help="本地MCP工具映射配置，不会上传配置或设备凭据")
     parser.add_argument("--site", default="https://labagent-15yh.onrender.com")
+    parser.add_argument("--check", action="store_true", help="检查本机MCP连接并列出可用检查，然后退出；无需网站连接码")
     args = parser.parse_args()
     try:
-        website = Website(args.site)
         with LabMCPTools(args.config) as lab:
+            for warning in lab.warnings:
+                print("提示：" + warning, file=sys.stderr, flush=True)
             if not lab.tools:
                 raise MCPError("没有可用检查，请先用scripts/mcp_lab.py检查本地MCP配置")
             print("将向所选网站开放以下检查，设备凭据留在本机：", flush=True)
             for tool in lab.tools:
-                print("- " + tool["function"]["description"], flush=True)
+                fn = tool["function"]
+                print("- " + fn["name"] + "：" + fn["description"], flush=True)
+                for name, schema in fn["parameters"]["properties"].items():
+                    print("  " + name + "：" + " / ".join(schema["enum"]), flush=True)
+            if args.check:
+                print("本机MCP自检通过，已发现上述检查；设备输出将在网页发起采集后读取。", flush=True)
+                return 0
+            website = Website(args.site)
             print("请在网站登录个人账号，打开‘连接我的实验电脑’生成连接码。", flush=True)
             code = getpass.getpass("连接码（输入隐藏）：").strip()
-            website.token = website.post("/api/lab/agent/claim", {"code": code, "tools": lab.tools})["token"]
+            grant = website.post("/api/lab/agent/claim", {"code": code, "tools": lab.tools})
             code = ""
+            token = grant.get("token")
+            if not isinstance(token, str) or not token:
+                raise MCPError("网站未返回有效连接令牌，请确认网站版本后重新配对")
+            website.token = token
             print("已连接。回到网页选择检查；Ctrl+C停止。最长8小时，网站重启后须重新配对。", flush=True)
             failures = 0
             while True:
@@ -92,6 +115,9 @@ def main():
                     time.sleep(2)
     except KeyboardInterrupt:
         print("\n本地连接已停止。网页将在稍后显示离线。")
+    except EOFError:
+        print("未读到连接码，请在终端中运行连接程序，或先用--check检查本机MCP。", file=sys.stderr)
+        return 1
     except (MCPError, PermissionError, ConnectionError, OSError, json.JSONDecodeError) as error:
         print(str(error), file=sys.stderr)
         return 1
