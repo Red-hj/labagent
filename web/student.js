@@ -8,6 +8,7 @@ let previewNumber = 0;
 let videoReady = false;
 let sessionId = null;
 let materialsPending = false;
+let materialScope = 0;
 let legacySession = false;
 let modelReady = false;
 let diagnosisBackend = "local";
@@ -22,7 +23,6 @@ let pasteNumber = 0;
 let activeRequest = null;
 let requestTimer = null;
 let toastTimer = null;
-let materialViews = new Map();
 let demoActive = false;
 let serviceState = "connecting";
 let sessionProblem = false;
@@ -162,7 +162,7 @@ function setBusy(value) {
   $("analyze").replaceChildren(document.createTextNode(busy ? "正在处理…" : sessionId ? (materialsPending ? "分析新材料" : "继续排查") : "开始诊断"), element("span", "→"));
   serviceStatus();
   $("analysis-result").setAttribute("aria-busy", String(busy));
-  for (const button of $("material-list").querySelectorAll("button")) button.disabled = busy;
+  window.LabConversation.configureMaterials($("material-list"), {busy});
   for (const control of document.querySelectorAll(".interaction-actions button,.chat-shortcuts button,.request button,.request textarea,.chat-retry,.operation-analyze")) control.disabled = busy || legacySession;
   syncContinuation();
   syncWorkspaceLayout();
@@ -177,41 +177,25 @@ function materialChanged(detail) {
 }
 function renderMaterials() {
   syncWorkspaceLayout();
-  $("material-list").replaceChildren(); materialViews = new Map();
   $("material-source").hidden = evidenceKind !== "demo";
   $("material-count").textContent = materials.size ? "已添加 " + materials.size + " 份材料" : "尚未添加材料";
-  for (const [name, text] of materials) {
-    const item = element("div", undefined, "material-item");
-    const row = element("div", undefined, "material-row");
-    const info = element("div", undefined, "file-info");
-    info.append(element("div", name, "file-name"), element("div", text.trimEnd().split(/\r?\n/).length + " 行内容", "file-size"));
-    const remove = element("button", "移除", "remove-material");
-    remove.disabled = busy;
-    remove.setAttribute("aria-label", "移除 " + name);
-    remove.addEventListener("click", () => { if (busy) return; materials.delete(name); for (const collection of [recordings, screenshots]) for (const [id, media] of collection) if (media.material_name === name) collection.delete(id); renderRecordingChoices(); renderMaterials(); materialChanged(); previewOperations(); });
-    const screenshot = [...screenshots.values()].find(item => item.material_name === name);
-    row.append(element("span", screenshot ? "IMG" : "TXT", "file-icon"), info, remove);
-    if (screenshot) {
-      const show = element("button", undefined, "screenshot-thumbnail"); show.type = "button"; show.setAttribute("aria-label", "查看截图 " + screenshot.name);
-      const img = element("img"); img.src = mediaUrl(screenshot.image_url); img.alt = screenshot.name; img.loading = "lazy";
-      show.append(img, element("span", "查看原图 · 引用可定位画面")); show.addEventListener("click", () => showScreenshot(screenshot)); item.append(show);
-    }
-    const preview = element("details");
-    const source = element("pre", text);
-    preview.append(element("summary", screenshot ? "查看识别文字 / 修正" : "查看内容"), source);
-    if (screenshot) {
-      const edit = element("textarea"); edit.value = text; edit.rows = 7; edit.setAttribute("aria-label", "修正 " + screenshot.name + " 的识别文字");
-      const save = element("button", "保存识别修正", "secondary-button"); save.type = "button";
-      save.addEventListener("click", () => {
-        if (busy) return;
-        if (!edit.value.trim() || edit.value.length > 200000) return message("请保留1到200000字的识别内容。", true);
-        materials.set(name, edit.value); renderMaterials(); materialChanged("识别文字已更新，下一轮诊断会使用修正后的内容。"); previewOperations();
-      });
-      const editor = element("details"); editor.append(element("summary", "修正识别文字"), edit, save); preview.append(editor);
-    }
-    materialViews.set(name, {preview, source, text});
-    item.append(row, preview); $("material-list").append(item);
-  }
+  window.LabConversation.renderMaterials($("material-list"), {
+    materials:[...materials].map(([name, text]) => {
+      const screenshot = [...screenshots.values()].find(item => item.material_name === name);
+      return {name, text, screenshot:screenshot ? {name:screenshot.name, imageUrl:mediaUrl(screenshot.image_url)} : undefined};
+    }), busy, scope:materialScope,
+    onRemove:name => {
+      if (busy) return;
+      materials.delete(name);
+      for (const collection of [recordings, screenshots]) for (const [id, media] of collection) if (media.material_name === name) collection.delete(id);
+      renderRecordingChoices(); renderMaterials(); materialChanged(); previewOperations();
+    },
+    onSave:(name, text) => {
+      if (busy) return;
+      materials.set(name, text); renderMaterials(); materialChanged("识别文字已更新，下一轮诊断会使用修正后的内容。"); previewOperations();
+    },
+    onScreenshot:name => showScreenshot([...screenshots.values()].find(item => item.material_name === name))
+  });
   window.LabWorkspace.preview();
 }
 function locateCitation(citation) {
@@ -220,16 +204,11 @@ function locateCitation(citation) {
     if (turn) { turn.tabIndex = -1; turn.focus({preventScroll:true}); turn.scrollIntoView({block:"center"}); }
     return message(citation.device + "：" + citation.quote);
   }
-  const view = materialViews.get(citation.device);
-  const lines = view?.text.split(/\r?\n/);
-  if (!view || lines[citation.line - 1] !== citation.quote) return message("当前材料已更新，请核对新结果以更新原文定位。", true);
+  const text = materials.get(citation.device);
+  if (text === undefined || text.split(/\r?\n/)[citation.line - 1] !== citation.quote) return message("当前材料已更新，请核对新结果以更新原文定位。", true);
   const screenshot = [...screenshots.values()].find(item => item.material_name === citation.device);
   if (screenshot) { showScreenshot(screenshot, citation); return; }
-  const selected = element("mark", lines[citation.line - 1]); selected.tabIndex = -1;
-  selected.setAttribute("aria-label", citation.device + " 第" + citation.line + "行：" + citation.quote);
-  view.source.replaceChildren(document.createTextNode(lines.slice(0, citation.line - 1).join("\n") + (citation.line > 1 ? "\n" : "")), selected,
-    document.createTextNode("\n" + lines.slice(citation.line).join("\n")));
-  view.preview.open = true; selected.focus({preventScroll:true}); selected.scrollIntoView({block:"center", behavior:"instant"});
+  window.LabConversation.locateMaterial($("material-list"), citation.device, citation.line, citation.quote);
   message("已定位 " + citation.device + " 第" + citation.line + "行。");
 }
 
@@ -946,7 +925,7 @@ async function start() {
 window.LabWorkspace.init({api, element, message, materials, recordings, screenshots,
   busy:() => busy, question:() => $("problem").value, session:() => sessionId,
   apply:(room, replace = true) => {
-    if (replace) { materials.clear(); for (const [name, entry] of Object.entries(room.materials)) materials.set(name, entry.content); $("problem").value = room.question; }
+    if (replace) { materialScope++; materials.clear(); for (const [name, entry] of Object.entries(room.materials)) materials.set(name, entry.content); $("problem").value = room.question; }
     renderMaterials(); previewOperations();
   },
   restore:async (room, isCurrent = () => true) => {
