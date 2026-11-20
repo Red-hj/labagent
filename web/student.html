@@ -34,18 +34,7 @@
         <div id="material-list" class="material-list" aria-live="polite"></div><p id="continuation-status" class="continuation-status" role="status" hidden></p>
         <details id="lab-connection" class="learning-panel" hidden>
           <summary>连接我的实验电脑</summary>
-          <p class="section-note">在实验电脑上运行本地连接程序，网站便可读取你选择的设备输出。输出加入当前材料后，继续核对正在做的这一步。</p>
-          <details><summary>第一次连接</summary>
-            <p class="section-note">先登录个人账号。实验电脑需已配置本地 MCP 检查工具；生成连接码后，在该电脑的项目目录运行下面的程序，按提示输入连接码。</p>
-            <code class="lab-command">python scripts/connect_lab.py runtime/mcp.json</code>
-            <label for="lab-computer-name">实验电脑名称</label><input id="lab-computer-name" maxlength="60" value="我的实验电脑">
-            <button id="lab-pair" type="button" class="secondary-button">生成连接码</button>
-            <p id="lab-pair-code" class="lab-pair-code" hidden></p>
-            <p class="section-note">连接码5分钟内有效，只在自己的实验电脑输入；重新生成会断开旧连接。本地配置与设备凭据留在电脑上。</p>
-          </details>
-          <p id="lab-note" class="section-note" role="status"></p>
-          <div class="learning-actions"><button id="lab-load-tools" type="button" class="secondary-button">刷新连接与检查</button><button id="lab-disconnect" type="button" class="text-button" hidden>断开实验电脑</button><button id="lab-check-step" type="button" class="secondary-button" hidden>用刚采集的输出核对这一步</button></div>
-          <div id="lab-tools"></div>
+          <div id="lab-connection-view"></div>
         </details>
         <label for="problem">想解决什么？ <span class="optional">选填</span></label><textarea id="problem" rows="2" placeholder="例如：拿到了 IP 地址，但还是访问不了其他网段…"></textarea>
         <button id="analyze" class="primary-button" disabled>开始诊断 <span aria-hidden="true">→</span></button>

@@ -138,6 +138,7 @@ function syncContinuation() {
 }
 function setBusy(value) {
   busy = value || materialLoading;
+  window.LabLearning?.refreshBusy();
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "load-demo"]) $(id).disabled = busy;
   for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = busy || workspaceTransfer;
   $("new-conversation").disabled = busy;
