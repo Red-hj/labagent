@@ -15,7 +15,7 @@ from .knowledge import search, validate_scope, validate_course_documents
 from .personal import validate_memory_context
 from .model import configured, chat_completion, ModelError, public_config, bounded_setting
 from .session_state import RESOLVED_OUTCOMES, experiment_goal
-from .progress import emit_progress
+from .progress import emit_progress, ToolProgress
 from .experiment_goals import (GOAL_TOOL, ROUTE_TOOL, area_instruction_supports_goal, validate_goal_fields,
                                check_goals, check_route_selection, checked_frr_area_repair, complete_config, evidence_blocks,
                                explicit_area_goals, is_config_block, pending_ospf_loopback_evidence, submitted_pings)
@@ -598,7 +598,10 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
                 "elapsed_ms": round((time.monotonic() - start) * 1000),
                 "engine_state": {"goal_assessment": assess_goals(diagnostic_context, sources, seen, payload, previous_materials)}}
     completion = completion or (lambda history: chat_completion(history, tools=available_tools, max_tokens=bounded_setting("LABAGENT_OPEN_MAX_TOKENS", 1600, 256, 2048)))
-    calls, outcome, pending_learning = [], None, None
+    calls, outcome, pending_learning, pending_item = [], None, None, None
+    tool_labels = {"read_source": "正在读取材料", "retrieve_reference": "正在检索参考资料", "compare_materials": "正在比较前后材料", "check_submitted_pings": "正在核对Ping统计", "check_route_selection": "正在核对实际路由来源和下一跳", "check_experiment_goals": "正在核对实验目标与协议要求", "plan_diagnostic_checks": "正在比较候选检查并选择下一步", "inspect_operation_timeline": "正在回溯设备、配置视图与关键报错", "submit_hypotheses": "正在整理结论与下一步",
+                   "compare_repair_candidates": "正在核对候选修复的实际运行结果", "explain_network_path": "正在沿接口、网关和路由解释通信路径", "submit_learning_step": "正在整理当前一步的提示"}
+    approved_tools = {tool["function"]["name"] for tool in available_tools}
     def select_check(turn):
         nonlocal calls, outcome
         emit_progress("analyzing", "正在分析本轮材料与问题…")
@@ -615,7 +618,7 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
         return False
 
     def execute_check(turn):
-        nonlocal outcome, pending_learning
+        nonlocal outcome, pending_learning, pending_item
         ids = set()
         for call in calls:
             if not isinstance(call, dict) or not isinstance(call.get("id"), str) or not call["id"] or call["id"] in ids or not isinstance(call.get("function"), dict):
@@ -625,6 +628,8 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
             if not isinstance(name, str):
                 raise ValueError("invalid tool name")
             args, terminal = None, False
+            label = "正在读取已连接实验设备的输出" if connected and name in connected.bindings else tool_labels.get(name, "正在处理工具请求")
+            item = ToolProgress(name if name in approved_tools else "unapproved_tool", label, turn + 1)
             try:
                 raw = call["function"].get("arguments", "")
                 if not isinstance(raw, str) or len(raw) > 20000:
@@ -632,21 +637,15 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
                 args = json.loads(raw)
                 if name in {"submit_hypotheses", "submit_learning_step"} and len(calls) != 1:
                     raise ValueError("提交假设时必须单独调用此工具")
-                tool_labels = {"read_source": "正在读取材料", "retrieve_reference": "正在检索参考资料", "compare_materials": "正在比较前后材料", "check_submitted_pings": "正在核对Ping统计", "check_route_selection": "正在核对实际路由来源和下一跳", "check_experiment_goals": "正在核对实验目标与协议要求", "plan_diagnostic_checks": "正在比较候选检查并选择下一步", "inspect_operation_timeline": "正在回溯设备、配置视图与关键报错", "submit_hypotheses": "正在整理结论与下一步"}
-                tool_labels["compare_repair_candidates"] = "正在核对候选修复的实际运行结果"
-                tool_labels["explain_network_path"] = "正在沿接口、网关和路由解释通信路径"
-                tool_labels["submit_learning_step"] = "正在整理当前一步的提示"
-                if connected and name in connected.bindings:
-                    tool_labels[name] = "正在读取已连接实验设备的输出"
-                label = tool_labels.get(name, "正在处理工具请求")
                 if name == "read_source" and isinstance(args, dict):
-                    label += "：" + sources.get(args.get("source_id"), {}).get("device", "")
-                emit_progress("tool", label)
+                    item.label += "：" + sources.get(args.get("source_id"), {}).get("device", "")
+                    item.publish("running", "tool", item.label, "item.updated")
                 latest_pings = next((item["result"] for item in reversed(trace) if item["tool"] == "check_submitted_pings" and item["status"] == "ok"), None)
                 if active_learning and name == "submit_hypotheses":
                     raise ValueError("当前是逐步引导，请使用submit_learning_step")
                 if name == "submit_learning_step" and active_learning:
                     pending_learning = args
+                    pending_item = item
                     observation = {"status": "awaiting_learning_review"}
                     terminal = True
                 elif connected and name in connected.bindings:
@@ -676,10 +675,17 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
                     observation, terminal = execute_tool(name, args, payload, sources, seen, previous_materials=previous_materials, checked_pings=latest_pings,
                                                          required_targets=(previous or {}).get("verification_targets"), diagnostic_context=diagnostic_context)
                 state = "ok"
-                emit_progress("tool_completed", label.replace("正在", "已完成：", 1))
+                if name == "submit_learning_step" and active_learning:
+                    item.review()
+                else:
+                    item.complete()
             except (ValueError, TypeError, KeyError) as error:
                 observation, state = {"error": str(error)[:200]}, "rejected"
-            trace.append({"tool": name if name in {tool["function"]["name"] for tool in available_tools} else "unapproved_tool", "status": state,
+                item.fail()
+            except Exception:
+                item.fail()
+                raise
+            trace.append({"item_id": item.id, "tool": name if name in approved_tools else "unapproved_tool", "status": state,
                           "round": turn + 1, "arguments": safe_value(args) if state == "ok" else None, "result": observation})
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(observation, ensure_ascii=False)})
             if terminal:
@@ -690,7 +696,7 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
         return False
 
     def review_learning_step():
-        nonlocal outcome, pending_learning
+        nonlocal outcome, pending_learning, pending_item
         try:
             emit_progress("learning_review", "正在核对提示级别、原文依据和当前步骤…")
             diagnostic_context["goal_assessment"] = assess_goals(diagnostic_context, sources, seen, payload, previous_materials)
@@ -702,13 +708,19 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
             trace[-1]["result"] = observation
             messages[-1]["content"] = json.dumps(observation, ensure_ascii=False)
             outcome = {"status": "ok", "investigation": observation, "evidence_tools_used": True, **info()}
+            pending_item.complete()
             return True
         except (ValueError, TypeError, KeyError) as error:
             trace[-1].update(status="rejected", arguments=None, result={"error": str(error)[:200]})
             messages[-1]["content"] = json.dumps(trace[-1]["result"], ensure_ascii=False)
+            pending_item.fail()
             pending_learning = None
+            pending_item = None
             outcome = None
             return False
+        except Exception:
+            pending_item.fail()
+            raise
 
     try:
         workflow = run_tool_workflow(select_check, execute_check, review=review_learning_step if active_learning else None)

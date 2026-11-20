@@ -27,7 +27,7 @@ from .report import generate_report
 from .knowledge import get_document, import_document, list_documents, list_scopes, search
 from .cases import demo_cases
 from .demos import network_access_demo, ospf_goals_demo
-from .progress import emit_progress, progress_to
+from .progress import emit_progress, progress_to, execution_summary
 from .recordings import Recordings, VIDEO_SUFFIXES, available as replay_available
 from .operation_history import inspect_history
 from .rooms import Rooms, RoomConflict
@@ -586,7 +586,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.stream_diagnosis(payload, session, room_id=shared_room)
             try:
                 key = shared_room or session or "new"
-                with self.server.session_locks[hash(key) % len(self.server.session_locks)]:
+                with self.server.session_locks[hash(key) % len(self.server.session_locks)], progress_to(None, session_id=session):
                     result = self.server.run_diagnosis(payload)
                     self.reply(self.save_result(payload, result))
             finally:
@@ -604,6 +604,9 @@ class Handler(BaseHTTPRequestHandler):
             self.server.write_log(traceback.format_exc(), error=True)
 
     def save_result(self, payload, result):
+        execution = execution_summary(result)
+        if execution is not None:
+            result["execution"] = execution
         collected = result.get("collected_materials", {})
         if collected:
             combined = {**payload["configs"], **collected}
@@ -709,22 +712,24 @@ class Handler(BaseHTTPRequestHandler):
         events = Queue()
 
         def process():
-            try:
-                with self.server.workspace.gate.activity(), progress_to(events.put):
-                    emit_progress("received", "请求已收到，正在准备本轮诊断。")
-                    with self.server.session_locks[hash(room_id or payload.get("room_id") or session or "new") % len(self.server.session_locks)]:
-                        result = self.server.run_diagnosis(payload)
-                        emit_progress("saving", "正在保存本轮结论与会话记录…")
-                        saved = self.save_result(payload, result)
-                    events.put({"type": "result", "result": saved})
-            except (ValueError, KeyError, TypeError) as error:
-                events.put({"type": "error", "message": str(error)})
-            except Exception:
-                import traceback
-                self.server.write_log(traceback.format_exc(), error=True)
-                events.put({"type": "error", "message": "本轮诊断处理失败，请重新提交。"})
-            finally:
-                self.server.diagnosis_slots.release()
+            with progress_to(events.put, session_id=session) as progress:
+                try:
+                    with self.server.workspace.gate.activity():
+                        emit_progress("received", "请求已收到，正在准备本轮诊断。", event="turn.started")
+                        with self.server.session_locks[hash(room_id or payload.get("room_id") or session or "new") % len(self.server.session_locks)]:
+                            result = self.server.run_diagnosis(payload)
+                            emit_progress("saving", "正在保存本轮结论与会话记录…")
+                            saved = self.save_result(payload, result)
+                        progress.session_id = saved["session_id"]
+                        progress.send({"type": "result", "result": saved}, event="turn." + saved["execution"]["status"])
+                except (ValueError, KeyError, TypeError) as error:
+                    progress.send({"type": "error", "message": str(error)}, event="turn.failed")
+                except Exception:
+                    import traceback
+                    self.server.write_log(traceback.format_exc(), error=True)
+                    progress.send({"type": "error", "message": "本轮诊断处理失败，请重新提交。"}, event="turn.failed")
+                finally:
+                    self.server.diagnosis_slots.release()
 
         threading.Thread(target=process, daemon=True).start()
         try:
