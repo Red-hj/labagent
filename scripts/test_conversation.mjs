@@ -11,7 +11,7 @@ await mkdir("runtime/tests", {recursive:true});
 await build({entryPoints:["frontend/src/conversation.tsx"], outfile:"runtime/tests/react-conversation.cjs",
   bundle:true, platform:"node", format:"cjs", packages:"external"});
 const require = createRequire(import.meta.url);
-const {SavedConversation, PendingTurn, ProgressList, Composer} = require("../runtime/tests/react-conversation.cjs");
+const {SavedConversation, PendingTurn, ProgressList, Composer, MaterialsView} = require("../runtime/tests/react-conversation.cjs");
 const render = turns => renderToStaticMarkup(createElement(SavedConversation, {turns, onMaterials(){}}));
 const html = render([{attempt:1, user:"<script>user text</script>", assistant:"查看R1接口。", actor:"队友",
   steps:["读取接口状态", "核对两列输出"], material_names:["R1.cfg", "R2.cfg", "topology.txt"],
@@ -48,4 +48,19 @@ assert.ok(composer.includes("等待时继续写草稿"));
 assert.ok(composer.includes('id="followup-message"'));
 assert.ok(!composer.match(/<textarea[^>]*disabled/));
 assert.ok(composer.match(/<button[^>]*disabled/));
+const materialProps = {materials:[{name:"R1.cfg", text:"<R1>\r\nup up"},
+  {name:"screen.txt", text:"识别文字", screenshot:{name:"接口截图", imageUrl:"/recording/image"}}],
+  busy:true, onRemove(){}, onSave(){}, onScreenshot(){}};
+const materialHtml = renderToStaticMarkup(createElement(MaterialsView, materialProps));
+assert.ok(materialHtml.includes("&lt;R1&gt;"));
+assert.ok(materialHtml.includes("2 行内容"));
+assert.ok(materialHtml.includes('aria-label="移除 R1.cfg"'));
+assert.ok(materialHtml.includes('aria-label="修正 接口截图 的识别文字"'));
+assert.ok(materialHtml.match(/<textarea[^>]*disabled/));
+const locatedHtml = renderToStaticMarkup(createElement(MaterialsView, {...materialProps,
+  location:{name:"R1.cfg", line:2, quote:"up up", text:"<R1>\r\nup up"}}));
+assert.ok(locatedHtml.includes('第2行：up up'));
+const changedHtml = renderToStaticMarkup(createElement(MaterialsView, {...materialProps,
+  location:{name:"R1.cfg", line:2, quote:"up up", text:"old snapshot"}}));
+assert.ok(!changedHtml.includes("<mark"), "a citation from an older snapshot must not highlight changed text");
 console.log("React conversation passed: messages, citations, pending replies, retry state, tool progress and editable waiting drafts");
