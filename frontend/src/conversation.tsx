@@ -4,6 +4,7 @@ import {memo} from "react";
 import {PendingTurn, ProgressList, type PendingRequest, type ProgressEntry} from "./request-view";
 export {mountComposer, configureComposer, getDraft, setDraft, Composer} from "./composer";
 export {PendingTurn, ProgressList} from "./request-view";
+export {mountLabConnection, LabConnectionView, createLabConnection} from "./lab-connection";
 
 export interface Citation {
   device?: string;
