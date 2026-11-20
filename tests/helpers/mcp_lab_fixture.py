@@ -1,5 +1,6 @@
-"""Independent synthetic MCP peer; no simulator or real device is contacted."""
+"""Independent MCP peer for synthetic replies and recorded lab output."""
 import json
+from pathlib import Path
 import sys
 import time
 
@@ -32,6 +33,11 @@ for line in sys.stdin:
         elif command == "slow":
             time.sleep(2)
             send({"id": request_id, "result": {"content": [{"type": "text", "text": "late"}]}})
+        elif command == "ip route show table main":
+            # Replay the body returned by a collector that strips the CLI prompt.
+            capture = Path(__file__).resolve().parents[2] / "data/team_cases/lab_02/map_materials/repaired/R1-run.log"
+            text = capture.read_text(encoding="utf-8").split("<R1>ip route show table main\n", 1)[1].split("\n<R1>", 1)[0]
+            send({"id": request_id, "result": {"content": [{"type": "text", "text": text}]}})
         else:
             send({"method": "notifications/message", "params": {"level": "info", "data": "Reading synthetic device"}})
             send({"id": "peer-ping", "method": "ping"})

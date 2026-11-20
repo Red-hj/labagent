@@ -43,6 +43,47 @@ def checked_route(materials, device="R1", target="192.168.20.10"):
 
 
 class LinuxRouteTests(unittest.TestCase):
+    def test_promptless_route_and_ping_materials_from_mcp_preserve_device_and_goals(self):
+        for phase, expected in (("fault", ["failed", "failed", "needs_evidence", "needs_evidence"]),
+                                ("repaired", ["passed"] * 4)):
+            with self.subTest(phase=phase):
+                request = material_payload(phase)
+                materials = {}
+                for device, command in (("R1", "ip route show table main"), ("R2", "ip route show table main"),
+                                        ("PC1", "ping"), ("PC2", "ping")):
+                    raw = request["configs"][f"{device}-run.log"]
+                    if command == "ping":
+                        text = "PING " + raw.split("\nPING ", 1)[1]
+                        command += " " + text.split()[1]
+                    else:
+                        text = raw.split(f"<{device}>{command}\n", 1)[1].split(f"\n<{device}>", 1)[0]
+                    materials[f"MCP-{device}-sample.log"] = f"设备：{device}\n命令：{command}\n{text}"
+                request["configs"] = {**materials, "验证要求.txt": INSTRUCTIONS}
+                sources, _ = source_bundle(request)
+                result = check_goals(criteria(request), sources)
+                self.assertEqual([g["status"] for g in result["checks"]], expected)
+                for check in result["checks"]:
+                    for ref in check["evidence"]:
+                        self.assertEqual(ref["quote"], materials[ref["device"]].splitlines()[ref["line"] - 1])
+
+    def test_promptless_mcp_vrp_complete_table_preserves_command_scope(self):
+        body = ("Routing Table : Public\nDestinations : 1 Routes : 1\nDestination/Mask Proto Pre Cost Flags NextHop Interface\n"
+                "10.12.0.0/24 Direct 0 0 D 10.12.0.1 GE0/0/0")
+        for suffix, expected in (("", "no_match"), (" protocol ospf", "needs_evidence")):
+            text = f"设备：R1\n命令：display ip routing-table{suffix}\n{body}"
+            row = checked_route({"MCP-R1.log": text}, target="10.3.3.3")
+            self.assertEqual(row["status"], expected)
+            if expected == "no_match":
+                self.assertIn(4, [ref["line"] for ref in row["evidence"]])
+
+    def test_mcp_metadata_does_not_override_an_explicit_device_prompt(self):
+        text = ("设备：R1\n命令：ip route show table main\n<R2>ip route show table main\n"
+                "192.168.20.0/24 via 10.12.0.2 dev transit proto ospf metric 20")
+        self.assertEqual(checked_route({"MCP-R1.log": text})["status"], "needs_evidence")
+        result = checked_route({"MCP-R1.log": text}, device="R2")
+        self.assertEqual(result["status"], "observed")
+        self.assertEqual(result["evidence"][0]["line"], 4)
+
     def test_repaired_capture_routes_are_observed_with_original_line_citations(self):
         payload = material_payload("repaired")
         sources, _ = source_bundle(payload)

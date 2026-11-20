@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from labagent.lab_bridge import LabBridge
+from labagent.investigation import execute_tool, source_bundle
 from labagent.mcp_client import LabMCPTools, MCPError
 from labagent.server import create_server, Handler
 from scripts.connect_lab import execute_job, Website
@@ -131,7 +132,10 @@ class BridgeApiTests(unittest.TestCase):
 
     def test_pair_through_handlers_execute_real_mcp_and_return_materials(self):
         config = self.folder / "mcp.json"
-        config.write_text(json.dumps({"servers": {"test": fixture_spec()}}), encoding="utf-8")
+        spec = fixture_spec()
+        command = "ip route show table main"
+        spec["tools"]["r1"]["choices"]["command"].append(command)
+        config.write_text(json.dumps({"servers": {"test": spec}}), encoding="utf-8")
         with LabMCPTools(config) as lab:
             status, pair, _ = self.request("/api/lab/bridge", {"name": "课堂实验电脑"})
             self.assertEqual(status, 201)
@@ -157,6 +161,23 @@ class BridgeApiTests(unittest.TestCase):
             self.assertIn("10.12.0.1/24 up up", text)
             self.assertEqual(data["source"], "mcp_device_observation")
             self.assertNotIn(token, json.dumps(data))
+            with ThreadPoolExecutor(1) as worker:
+                pending = worker.submit(self.request, "/api/lab/collect", {"bridge_id": pair["id"], "tool": "lab_test_r1", "arguments": {"command": command}})
+                status, data, _ = self.request("/api/lab/agent/poll", {}, agent=True, token=token)
+                self.assertEqual(status, 200)
+                self.assertTrue(execute_job(lab, Peer(), data["job"]))
+                status, data, _ = pending.result(timeout=3)
+            self.assertEqual(status, 200)
+            request = {"configs": data["materials"]}
+            sources, _ = source_bundle(request)
+            route, _ = execute_tool("check_route_selection", {"device": "R1", "target": "192.168.20.10"}, request, sources, set())
+            self.assertEqual(route["status"], "observed")
+            self.assertEqual(route["routes"], [{"network": "192.168.20.0/24", "protocol": "OSPF", "next_hop": "10.12.0.2", "interface": "transit"}])
+            ref = route["evidence"][0]
+            self.assertEqual(ref["line"], 5)
+            self.assertEqual(ref["quote"], next(iter(data["materials"].values())).splitlines()[4])
+            wrong, _ = execute_tool("check_route_selection", {"device": "R2", "target": "192.168.20.10"}, request, sources, set())
+            self.assertEqual(wrong["status"], "needs_evidence")
             self.assertEqual(self.request("/api/lab/bridge/disconnect", {"id": pair["id"]})[0], 200)
             self.assertEqual(self.request("/api/lab/agent/poll", {}, agent=True, token=token)[0], 401)
 

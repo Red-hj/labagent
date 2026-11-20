@@ -19,6 +19,8 @@ SECTION_NUMBER = r"(?:(?:[一二三四五六七八九十百]+[、．.]|\d+[、�
 DEVICE_SECTION = re.compile(r"^\s*" + SECTION_NUMBER + r"([A-Za-z][A-Za-z0-9_.-]*)\s*(?:的)?(?:相关|当前|最新)?\s*"
                             r"(配置(?:节选|摘录|片段)?|完整配置|地址信息|运行记录|运行结果|输出)\s*[:：]?\s*$")
 DOCUMENT_SECTION = re.compile(r"^\s*(?:[一二三四五六七八九十百]+[、．.]|\d+[、．.]\s+)\s*\S.{0,65}$")
+OBSERVATION_DEVICE = re.compile(r"设备[：:]\s*([\w][\w.-]{0,119})\s*")
+OBSERVATION_COMMAND = re.compile(r"命令[：:]\s*(\S.{0,499}?)\s*")
 PARTIAL_CONFIG = re.compile(r"节选|摘录|片段|配置未提供|配置待补充|尚未提供|\b(?:excerpt|truncated|partial)\b|^\s*(?:\.{3}|…+)(?:\s|$)", re.I | re.M)
 AREA_REQUIREMENT = re.compile(
     r"(?P<devices>[A-Z][\w.-]*(?:\s*[、,，]\s*[A-Z][\w.-]*)*)\s*的\s*"
@@ -80,9 +82,16 @@ def evidence_blocks(sources, *, include_history=False):
         heading = next((match for line in lines[:3] if (match := re.match(r"\s*([A-Za-z][\w.-]*)\s*(?:的)?(?:最新)?(?:输出|运行结果)[：:]", line))), None)
         if heading:
             device = heading[1]
-        default_device = device
         start, command, section = 0, source.get("command", ""), ""
-        for index, line in enumerate(lines):
+        if (len(lines) >= 3 and source["kind"] in {"submitted_material", "command_output"}
+                and (named := OBSERVATION_DEVICE.fullmatch(lines[0]))
+                and (invocation := OBSERVATION_COMMAND.fullmatch(lines[1]))):
+            # Browser collection, internal MCP, and CLI upload all store the same two metadata lines.
+            # They describe the first output block; leave them out of the device parser, retaining offsets.
+            device, command, start = named[1], invocation[1], 2
+        default_device = device
+        for index in range(start, len(lines)):
+            line = lines[index]
             prompt = prompt_info(line)
             heading = DEVICE_SECTION.fullmatch(line)
             boundary = DOCUMENT_SECTION.fullmatch(line)
