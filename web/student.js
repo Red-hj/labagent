@@ -81,20 +81,31 @@ function serviceStatus() {
   $("service-status").textContent = busy ? "正在处理请求" : sessionProblem ? "会话已失效 · 可新建排查" : requestFailed ? "本次诊断失败 · 可重试" :
     serviceState === "starting" ? "服务启动中…" : serviceState === "connecting" ? "正在连接服务…" : serviceState === "unavailable" ? "服务暂时不可用" : modelReady ? (diagnosisBackend === "agentarts" ? "华为云诊断" : "服务已就绪") : diagnosisBackend === "agentarts" ? "等待云端连接配置" : "等待模型配置";
 }
-function receiveProgress(event) {
-  if (activeRequest) activeRequest.lastActivity = Date.now();
-  if (event.type !== "progress") return;
-  if (activeRequest) activeRequest.received = true;
+function receiveProgress(event, request = activeRequest) {
+  if (!request || request !== activeRequest) return false;
+  if (event.type === "heartbeat") { request.lastActivity = Date.now(); return true; }
+  const previous = request.execution || window.LabExecution.initial(request.sessionId);
+  const state = window.LabExecution.reduce(previous, event);
+  if (state === previous) return false;
+  request.execution = state;
+  request.lastActivity = Date.now();
+  if (event.type !== "progress") return true;
+  request.received = true;
   const list = $("processing-events");
-  if (list.lastElementChild?.textContent !== event.message) list.append(element("li", event.message));
-  while (list.children.length > 8) list.firstElementChild.remove();
+  list.replaceChildren(...state.entries.map(entry => {
+    const row = element("li", entry.message);
+    row.dataset.status = entry.status;
+    return row;
+  }));
   $("request-status-text").textContent = event.message;
   const pending = $("conversation").querySelector(".chat-transient .pending-text");
   if (pending) pending.textContent = event.stage === "cloud_connecting" ? "正在请求云端诊断，等待回复…" : event.message;
   const delivery = $("conversation").querySelector(".chat-transient .chat-delivery");
   if (delivery) { delivery.textContent = "已发送"; delivery.className = "chat-delivery delivered"; }
+  return true;
 }
 async function diagnose(input) {
+  const request = activeRequest;
   await window.LabWorkspace.prepareDiagnosis(input);
   const response = await fetch("/api/diagnose/stream", {method:"POST", credentials:"same-origin", signal:AbortSignal.timeout(330000), headers:{"Content-Type":"application/json", ...roomHeaders()}, body:JSON.stringify(input)});
   if (!response.ok) {
@@ -112,9 +123,9 @@ async function diagnose(input) {
         const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
         if (!line.trim()) continue;
         const event = JSON.parse(line);
+        if (!receiveProgress(event, request)) continue;
         if (event.type === "result") return event.result;
         if (event.type === "error") throw new Error(event.message);
-        receiveProgress(event);
       }
       if (done) throw new Error("连接已中断，未收到完整诊断结果。可以重新提交。");
     }
@@ -549,13 +560,14 @@ function updatePendingTime() {
 function beginRequest(type, text) {
   window.LabWorkspace.showDiagnosis();
   requestFailed = false;
-  activeRequest = {type, text, started:Date.now(), lastActivity:Date.now(), received:false}; setBusy(true);
+  activeRequest = {type, text, sessionId, execution:window.LabExecution.initial(sessionId), started:Date.now(), lastActivity:Date.now(), received:false}; setBusy(true);
   dismissToast(); $("message").textContent = ""; $("request-status").hidden = true;
   $("processing-events").replaceChildren(); $("processing-progress").hidden = false; $("processing-progress").open = false;
   $("empty-result").hidden = true; $("analysis-result").hidden = false;
   $("analysis-details").hidden = !sessionId;
   pendingTurn(text);
   clearInterval(requestTimer); requestTimer = setInterval(updatePendingTime,1000);
+  return activeRequest;
 }
 function finishRequest(state, text) {
   requestFailed = state === "error";
@@ -582,19 +594,24 @@ function diagnosisFailure(error) {
 }
 async function performInteraction(type, text) {
   if (busy) return;
+  let request;
   try {
     const input = requestPayload(); input.interaction = {type, message:text};
-    beginRequest(type, text);
+    request = beginRequest(type, text);
     if (type === "ask" && $("followup-message").value.trim() === text) $("followup-message").value = "";
     const result = await diagnose(input);
+    if (activeRequest !== request) return;
     showResult(result);
     if (result.llm?.status === "ok") {
       finishRequest("success", {ask:"回复已生成，已显示在对话末尾。", repair:"修改步骤已生成。", update:"补充材料已处理，诊断已更新。", verify:"本轮复测核对完成，结果已更新。"}[type]);
     } else finishRequest("error", (result.llm?.message || "本次请求未完成。") + " 输入已保留，可以再次提交。");
   } catch (error) {
+    if (request && activeRequest !== request) return;
     if (activeRequest) finishRequest("error", diagnosisFailure(error) + " 输入已保留。");
     else message(error.message, true);
-  } finally { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
+  } finally {
+    if (request && activeRequest === request) { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
+  }
 }
 
 function renderConversation(turns) {
@@ -805,14 +822,20 @@ $("add-pasted").addEventListener("click", () => {
 });
 $("analyze").addEventListener("click", async () => {
   if (busy) return;
+  let request;
   try {
-    const input = requestPayload(); beginRequest("analyze", input.question);
-    const result = await diagnose(input); showResult(result);
+    const input = requestPayload(); request = beginRequest("analyze", input.question);
+    const result = await diagnose(input);
+    if (activeRequest !== request) return;
+    showResult(result);
     finishRequest(result.llm?.status === "ok" ? "success" : "error", result.llm?.status === "ok" ? "诊断完成，结果已显示并保存。" : (result.llm?.message || "本次诊断未完成。") + " 材料已保留，可以再次提交。");
   } catch (error) {
+    if (request && activeRequest !== request) return;
     if (activeRequest) finishRequest("error", diagnosisFailure(error) + " 材料已保留。");
     else message(error.message, true);
-  } finally { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
+  } finally {
+    if (request && activeRequest === request) { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
+  }
 });
 for (const button of document.querySelectorAll("[data-intent]")) button.addEventListener("click", () => {
   const text = {ask:"请解释当前疑点为什么会造成这个现象，用实验中的材料说明。", repair:"请基于当前材料给出具体修改步骤，以及每一步之后应观察什么。", verify:"请沿用当前排查和实验目标，比较我补充的新材料与上一轮的改动，核对修改后的配置和实际测试输出；如果仍缺新输出，请明确指出需要补充什么。"}[button.dataset.intent];
