@@ -29,7 +29,7 @@ function fixture(){
     materials:new Map([["R1.cfg","sample"]]),Date:class extends Date {static now(){return now;}},
     element:(tag,text,cls)=>new Node(tag,text||"",cls||""),setBusy:value=>{context.busy=value;},dismissToast(){},
     message:()=>messages++,setInterval:fn=>{intervals.set(++next,fn);return next;},clearInterval:id=>intervals.delete(id),
-    window:{LabWorkspace:{showDiagnosis(){}},LabHistory:{renderTurns(){ $("conversation").scrollTop=900;}}},
+    window:{LabExecution:require("../web/execution-state.js"),LabWorkspace:{showDiagnosis(){}},LabHistory:{renderTurns(){ $("conversation").scrollTop=900;}}},
     requestPayload:()=>({configs:{sample:"test"}}),showResult(){},diagnose:async()=>({llm:{status:"ok"}})});
   $("analyze").events.click=()=>submissions++;
   vm.runInContext(section("function receiveProgress(","async function diagnose("),context);
@@ -92,6 +92,33 @@ async function main(){
     assert.equal(calls[0].configs["R1.cfg"],"new configuration and fresh test output");
     assert.equal(calls[0].interaction.type,"verify");
     assert.equal(p.context.sessionId,"a".repeat(32),"retests must keep the active conversation");
+  }
+  {
+    const p=fixture();p.run('beginRequest("ask","current request")');
+    p.run('receiveProgress({type:"progress",turn_id:"turn-a",sequence:1,message:"reading",item:{id:"read",status:"running"}})');
+    p.run('receiveProgress({type:"progress",turn_id:"turn-b",sequence:99,message:"wrong turn"})');
+    assert.equal(p.$("request-status-text").textContent,"reading");
+    p.run('receiveProgress({type:"progress",turn_id:"turn-a",sequence:2,message:"read failed",item:{id:"read",status:"failed"}})');
+    assert.equal(p.$("processing-events").children.length,1,"update each tool in place");
+    assert.equal(p.$("processing-events").children[0].dataset.status,"failed");
+    const previous=p.context.activeRequest;
+    p.run('beginRequest("ask","new request")');
+    p.context.oldRequest=previous;
+    p.run('receiveProgress({type:"progress",turn_id:"turn-a",sequence:3,message:"late event"},oldRequest)');
+    assert.equal(p.$("processing-events").children.length,0,"ignore events captured by the old request");
+  }
+  for (const fail of [false,true]) {
+    const p=fixture();let resolve,reject,shown=0;
+    p.context.showResult=()=>shown++;
+    p.context.diagnose=()=>new Promise((a,b)=>{resolve=a;reject=b;});
+    const work=p.run('performInteraction("ask","old request")');
+    p.run('beginRequest("ask","replacement request")');
+    const current=p.context.activeRequest;
+    if(fail)reject(new Error("old failure"));else resolve({llm:{status:"ok"}});
+    await work;
+    assert.equal(shown,0,"late responses must not replace the current conversation");
+    assert.equal(p.context.activeRequest,current,"old completion must not clear current request state");
+    assert.equal(p.context.busy,true);
   }
   console.log("Chat requests passed: first-message feedback, acknowledgements, heartbeat waits, inline retry, preserved drafts and review scroll position");
 }
