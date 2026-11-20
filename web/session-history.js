@@ -173,39 +173,8 @@ window.LabHistory = (() => {
     } catch (error) { if (mine === materialToken) $("history-material-note").textContent = error.message; }
   }
   function renderTurns(turns) {
-    $("conversation").replaceChildren();
+    window.LabConversation.renderTurns($("conversation"), turns, showMaterials);
     $("conversation-count").textContent = `${turns.length} 轮对话 · 可继续排查`;
-    for (const turn of turns) {
-      const wrapper = c.element("div", undefined, "chat-turn");
-      const failed = turn.model_status && turn.model_status !== "ok";
-      if (failed) { wrapper.classList.add("chat-saved-error"); wrapper.dataset.requestText = turn.user; }
-      const user = c.element("div", undefined, "chat-message chat-user");
-      const label = c.element("p", turn.actor || "你", "chat-label");
-      if (turn.created_at) label.append(c.element("time", new Date(turn.created_at).toLocaleString("zh-CN", {month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}), "chat-time"));
-      user.append(label, c.element("div", turn.user, "chat-body"));
-      if (turn.material_names?.length) user.append(c.element("div", `材料：${turn.material_names.slice(0,2).join("、")}${turn.material_names.length > 2 ? ` 等 ${turn.material_names.length} 份` : ""}`, "chat-materials"));
-      const assistant = c.element("div", undefined, "chat-message chat-assistant");
-      assistant.append(c.element("p", "LabAgent", "chat-label"), c.element("div", turn.assistant, "chat-body" + (failed ? " pending-text" : "")));
-      if (turn.steps?.length) {
-        const steps = c.element("ol", undefined, "chat-steps");
-        for (const step of turn.steps) steps.append(c.element("li", step));
-        assistant.append(steps);
-      }
-      if (turn.attempt) {
-        const details = c.element("details", undefined, "chat-evidence");
-        details.append(c.element("summary", "本轮材料与依据"));
-        if (turn.summary && turn.summary !== turn.assistant) details.append(c.element("p", turn.summary));
-        const materials = c.element("button", "查看当时提交的材料", "text-button"); materials.type = "button";
-        materials.addEventListener("click", () => showMaterials(turn)); details.append(materials);
-        for (const citation of turn.evidence || []) {
-          const button = c.element("button", `${citation.device || "原文"} · 第 ${citation.line} 行：${citation.quote}`, "text-button"); button.type = "button";
-          button.addEventListener("click", () => showMaterials(turn,citation));
-          const row = c.element("div"); row.append(button); details.append(row);
-        }
-        assistant.append(details);
-      }
-      wrapper.append(user,assistant); $("conversation").append(wrapper);
-    }
     $("conversation").scrollTop = $("conversation").scrollHeight;
   }
   function init(context) {

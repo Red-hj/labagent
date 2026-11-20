@@ -153,6 +153,7 @@ pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#fafbfd; padding:
 .dialogue-heading span { color:#8d9bad; font-size:10px; }
 .conversation { display:flex; flex-direction:column; gap:13px; max-height:340px; overflow:auto; overscroll-behavior:auto; padding-right:5px; margin-bottom:18px; }
 .chat-turn { flex:0 0 auto; }
+.chat-history { display:flex; flex:0 0 auto; flex-direction:column; gap:13px; min-width:0; }
 .replay-controls { display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin:10px 0; }
 .replay-controls .section-note { flex-basis:100%; margin:0; }
 .chat-turn { display:flex; flex-direction:column; gap:8px; }
