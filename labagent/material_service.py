@@ -115,13 +115,16 @@ class MaterialService:
             if session_id:
                 payload["session_id"] = session_id
             validate(payload)
+            from .lab_relay import RelayLabTools
+            lab_tools = RelayLabTools(request["lab_connection"]) if "lab_connection" in request else None
             result = self.store.save(payload, run_open_workflow(payload, self.workflow_database, self.completion,
-                                                               previous_attempt=previous))
+                                                               previous_attempt=previous, lab_tools=lab_tools))
             model = result["llm"]
             return {"status": "success" if model["status"] == "ok" else model["status"],
                     "session_id": result["session_id"],
                     "session_recovered": restored is not None,
                     "personal_memory_applied": True,
+                    "lab_connection_applied": lab_tools is not None,
                     "course_document_ids": sorted(document["id"] for document in payload.get("course_documents", [])),
                     "reply": result["investigation"].get("reply") or model.get("message") or result["hint"],
                     "result": result}

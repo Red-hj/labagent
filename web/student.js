@@ -81,20 +81,25 @@ function serviceStatus() {
   $("service-status").textContent = busy ? "正在处理请求" : sessionProblem ? "会话已失效 · 可新建排查" : requestFailed ? "本次诊断失败 · 可重试" :
     serviceState === "starting" ? "服务启动中…" : serviceState === "connecting" ? "正在连接服务…" : serviceState === "unavailable" ? "服务暂时不可用" : modelReady ? (diagnosisBackend === "agentarts" ? "华为云诊断" : "服务已就绪") : diagnosisBackend === "agentarts" ? "等待云端连接配置" : "等待模型配置";
 }
-function receiveProgress(event) {
-  if (activeRequest) activeRequest.lastActivity = Date.now();
-  if (event.type !== "progress") return;
-  if (activeRequest) activeRequest.received = true;
-  const list = $("processing-events");
-  if (list.lastElementChild?.textContent !== event.message) list.append(element("li", event.message));
-  while (list.children.length > 8) list.firstElementChild.remove();
+function receiveProgress(event, request = activeRequest) {
+  if (!request || request !== activeRequest) return false;
+  if (event.type === "heartbeat") { request.lastActivity = Date.now(); return true; }
+  const previous = request.execution || window.LabExecution.initial(request.sessionId);
+  const state = window.LabExecution.reduce(previous, event);
+  if (state === previous) return false;
+  request.execution = state;
+  request.lastActivity = Date.now();
+  if (event.type !== "progress") return true;
+  request.received = true;
+  window.LabConversation.renderProgress($("processing-events"), state.entries);
   $("request-status-text").textContent = event.message;
-  const pending = $("conversation").querySelector(".chat-transient .pending-text");
-  if (pending) pending.textContent = event.stage === "cloud_connecting" ? "正在请求云端诊断，等待回复…" : event.message;
-  const delivery = $("conversation").querySelector(".chat-transient .chat-delivery");
-  if (delivery) { delivery.textContent = "已发送"; delivery.className = "chat-delivery delivered"; }
+  window.LabConversation.updatePending($("conversation"), {
+    message:event.stage === "cloud_connecting" ? "正在请求云端诊断，等待回复…" : event.message, delivered:true
+  });
+  return true;
 }
 async function diagnose(input) {
+  const request = activeRequest;
   await window.LabWorkspace.prepareDiagnosis(input);
   const response = await fetch("/api/diagnose/stream", {method:"POST", credentials:"same-origin", signal:AbortSignal.timeout(330000), headers:{"Content-Type":"application/json", ...roomHeaders()}, body:JSON.stringify(input)});
   if (!response.ok) {
@@ -112,9 +117,9 @@ async function diagnose(input) {
         const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
         if (!line.trim()) continue;
         const event = JSON.parse(line);
+        if (!receiveProgress(event, request)) continue;
         if (event.type === "result") return event.result;
         if (event.type === "error") throw new Error(event.message);
-        receiveProgress(event);
       }
       if (done) throw new Error("连接已中断，未收到完整诊断结果。可以重新提交。");
     }
@@ -133,12 +138,15 @@ function syncContinuation() {
 }
 function setBusy(value) {
   busy = value || materialLoading;
-  for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "send-followup", "load-demo"]) $(id).disabled = busy;
+  window.LabLearning?.refreshBusy();
+  for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "load-demo"]) $(id).disabled = busy;
   for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = busy || workspaceTransfer;
   $("new-conversation").disabled = busy;
-  $("followup-message").disabled = materialLoading || workspaceTransfer || legacySession;
-  $("followup-message").placeholder = busy && activeRequest ? "可以先写下一条，回复后再发送…" : "继续追问，或粘贴新的复测输出…";
-  $("send-followup").disabled = busy || legacySession;
+  window.LabConversation.configureComposer($("conversation-composer"), {
+    disabled:materialLoading || workspaceTransfer || legacySession, canSend:!busy && !legacySession,
+    sending:Boolean(busy && activeRequest), placeholder:busy && activeRequest ? "可以先写下一条，回复后再发送…" :
+      window.LabLearning?.enabled() ? "说说你刚做了什么、看到了什么，或哪里还不懂…" : "继续追问，或粘贴新的复测输出…"
+  });
   $("demo-case").disabled = busy || Boolean(sessionId) || demoActive;
   $("load-demo").disabled = busy || Boolean(sessionId) || demoActive;
   $("load-demo-repair").disabled = busy || !demoActive || !sessionId;
@@ -152,7 +160,6 @@ function setBusy(value) {
   $("load-demo-repair").textContent = $("demo-case").value === "ospf_goals" ? "② 带入静态路由复测" : "② 带入修改与复测材料";
   $("analyze").disabled = busy || !modelReady || sessionProblem || legacySession;
   $("analyze").replaceChildren(document.createTextNode(busy ? "正在处理…" : sessionId ? (materialsPending ? "分析新材料" : "继续排查") : "开始诊断"), element("span", "→"));
-  $("send-followup").textContent = busy && activeRequest ? "等待回复" : "发送 ↗";
   serviceStatus();
   $("analysis-result").setAttribute("aria-busy", String(busy));
   for (const button of $("material-list").querySelectorAll("button")) button.disabled = busy;
@@ -514,48 +521,27 @@ function requestState(state, text) {
   if (state !== "pending") { clearInterval(requestTimer); requestTimer = null; $("request-elapsed").textContent = ""; }
 }
 function pendingTurn(text) {
-  $("conversation").querySelector(".chat-transient")?.remove();
-  const wrapper = element("div", undefined, "chat-turn chat-transient");
-  const user = element("div", undefined, "chat-message chat-user");
-  const label = element("p", "你", "chat-label");
-  label.append(element("time", new Date().toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"}), "chat-time"));
-  user.append(label, element("div",text,"chat-body"));
-  if (activeRequest?.type === "analyze" && materials.size) user.append(element("div",`${materials.size} 份实验材料`,"chat-materials"));
-  const delivery = element("span", "发送中…", "chat-delivery sending");
-  const response = element("div", undefined, "chat-message chat-assistant chat-pending");
-  const activity = element("div",undefined,"chat-activity");
-  const dots = element("span",undefined,"typing-dots"); dots.setAttribute("aria-hidden","true");
-  dots.append(element("i"),element("i"),element("i"));
-  activity.append(dots,element("span","正在发送请求…","pending-text"));
-  const elapsed = element("span","","chat-elapsed"); elapsed.setAttribute("aria-hidden","true"); activity.append(elapsed);
-  const hint = element("p","","pending-hint"); hint.hidden=true;
-  response.append(element("p", "LabAgent", "chat-label"), activity, hint);
-  wrapper.append(user, delivery, response); $("conversation").append(wrapper);
+  window.LabConversation.beginPending($("conversation"), {text, type:activeRequest?.type || "ask", materialCount:materials.size, started:activeRequest?.started || Date.now()});
   $("conversation").scrollTop = $("conversation").scrollHeight;
   $("chat-new-reply").hidden = true;
 }
 function updatePendingTime() {
   if (!activeRequest) return;
   const seconds = Math.floor((Date.now() - activeRequest.started) / 1000);
-  const pending = $("conversation").querySelector(".chat-transient");
-  const elapsed = pending?.querySelector(".chat-elapsed");
-  if (elapsed) elapsed.textContent = seconds >= 5 ? seconds + "秒" : "";
-  const hint = pending?.querySelector(".pending-hint");
-  if (hint) {
-    hint.hidden = seconds < 20;
-    hint.textContent = Date.now() - activeRequest.lastActivity < 15000 ? "仍在处理，你可以先写下一条消息。" : "暂未收到新进展，正在等待服务响应；草稿会保留。";
-  }
+  window.LabConversation.updatePending($("conversation"), {elapsed:seconds, hint:seconds < 20 ? null :
+    Date.now() - activeRequest.lastActivity < 15000 ? "仍在处理，你可以先写下一条消息。" : "暂未收到新进展，正在等待服务响应；草稿会保留。"});
 }
 function beginRequest(type, text) {
   window.LabWorkspace.showDiagnosis();
   requestFailed = false;
-  activeRequest = {type, text, started:Date.now(), lastActivity:Date.now(), received:false}; setBusy(true);
+  activeRequest = {type, text, sessionId, execution:window.LabExecution.initial(sessionId), started:Date.now(), lastActivity:Date.now(), received:false}; setBusy(true);
   dismissToast(); $("message").textContent = ""; $("request-status").hidden = true;
-  $("processing-events").replaceChildren(); $("processing-progress").hidden = false; $("processing-progress").open = false;
+  window.LabConversation.renderProgress($("processing-events"), []); $("processing-progress").hidden = false; $("processing-progress").open = false;
   $("empty-result").hidden = true; $("analysis-result").hidden = false;
   $("analysis-details").hidden = !sessionId;
   pendingTurn(text);
   clearInterval(requestTimer); requestTimer = setInterval(updatePendingTime,1000);
+  return activeRequest;
 }
 function finishRequest(state, text) {
   requestFailed = state === "error";
@@ -563,18 +549,15 @@ function finishRequest(state, text) {
   $("request-status").hidden = true; setBusy(false);
   $("processing-progress").open = false;
   if (state === "error" && activeRequest) {
-    const savedError = $("conversation").lastElementChild;
-    if (!$("conversation").querySelector(".chat-transient") && savedError?.classList.contains("chat-saved-error") && savedError.dataset.requestText === activeRequest.text) savedError.classList.add("chat-transient");
+    window.LabConversation.removeLastFailure($("conversation"), activeRequest.text);
     if (!$("conversation").querySelector(".chat-transient")) pendingTurn(activeRequest.text);
-    const response = $("conversation").querySelector(".chat-transient .chat-assistant");
-    response.className = "chat-message chat-assistant chat-failed";
-    response.replaceChildren(element("p","LabAgent","chat-label"),element("p",text,"chat-error-text"));
-    const delivery = $("conversation").querySelector(".chat-transient .chat-delivery");
-    if (delivery) { delivery.textContent = activeRequest.received ? "回复未完成" : "发送未完成"; delivery.className = "chat-delivery failed"; }
     const failed = {...activeRequest};
-    const retry = element("button", "重新发送", "text-button chat-retry"); retry.type = "button";
-    retry.addEventListener("click", () => failed.type === "analyze" ? $("analyze").click() : performInteraction(failed.type, failed.text)); response.append(retry);
-    if (failed.type === "ask" && !$("followup-message").value.trim()) $("followup-message").value = failed.text;
+    window.LabConversation.updatePending($("conversation"), {delivered:activeRequest.received});
+    window.LabConversation.failPending($("conversation"), text,
+      () => failed.type === "analyze" ? $("analyze").click() : performInteraction(failed.type, failed.text));
+    if (failed.type === "ask" && !window.LabConversation.getDraft($("conversation-composer")).trim()) {
+      window.LabConversation.setDraft($("conversation-composer"), failed.text);
+    }
   }
 }
 function diagnosisFailure(error) {
@@ -582,19 +565,24 @@ function diagnosisFailure(error) {
 }
 async function performInteraction(type, text) {
   if (busy) return;
+  let request;
   try {
     const input = requestPayload(); input.interaction = {type, message:text};
-    beginRequest(type, text);
-    if (type === "ask" && $("followup-message").value.trim() === text) $("followup-message").value = "";
+    request = beginRequest(type, text);
+    if (type === "ask" && window.LabConversation.getDraft($("conversation-composer")).trim() === text) window.LabConversation.setDraft($("conversation-composer"), "");
     const result = await diagnose(input);
+    if (activeRequest !== request) return;
     showResult(result);
     if (result.llm?.status === "ok") {
       finishRequest("success", {ask:"回复已生成，已显示在对话末尾。", repair:"修改步骤已生成。", update:"补充材料已处理，诊断已更新。", verify:"本轮复测核对完成，结果已更新。"}[type]);
     } else finishRequest("error", (result.llm?.message || "本次请求未完成。") + " 输入已保留，可以再次提交。");
   } catch (error) {
+    if (request && activeRequest !== request) return;
     if (activeRequest) finishRequest("error", diagnosisFailure(error) + " 输入已保留。");
     else message(error.message, true);
-  } finally { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
+  } finally {
+    if (request && activeRequest === request) { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
+  }
 }
 
 function renderConversation(turns) {
@@ -754,6 +742,8 @@ function showResult(result) {
   }
 }
 
+window.LabConversation.mountComposer($("conversation-composer"), text => performInteraction("ask", text));
+
 $("load-demo").addEventListener("click", () => loadDemo());
 $("load-demo-repair").addEventListener("click", () => loadDemo(true));
 $("load-demo-final").addEventListener("click", () => loadDemo(true, true));
@@ -805,32 +795,29 @@ $("add-pasted").addEventListener("click", () => {
 });
 $("analyze").addEventListener("click", async () => {
   if (busy) return;
+  let request;
   try {
-    const input = requestPayload(); beginRequest("analyze", input.question);
-    const result = await diagnose(input); showResult(result);
+    const input = requestPayload(); request = beginRequest("analyze", input.question);
+    const result = await diagnose(input);
+    if (activeRequest !== request) return;
+    showResult(result);
     finishRequest(result.llm?.status === "ok" ? "success" : "error", result.llm?.status === "ok" ? "诊断完成，结果已显示并保存。" : (result.llm?.message || "本次诊断未完成。") + " 材料已保留，可以再次提交。");
   } catch (error) {
+    if (request && activeRequest !== request) return;
     if (activeRequest) finishRequest("error", diagnosisFailure(error) + " 材料已保留。");
     else message(error.message, true);
-  } finally { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
+  } finally {
+    if (request && activeRequest === request) { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
+  }
 });
 for (const button of document.querySelectorAll("[data-intent]")) button.addEventListener("click", () => {
   const text = {ask:"请解释当前疑点为什么会造成这个现象，用实验中的材料说明。", repair:"请基于当前材料给出具体修改步骤，以及每一步之后应观察什么。", verify:"请沿用当前排查和实验目标，比较我补充的新材料与上一轮的改动，核对修改后的配置和实际测试输出；如果仍缺新输出，请明确指出需要补充什么。"}[button.dataset.intent];
   performInteraction(button.dataset.intent, text);
 });
-$("followup-form").addEventListener("submit", event => {
-  event.preventDefault(); const text = $("followup-message").value.trim();
-  if (text) performInteraction("ask", text); else $("followup-message").focus();
-});
 $("chat-new-reply").addEventListener("click", () => { $("conversation").scrollTop = $("conversation").scrollHeight; $("chat-new-reply").hidden = true; });
 $("conversation").addEventListener("scroll", () => {
   const c = $("conversation"); if (c.scrollHeight - c.clientHeight - c.scrollTop < 80) $("chat-new-reply").hidden = true;
 }, {passive:true});
-$("followup-message").addEventListener("keydown", event => {
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
-  event.preventDefault();
-  if (!busy && !event.repeat) $("followup-form").requestSubmit();
-});
 $("new-diagnosis").addEventListener("click", () => {
   if (busy) return;
   window.LabLearning?.reset();
@@ -846,12 +833,12 @@ $("new-diagnosis").addEventListener("click", () => {
   $("demo-case").value = "network_access";
   $("demo-status").textContent = "先带入故障材料，再点击“开始诊断”。";
   $("problem").value = ""; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false");
-  $("followup-message").value = ""; $("conversation").replaceChildren();
+  window.LabConversation.setDraft($("conversation-composer"), ""); window.LabConversation.clear($("conversation"));
   $("analysis-result").hidden = true; $("empty-result").hidden = false; $("save-report").hidden = true;
   $("empty-result").querySelector("h3").textContent = "准备好材料，就可以开始。";
   $("empty-result").querySelector("p").textContent = "这里会显示问题原因、材料依据和下一步操作。";
   $("request-status").hidden = true;
-  $("processing-progress").hidden = true; $("processing-events").replaceChildren();
+  $("processing-progress").hidden = true; window.LabConversation.renderProgress($("processing-events"), []);
   window.history.replaceState(null, "", "/"); renderMaterials(); setBusy(false); message("已开始新的诊断，请添加材料。");
   window.LabWorkspace.preview();
 });
@@ -978,7 +965,7 @@ window.LabWorkspace.init({api, element, message, materials, recordings, screensh
     renderMaterials(); renderRecordingChoices();
     if (!room.session) {
       sessionId = null; window.LabHistory.activate(null); window.LabHistory.setSnapshot(null);
-      $("conversation").replaceChildren(); $("followup-message").value = "";
+    window.LabConversation.clear($("conversation")); window.LabConversation.setDraft($("conversation-composer"), "");
       $("analysis-result").hidden = true; $("empty-result").hidden = false; $("save-report").hidden = true;
       setBusy(false); return;
     }

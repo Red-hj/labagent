@@ -34,18 +34,7 @@
         <div id="material-list" class="material-list" aria-live="polite"></div><p id="continuation-status" class="continuation-status" role="status" hidden></p>
         <details id="lab-connection" class="learning-panel" hidden>
           <summary>连接我的实验电脑</summary>
-          <p class="section-note">在实验电脑上运行本地连接程序，网站便可读取你选择的设备输出。输出加入当前材料后，继续核对正在做的这一步。</p>
-          <details><summary>第一次连接</summary>
-            <p class="section-note">先登录个人账号。实验电脑需已配置本地 MCP 检查工具；生成连接码后，在该电脑的项目目录运行下面的程序，按提示输入连接码。</p>
-            <code class="lab-command">python scripts/connect_lab.py runtime/mcp.json</code>
-            <label for="lab-computer-name">实验电脑名称</label><input id="lab-computer-name" maxlength="60" value="我的实验电脑">
-            <button id="lab-pair" type="button" class="secondary-button">生成连接码</button>
-            <p id="lab-pair-code" class="lab-pair-code" hidden></p>
-            <p class="section-note">连接码5分钟内有效，只在自己的实验电脑输入；重新生成会断开旧连接。本地配置与设备凭据留在电脑上。</p>
-          </details>
-          <p id="lab-note" class="section-note" role="status"></p>
-          <div class="learning-actions"><button id="lab-load-tools" type="button" class="secondary-button">刷新连接与检查</button><button id="lab-disconnect" type="button" class="text-button" hidden>断开实验电脑</button><button id="lab-check-step" type="button" class="secondary-button" hidden>用刚采集的输出核对这一步</button></div>
-          <div id="lab-tools"></div>
+          <div id="lab-connection-view"></div>
         </details>
         <label for="problem">想解决什么？ <span class="optional">选填</span></label><textarea id="problem" rows="2" placeholder="例如：拿到了 IP 地址，但还是访问不了其他网段…"></textarea>
         <button id="analyze" class="primary-button" disabled>开始诊断 <span aria-hidden="true">→</span></button>
@@ -80,7 +69,7 @@
         <section id="learning-current" class="learning-current" hidden aria-label="当前实验步骤"><h3 id="learning-current-title"></h3><p id="learning-current-observation"></p><p id="learning-current-question"></p></section>
         <div id="empty-result" class="empty-result"><span class="empty-symbol" aria-hidden="true">⌁</span><h3>准备好材料，就可以开始。</h3><p>这里会显示问题原因、材料依据和下一步操作。</p><div class="flow"><span>提供材料</span><b>→</b><span>分析问题</span><b>→</b><span>补充验证</span></div></div>
         <div id="analysis-result" hidden>
-          <section id="dialogue-section" class="dialogue-section"><div class="dialogue-heading"><h3>对话记录</h3><span id="conversation-count">保留本次排查上下文</span></div><div id="conversation" class="conversation" aria-live="polite" aria-label="完整对话记录"></div><button id="chat-new-reply" type="button" class="chat-new-reply" hidden>查看新回复 ↓</button><div id="chat-shortcuts" class="chat-shortcuts" hidden><button id="add-followup-materials" type="button" class="secondary-button">＋ 补充材料</button><button id="verify-latest" type="button" class="secondary-button" data-intent="verify">核对新结果</button><span>沿用当前排查</span></div><form id="followup-form"><label for="followup-message" class="sr-only">继续追问</label><textarea id="followup-message" rows="2" aria-describedby="followup-shortcuts" placeholder="继续追问，或粘贴新的复测输出…"></textarea><div class="composer-footer"><span id="followup-shortcuts">Enter 发送 · Shift+Enter 换行</span><button id="send-followup" class="send-button" type="submit">发送追问 ↗</button></div></form></section>
+          <section id="dialogue-section" class="dialogue-section"><div class="dialogue-heading"><h3>对话记录</h3><span id="conversation-count">保留本次排查上下文</span></div><div id="conversation" class="conversation" aria-live="polite" aria-label="完整对话记录"></div><button id="chat-new-reply" type="button" class="chat-new-reply" hidden>查看新回复 ↓</button><div id="chat-shortcuts" class="chat-shortcuts" hidden><button id="add-followup-materials" type="button" class="secondary-button">＋ 补充材料</button><button id="verify-latest" type="button" class="secondary-button" data-intent="verify">核对新结果</button><span>沿用当前排查</span></div><div id="conversation-composer"></div></section>
           <details id="analysis-details" class="analysis-details"><summary>本轮诊断详情与实验目标</summary>
           <ol id="diagnosis-progress" class="diagnosis-progress" aria-label="排查进度"><li>材料</li><li>分析</li><li>修改</li><li>复测</li></ol>
           <div class="interaction-actions"><button data-intent="ask">解释一下原因</button><button data-intent="repair">给我修改步骤</button></div>
@@ -153,6 +142,6 @@
   <dialog id="delete-session-dialog" class="delete-session-dialog" aria-labelledby="delete-session-title" aria-describedby="delete-session-note"><h3 id="delete-session-title">删除这次对话？</h3><p id="delete-session-note"></p><p id="delete-session-error" role="alert"></p><div class="delete-session-actions"><button id="cancel-delete-session" class="secondary-button" type="button" autofocus>取消</button><button id="confirm-delete-session" class="danger-button" type="button">删除对话</button></div></dialog>
   <dialog id="history-material-dialog" class="history-material-dialog" aria-labelledby="history-material-title"><div class="dialogue-heading"><h3 id="history-material-title">本轮材料与依据</h3><button id="close-history-materials" class="secondary-button" type="button">关闭</button></div><p id="history-material-note" class="section-note"></p><div id="history-material-content"></div></dialog>
   <dialog id="screenshot-dialog" class="screenshot-dialog" aria-labelledby="screenshot-title"><div class="dialogue-heading"><h3 id="screenshot-title">截图原文</h3><button id="close-screenshot" class="secondary-button">关闭</button></div><p id="screenshot-location" class="section-note"></p><div class="screenshot-canvas"><svg id="screenshot-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="诊断截图与引用位置"><image id="screenshot-image"></image><rect id="screenshot-highlight" hidden></rect></svg></div><a id="open-screenshot" target="_blank" rel="noopener">打开完整尺寸图片 ↗</a></dialog>
-  <div id="feedback-toast" class="feedback-toast" role="status" aria-live="polite" hidden><span id="feedback-toast-text"></span><button id="close-feedback" type="button" aria-label="关闭提示">×</button></div><script src="/vendor/tsparticles.slim.bundle.min.js"></script><script src="/ambient-network.js"></script><script src="/network-room.js"></script><script src="/session-history.js"></script><script src="/course-knowledge.js"></script><script src="/personal-memory.js"></script><script src="/learning.js"></script><script src="/student.js"></script>
+  <div id="feedback-toast" class="feedback-toast" role="status" aria-live="polite" hidden><span id="feedback-toast-text"></span><button id="close-feedback" type="button" aria-label="关闭提示">×</button></div><script src="/vendor/tsparticles.slim.bundle.min.js"></script><script src="/ambient-network.js"></script><script src="/network-room.js"></script><script src="/react-conversation.js"></script><script src="/session-history.js"></script><script src="/course-knowledge.js"></script><script src="/personal-memory.js"></script><script src="/learning.js"></script><script src="/execution-state.js"></script><script src="/student.js"></script>
 </body>
 </html>

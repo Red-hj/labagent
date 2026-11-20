@@ -133,13 +133,13 @@ def run_workflow(payload, database=None, planner=None):
         return result
 
 
-def run_open_workflow(payload, database=None, completion=None, *, previous_attempt=None):
+def run_open_workflow(payload, database=None, completion=None, *, previous_attempt=None, lab_tools=None):
     from .learning import learning_access
     with learning_access(payload):
-        return _run_open_workflow(payload, database, completion, previous_attempt=previous_attempt)
+        return _run_open_workflow(payload, database, completion, previous_attempt=previous_attempt, lab_tools=lab_tools)
 
 
-def _run_open_workflow(payload, database=None, completion=None, *, previous_attempt=None):
+def _run_open_workflow(payload, database=None, completion=None, *, previous_attempt=None, lab_tools=None):
     """A separate graph namespace prevents mixing rule and open checkpoints."""
     from .investigation import investigate
     validate(payload)
@@ -148,7 +148,7 @@ def _run_open_workflow(payload, database=None, completion=None, *, previous_atte
             "last_materials": previous_attempt["input"]["configs"]} if previous_attempt else {}
     if not available():
         result = investigate(payload, seed.get("result", {}).get("investigation"), completion,
-                             conversation=seed.get("conversation"), previous_materials=seed.get("last_materials"))
+                             conversation=seed.get("conversation"), previous_materials=seed.get("last_materials"), lab_tools=lab_tools)
         result["workflow"] = {"backend": "local_rules", "paused": False, "message": "未安装LangGraph，开放排查未提供持久化恢复。"}
         return result
     from langgraph.graph import StateGraph, START, END
@@ -159,7 +159,7 @@ def _run_open_workflow(payload, database=None, completion=None, *, previous_atte
         previous = state.get("result", {}).get("investigation")
         conversation = list(state.get("conversation", []))
         payload = state["payload"]
-        result = investigate(payload, previous, completion, conversation=conversation, previous_materials=state.get("last_materials"))
+        result = investigate(payload, previous, completion, conversation=conversation, previous_materials=state.get("last_materials"), lab_tools=lab_tools)
         if result["llm"]["status"] == "ok":
             interaction = payload.get("interaction", {})
             conversation.append({"intent": interaction.get("type", "analyze"), "user": interaction.get("message") or payload["question"],

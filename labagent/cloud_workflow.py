@@ -15,7 +15,7 @@ class CloudWorkflow:
         self.client_factory = client_factory or (
             lambda session: AgentArtsClient.from_environment(platform_session_id=session))
 
-    def run(self, payload):
+    def run(self, payload, *, lab_connection=None):
         history = self.store.history(payload["session_id"]) if payload.get("session_id") else None
         previous = history["attempts"][-1]["result"].get("agentarts") if history else None
         if history and not previous:
@@ -30,6 +30,8 @@ class CloudWorkflow:
         request = {"materials": deepcopy(payload["configs"])}
         request["course_documents"] = export_course_documents(payload.get("knowledge_scope", "default"))
         request["personal_memory"] = deepcopy(payload.get("personal_memory", []))
+        if lab_connection:
+            request["lab_connection"] = deepcopy(lab_connection)
         for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings", "requirements", "topology", "command_outputs", "hint_level", "learning"):
             if key in payload:
                 request[key] = deepcopy(payload[key])
@@ -64,6 +66,8 @@ class CloudWorkflow:
             response = self.client_factory(platform_id).invoke(request)
         if recovering and response.get("session_recovered") is not True:
             raise ValueError("云端镜像尚不支持会话恢复，请更新AgentArts镜像后重试；此前的网页记录已保留。")
+        if lab_connection and response.get("lab_connection_applied") is not True:
+            raise ValueError("云端镜像尚不支持实验电脑工具回传，请更新AgentArts运行时后继续。")
         expected = sorted(document["id"] for document in request["course_documents"])
         if request["personal_memory"] and response.get("personal_memory_applied") is not True:
             raise ValueError("云端尚不支持个人记忆，请更新AgentArts镜像后继续；此前的网页记录已保留。")

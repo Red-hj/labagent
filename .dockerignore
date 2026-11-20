@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .venv
+node_modules
 runtime
 handoff
 data/course_notes

@@ -27,7 +27,7 @@ from .report import generate_report
 from .knowledge import get_document, import_document, list_documents, list_scopes, search
 from .cases import demo_cases
 from .demos import network_access_demo, ospf_goals_demo
-from .progress import emit_progress, progress_to
+from .progress import emit_progress, progress_to, execution_summary
 from .recordings import Recordings, VIDEO_SUFFIXES, available as replay_available
 from .operation_history import inspect_history
 from .rooms import Rooms, RoomConflict
@@ -348,7 +348,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             # Outbound workstation traffic carries a narrowly scoped bridge token,
             # never the website's team password or a student's account cookie.
-            if urlparse(self.path).path in {"/api/lab/agent/claim", "/api/lab/agent/poll", "/api/lab/agent/result"}:
+            if urlparse(self.path).path in {"/api/lab/agent/claim", "/api/lab/agent/poll", "/api/lab/agent/result", "/api/lab/runtime/collect"}:
                 return self.bridge_agent_request()
             if urlparse(self.path).path in ("/api/workspace/backup", "/api/workspace/restore"):
                 return self.handle_POST()
@@ -376,6 +376,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(self.server.lab_bridge.claim(payload.get("code"), payload.get("tools")))
             auth = self.headers.get("Authorization", "")
             token = auth[7:] if auth.startswith("Bearer ") else ""
+            if path == "/api/lab/runtime/collect":
+                return self.reply(self.server.lab_bridge.runtime_collect(token, payload.get("tool"), payload.get("arguments", {})))
             if path.endswith("/poll"):
                 return self.reply({"job": self.server.lab_bridge.poll(token)})
             self.server.lab_bridge.finish(token, payload.get("id"), payload.get("result"), payload.get("error"))
@@ -583,11 +585,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self.server.diagnosis_slots.acquire(blocking=False):
                 return self.reply({"error": "当前正在处理其他诊断，请稍后重试"}, 429)
             if path == "/api/diagnose/stream":
-                return self.stream_diagnosis(payload, session, room_id=shared_room)
+                return self.stream_diagnosis(payload, session, room_id=shared_room,
+                    lab_owner=user["id"] if user and not shared_room and self.server.diagnosis_backend == "agentarts" else None)
             try:
                 key = shared_room or session or "new"
-                with self.server.session_locks[hash(key) % len(self.server.session_locks)]:
-                    result = self.server.run_diagnosis(payload)
+                with self.server.session_locks[hash(key) % len(self.server.session_locks)], progress_to(None, session_id=session):
+                    result = self.server.run_diagnosis(payload, **({"lab_owner": user["id"]} if user and not shared_room and self.server.diagnosis_backend == "agentarts" else {}))
                     self.reply(self.save_result(payload, result))
             finally:
                 self.server.diagnosis_slots.release()
@@ -604,6 +607,9 @@ class Handler(BaseHTTPRequestHandler):
             self.server.write_log(traceback.format_exc(), error=True)
 
     def save_result(self, payload, result):
+        execution = execution_summary(result)
+        if execution is not None:
+            result["execution"] = execution
         collected = result.get("collected_materials", {})
         if collected:
             combined = {**payload["configs"], **collected}
@@ -705,26 +711,28 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def stream_diagnosis(self, payload, session, *, room_id=None):
+    def stream_diagnosis(self, payload, session, *, room_id=None, lab_owner=None):
         events = Queue()
 
         def process():
-            try:
-                with self.server.workspace.gate.activity(), progress_to(events.put):
-                    emit_progress("received", "请求已收到，正在准备本轮诊断。")
-                    with self.server.session_locks[hash(room_id or payload.get("room_id") or session or "new") % len(self.server.session_locks)]:
-                        result = self.server.run_diagnosis(payload)
-                        emit_progress("saving", "正在保存本轮结论与会话记录…")
-                        saved = self.save_result(payload, result)
-                    events.put({"type": "result", "result": saved})
-            except (ValueError, KeyError, TypeError) as error:
-                events.put({"type": "error", "message": str(error)})
-            except Exception:
-                import traceback
-                self.server.write_log(traceback.format_exc(), error=True)
-                events.put({"type": "error", "message": "本轮诊断处理失败，请重新提交。"})
-            finally:
-                self.server.diagnosis_slots.release()
+            with progress_to(events.put, session_id=session) as progress:
+                try:
+                    with self.server.workspace.gate.activity():
+                        emit_progress("received", "请求已收到，正在准备本轮诊断。", event="turn.started")
+                        with self.server.session_locks[hash(room_id or payload.get("room_id") or session or "new") % len(self.server.session_locks)]:
+                            result = self.server.run_diagnosis(payload, **({"lab_owner": lab_owner} if lab_owner else {}))
+                            emit_progress("saving", "正在保存本轮结论与会话记录…")
+                            saved = self.save_result(payload, result)
+                        progress.session_id = saved["session_id"]
+                        progress.send({"type": "result", "result": saved}, event="turn." + saved["execution"]["status"])
+                except (ValueError, KeyError, TypeError) as error:
+                    progress.send({"type": "error", "message": str(error)}, event="turn.failed")
+                except Exception:
+                    import traceback
+                    self.server.write_log(traceback.format_exc(), error=True)
+                    progress.send({"type": "error", "message": "本轮诊断处理失败，请重新提交。"}, event="turn.failed")
+                finally:
+                    self.server.diagnosis_slots.release()
 
         threading.Thread(target=process, daemon=True).start()
         try:
@@ -805,11 +813,12 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
             except ValueError:
                 pass
 
-    def run_diagnosis(payload):
+    def run_diagnosis(payload, *, lab_owner=None):
         if payload.get("room_id"):
             payload.update(server.rooms.prepare_diagnosis(payload))
         if cloud_workflow and payload.get("diagnostic_mode") == "open_network":
-            return cloud_workflow.run(payload)
+            with server.lab_bridge.runtime_connection(lab_owner if not payload.get("room_id") else None, server.public_url) as connection:
+                return cloud_workflow.run(payload, lab_connection=connection)
         if payload.get("session_id"):
             history = store.history(payload["session_id"])
             if history and history["attempts"][-1]["result"].get("agentarts"):

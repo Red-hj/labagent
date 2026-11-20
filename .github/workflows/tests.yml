@@ -34,6 +34,11 @@ jobs:
         run: python -B -m unittest discover -s tests -v
       - name: Check browser scripts and interactions
         run: |
+          npm ci --ignore-scripts
+          npm run check:web
+          npm run build:web
+          node scripts/test_conversation.mjs
+          node scripts/test_lab_connection.mjs
           for script in web/*.js; do node --check "$script"; done
           node tests/test_client_api.js
           node tests/test_feedback.js
@@ -41,3 +46,4 @@ jobs:
           node tests/test_workspace_interactions.js
           node tests/test_chat_requests.js
           node tests/test_learning.js
+          node tests/test_execution_state.js

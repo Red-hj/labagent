@@ -31,7 +31,7 @@ class StudentMarkupTests(unittest.TestCase):
         for control in ("problem", "analyze", "message", "demo-panel", "open-knowledge"):
             with self.subTest(control=control):
                 self.assertNotIn(("details", "lab-connection"), structure.parents[control])
-        for control in ("lab-note", "lab-load-tools", "lab-tools", "lab-check-step"):
+        for control in ("lab-connection-view",):
             with self.subTest(control=control):
                 self.assertIn(("details", "lab-connection"), structure.parents[control])
                 self.assertNotIn(("div", "diagnosis-panel"), structure.parents[control])
