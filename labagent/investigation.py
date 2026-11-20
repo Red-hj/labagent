@@ -523,12 +523,12 @@ def assess_goals(context, sources, seen, payload, previous_materials):
     return assessment
 
 
-def run_investigator(payload, sources, previous=None, completion=None, *, conversation=None, previous_materials=None, goal_checks=True):
+def run_investigator(payload, sources, previous=None, completion=None, *, conversation=None, previous_materials=None, goal_checks=True, lab_tools=None):
     if not payload.get("use_llm") or not configured():
         return _run_investigator(payload, sources, previous, completion, conversation=conversation, previous_materials=previous_materials, goal_checks=goal_checks)
     from .mcp_client import LabMCPTools, MCPError
     path = os.environ.get("LABAGENT_MCP_CONFIG")
-    context = LabMCPTools(path) if path else nullcontext(None)
+    context = nullcontext(lab_tools) if lab_tools is not None else LabMCPTools(path) if path else nullcontext(None)
     try:
         connected = context.__enter__()
     except (MCPError, OSError, json.JSONDecodeError):
@@ -662,7 +662,7 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
                     text = safe_text(observed["text"])
                     lines = text.splitlines()
                     sources[source_id] = {"source_id": source_id, "device": material, "kind": "command_output",
-                        "command": observed["command"], "text": text, "lines": lines}
+                        "command": observed["command"], "text": text, "lines": lines, "collected": True}
                     payload["configs"][material] = "设备：" + observed["device"] + "\n命令：" + observed["command"] + "\n" + text
                     # Citation lines must match the stored material exactly.
                     sources[source_id]["text"] = payload["configs"][material]
@@ -738,7 +738,7 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
         return {"status": "unavailable", "error_code": "invalid_response", "message": "开放排查未完成，材料和已有工具记录已保留。", **info()}
 
 
-def investigate(payload, previous=None, completion=None, *, conversation=None, previous_materials=None, goal_checks=True):
+def investigate(payload, previous=None, completion=None, *, conversation=None, previous_materials=None, goal_checks=True, lab_tools=None):
     from .engine import fingerprint
     validate_open(payload)
     sources, warnings = source_bundle(payload, conversation)
@@ -748,7 +748,7 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
         emit_progress("timeline", f"已还原{operations['event_count']}步终端操作，正在核对关键时间点。")
     emit_progress("materials", f"已接收{len(payload['configs'])}份材料，正在结合本轮追问分析。")
     model = run_investigator(payload, sources, previous, completion, conversation=conversation,
-                             previous_materials=previous_materials, goal_checks=goal_checks)
+                             previous_materials=previous_materials, goal_checks=goal_checks, lab_tools=lab_tools)
     analysis = model.pop("investigation", {})
     engine_state = model.pop("engine_state", {})
     same_materials = list(payload["configs"].items()) == list((previous_materials or {}).items())
@@ -814,7 +814,7 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
     if only_runs and all(not item.get("error") for item in comparisons) and model.get("status") == "ok" and not requests:
         status = "comparison_complete"
     return {"schema_version": "1.0", "mode": "open_network", "experiment": "开放网络排查", "created_at": datetime.now(timezone.utc).isoformat(),
-            "collected_materials": {source["device"]: source["text"] for source in sources.values() if source["source_id"].startswith("mcp:")},
+            "collected_materials": {source["device"]: source["text"] for source in sources.values() if source.get("collected")},
             "config_fingerprint": fingerprint(payload), "status": status, "findings": [], "unknowns": [], "checks": [],
             "runtime_checks": [], "runtime_missing": requests, "hint_level": analysis.get("learning", {}).get("level", payload.get("hint_level", 2)),
             "hint": analysis.get("summary") or "提交材料后开始分析。", "knowledge": list(knowledge.values()), "knowledge_scope": payload.get("knowledge_scope", "default"),

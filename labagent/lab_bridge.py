@@ -4,6 +4,7 @@ Only observation requests and their results cross this channel. Pairing grants n
 account/session access. Connections and unfinished requests expire on restart.
 """
 import copy
+from contextlib import contextmanager
 import re
 import secrets
 import threading
@@ -17,9 +18,13 @@ class LabBridge:
         self.clock = clock
         self.condition = threading.Condition()
         self.connections = {}
+        self.runtime_grants = {}
 
     def _drop(self, bridge_id):
         bridge = self.connections.pop(bridge_id)
+        for token, grant in list(self.runtime_grants.items()):
+            if grant["bridge_id"] == bridge_id:
+                self.runtime_grants.pop(token)
         for job in bridge["jobs"].values():
             job["error"] = "实验连接已断开，请重新连接后手动采集"
             job["event"].set()
@@ -105,6 +110,34 @@ class LabBridge:
                         "state": "waiting" if bridge["code"] else "online" if self.clock() - bridge["last_seen"] < 35 else "offline",
                         "tools": copy.deepcopy(bridge["tools"])}
             return None
+
+    @contextmanager
+    def runtime_connection(self, owner, base_url):
+        """Issue one diagnosis a temporary view of its account's workstation."""
+        token, connection = None, None
+        with self.condition:
+            bridge = self.status(owner) if owner and base_url else None
+            if bridge and bridge["state"] == "online":
+                token = secrets.token_urlsafe(32)
+                self.runtime_grants[token] = {"owner": owner, "bridge_id": bridge["id"],
+                    "expires": self.clock() + 600}
+                connection = {"url": base_url.rstrip("/") + "/api/lab/runtime/collect",
+                    "token": token, "tools": bridge["tools"]}
+        try:
+            yield connection
+        finally:
+            if token:
+                with self.condition:
+                    self.runtime_grants.pop(token, None)
+
+    def runtime_collect(self, token, tool, arguments):
+        with self.condition:
+            self._expire()
+            grant = self.runtime_grants.get(token) if isinstance(token, str) else None
+            if not grant or grant["expires"] <= self.clock():
+                raise PermissionError("本轮云端实验连接已结束，请在网站重新发起请求")
+            owner, bridge_id = grant["owner"], grant["bridge_id"]
+        return self.collect(owner, bridge_id, tool, arguments)
 
     def disconnect(self, owner, bridge_id):
         with self.condition:
