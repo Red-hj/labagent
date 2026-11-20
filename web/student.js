@@ -35,8 +35,6 @@ const measuredDemos = new Map([
   ["ospf_backup_measured", {name: "FRR备用路由复测.json", question: "为什么 OSPF 区域不一致时，两端 Ping 仍然成功？请根据各阶段实际选中的路由来源和邻居输出，比较备用静态路由与 OSPF 恢复后的实验目标完成情况。"}],
 ]);
 
-window.LabConversation.mountComposer($("conversation-composer"), text => performInteraction("ask", text));
-
 function element(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = text;
@@ -742,6 +740,8 @@ function showResult(result) {
     $("references").append(reference);
   }
 }
+
+window.LabConversation.mountComposer($("conversation-composer"), text => performInteraction("ask", text));
 
 $("load-demo").addEventListener("click", () => loadDemo());
 $("load-demo-repair").addEventListener("click", () => loadDemo(true));
