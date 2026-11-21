@@ -71,6 +71,9 @@ def main():
     parser.add_argument("--check", action="store_true", help="检查本机MCP连接并列出可用检查，然后退出；无需网站连接码")
     args = parser.parse_args()
     try:
+        if not args.config.is_file():
+            raise MCPError(f"未找到 MCP 配置文件：{args.config}。请先按 docs/接口说明.md 配置本地 MCP 服务，"
+                           "可参考 data/examples/mcp-ensp.example.json；再把命令中的路径替换为实际配置文件。")
         with LabMCPTools(args.config) as lab:
             for warning in lab.warnings:
                 print("提示：" + warning, file=sys.stderr, flush=True)

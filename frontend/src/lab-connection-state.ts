@@ -27,7 +27,7 @@ export interface LabState {
   checkReady: boolean;
 }
 const initial = (): LabState => ({bridge:null, code:null, tools:[], warnings:[], phase:"idle",
-  busy:false, message:"可先连接实验电脑，也可继续上传配置、截图或日志。", error:false, checkReady:false});
+  busy:false, message:"尚未连接实验电脑。首次使用请先完成上面的本地工具准备与自检，也可直接上传配置、截图或日志。", error:false, checkReady:false});
 
 // The account/session owner calls reset; in-flight replies cannot add old materials.
 export function createLabConnection(options: LabOptions) {
