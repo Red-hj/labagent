@@ -79,7 +79,15 @@ class CloudWorkflow:
             raise ValueError("云端未返回完整诊断结果，请检查运行时镜像版本。")
         result = deepcopy(result)
         if payload.get("learning") and not result.get("investigation", {}).get("learning"):
-            raise ValueError("云端尚未启用逐步引导版本，本轮未展示普通诊断答案；请更新现有运行时后使用。")
+            model_status = result.get("llm", {}).get("status")
+            if model_status and model_status != "ok":
+                message = {
+                    "step_limit": "本轮检查尚未收敛。请先聚焦一台设备或一项输出，再继续核对。",
+                    "no_evidence": "本轮未生成有效的下一步引导，请重试本次请求。",
+                    "not_configured": "云端模型尚未配置，请联系维护人员检查模型设置。",
+                }.get(model_status, "模型暂时未能完成本轮引导，请重试本次请求。")
+                raise ValueError(message + " 当前材料、实验目标和已保存的对话均保留。")
+            raise ValueError("云端未返回约定的逐步引导结果，请联系维护人员检查运行时；当前材料和对话已保留。")
         result["agentarts"] = {"platform_session_id": platform_id, "session_id": response["session_id"],
                               "started_at": platform_started_at, "last_activity_at": self.clock(),
                               "session_recovered": recovering}
