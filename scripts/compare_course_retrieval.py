@@ -27,6 +27,10 @@ MODEL_REVISION = "faf4aa4225822f3bc6376869cb1164e8e3feedd0"
 TOKEN_BUDGET = 120  # Model context is 128; keep margin for special tokens.
 RANK_WINDOW = 10
 RRF_CONSTANT = 60
+MMARCO_MODEL = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+MMARCO_REVISION = "1427fd652930e4ba29e8149678df786c240d8825"
+MMARCO_FILE = "onnx/model_quint8_avx2.onnx"
+MMARCO_WINDOW = 512
 EMBEDDING_MODELS = {
     "minilm": {
         "model": MODEL, "repository": MODEL_REPOSITORY, "revision": MODEL_REVISION,
@@ -121,7 +125,47 @@ def fuse_rankings(*rankings):
             for key in sorted(scores, key=lambda key: (-scores[key], key))[:TOP_K]]
 
 
-def compare(version, scope, questions, documents, embedder, *, embedding_model="minilm", english_course=False):
+def promote_shared_first(hits, lexical):
+    """Give the lexical body match priority only if it is already a semantic candidate."""
+    if not lexical or lexical[0]["match_type"] != "body":
+        return hits
+    preferred = lexical[0]["chunk_id"]
+    return sorted(hits, key=lambda hit: hit["chunk_id"] != preferred)
+
+
+def rerank_with_mmarco(hits, logits):
+    if len(logits) != len(hits) or any(not math.isfinite(value) for value in logits):
+        raise ValueError("mMARCO 排序分数与候选不匹配")
+    reordered = sorted(zip(hits, logits), key=lambda item: -item[1])
+    return [{**hit, "score": round(score, 7), "retrieval_reason": "mMARCO 对候选重新排序"} for hit, score in reordered]
+
+
+class MMarcoCrossEncoder:
+    def __init__(self, snapshot):
+        from onnxruntime import InferenceSession, SessionOptions
+        from tokenizers import Tokenizer
+
+        self.tokenizer = Tokenizer.from_file(str(snapshot / "tokenizer.json"))
+        self.tokenizer.enable_truncation(max_length=MMARCO_WINDOW)
+        self.tokenizer.enable_padding(pad_id=self.tokenizer.token_to_id("<pad>"), pad_token="<pad>")
+        options = SessionOptions()
+        options.intra_op_num_threads = 2
+        self.session = InferenceSession(str(snapshot / MMARCO_FILE), sess_options=options, providers=["CPUExecutionProvider"])
+        self.inputs = [entry.name for entry in self.session.get_inputs()]
+
+    def score(self, query, hits):
+        if not hits:
+            return []
+        import numpy as np
+        encoded = self.tokenizer.encode_batch([(query, hit["content"]) for hit in hits])
+        attributes = {"input_ids": "ids", "attention_mask": "attention_mask", "token_type_ids": "type_ids"}
+        features = {name: np.asarray([getattr(entry, attributes[name]) for entry in encoded], dtype=np.int64)
+                    for name in self.inputs}
+        logits, = self.session.run(["logits"], features)
+        return logits.reshape(-1).tolist()
+
+
+def compare(version, scope, questions, documents, embedder, *, embedding_model="minilm", english_course=False, reranker=None):
     profile = EMBEDDING_MODELS[embedding_model]
     passages = [passage for document in documents for passage in knowledge.chunks(document)]
     started = time.perf_counter()
@@ -132,9 +176,15 @@ def compare(version, scope, questions, documents, embedder, *, embedding_model="
     methods = {name: {"version": version, "scope": scope, "method": name, "sources": sources, "predictions": {}}
                for name in ("local_bm25_with_fault_tags", profile["semantic_method"], profile["hybrid_method"])}
     routed_method = profile["semantic_method"] + "_english_course"
+    agreement_method = routed_method + "_agreement"
+    mmarco_method = routed_method + "_mmarco"
+    english_course = english_course or reranker is not None
+    routed_methods = (routed_method, agreement_method) if reranker is None else (routed_method, agreement_method, mmarco_method)
     if english_course:
-        methods[routed_method] = {"version": version, "scope": scope, "method": routed_method, "sources": sources,
-                                  "predictions": {}, "query_routes": {}}
+        for method in routed_methods:
+            methods[method] = {"version": version, "scope": scope, "method": method, "sources": sources,
+                               "predictions": {}, "query_routes": {}}
+        methods[agreement_method]["promoted_chunks"] = {}
     timings = {}
     for question in questions:
         started = time.perf_counter()
@@ -144,10 +194,18 @@ def compare(version, scope, questions, documents, embedder, *, embedding_model="
         grouped = {"local_bm25_with_fault_tags": lexical[:TOP_K], profile["semantic_method"]: semantic[:TOP_K],
                    profile["hybrid_method"]: fuse_rankings(lexical, semantic)}
         if english_course:
-            route = profile["semantic_method"] if knowledge.CJK.search(query) else "bm25_section_titles"
-            grouped[routed_method] = (semantic[:TOP_K] if route == profile["semantic_method"] else
-                                      knowledge.rank_documents(query, documents, scope=scope, limit=TOP_K, section_titles=True)["results"])
-            methods[routed_method]["query_routes"][qid] = route
+            section_hits = knowledge.rank_documents(query, documents, scope=scope, limit=TOP_K, section_titles=True)["results"]
+            use_semantic = bool(knowledge.CJK.search(query))
+            route = profile["semantic_method"] if use_semantic else "bm25_section_titles"
+            routed = semantic[:TOP_K] if use_semantic else section_hits
+            agreed = promote_shared_first(routed, section_hits) if use_semantic else routed
+            grouped[routed_method], grouped[agreement_method] = routed, agreed
+            if reranker is not None:
+                grouped[mmarco_method] = rerank_with_mmarco(routed, reranker.score(query, routed)) if use_semantic else routed
+            for method in routed_methods:
+                methods[method]["query_routes"][qid] = route
+            if agreed != routed:
+                methods[agreement_method]["promoted_chunks"][qid] = agreed[0]["chunk_id"]
         for name, hits in grouped.items():
             methods[name]["predictions"][qid] = [{field: hit[field] for field in (*HIT_FIELDS, "score", "retrieval_reason")}
                                                    for hit in hits]
@@ -164,19 +222,30 @@ def compare(version, scope, questions, documents, embedder, *, embedding_model="
     if english_course:
         methods[routed_method]["settings"] = {**settings, "course_language": "en",
                                                "query_routing": "han_to_semantic_other_to_section_bm25"}
+        methods[agreement_method]["settings"] = {**methods[routed_method]["settings"],
+                                                  "rerank": "section_bm25_body_first_in_semantic_top_3"}
+        if reranker is not None:
+            methods[mmarco_method]["settings"] = {**methods[routed_method]["settings"], "rerank": "mmarco_semantic_top_3",
+                                                   "reranker_model": MMARCO_MODEL, "reranker_revision": MMARCO_REVISION,
+                                                   "reranker_file": MMARCO_FILE, "reranker_token_budget": MMARCO_WINDOW}
     return methods, settings
 
 
-def load_embedder(*, offline=False, embedding_model="minilm"):
+def model_snapshot(repository, revision, files, *, offline):
     os.environ.setdefault("HF_HOME", str(ROOT / "runtime/huggingface"))
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-    from fastembed import TextEmbedding
-    from fastembed.common.model_description import ModelSource, PoolingType
     from huggingface_hub import snapshot_download
+    return Path(snapshot_download(repository, revision=revision, cache_dir=str(ROOT / "runtime/embedding-models"),
+                                  allow_patterns=files, token=False, local_files_only=offline))
+
+
+def load_embedder(*, offline=False, embedding_model="minilm"):
     profile = EMBEDDING_MODELS[embedding_model]
     cache = ROOT / "runtime/embedding-models"
-    snapshot = snapshot_download(profile["repository"], revision=profile["revision"], cache_dir=str(cache),
-                                 allow_patterns=["*.json", profile["model_file"]], token=False, local_files_only=offline)
+    snapshot = model_snapshot(profile["repository"], profile["revision"], ["*.json", profile["model_file"]], offline=offline)
+    from fastembed import TextEmbedding
+    from fastembed.common.model_description import ModelSource, PoolingType
+
     model_name = profile["model"]
     if embedding_model == "e5-small":
         model_name = profile["repository"]
@@ -195,6 +264,7 @@ def main():
     parser.add_argument("output", type=Path, help="项目 runtime 内的新目录")
     parser.add_argument("--embedding-model", choices=EMBEDDING_MODELS, default="minilm", help="选择本地多语言向量模型")
     parser.add_argument("--english-course", action="store_true", help="额外评测英文课件中含汉字问法的语义检索")
+    parser.add_argument("--rerank-mmarco", action="store_true", help="额外评测英文课件里中文问题的本地 mMARCO 重排")
     parser.add_argument("--offline", action="store_true", help="只使用已缓存的固定模型快照")
     args = parser.parse_args()
     try:
@@ -211,8 +281,10 @@ def main():
         started = time.perf_counter()
         embedder = load_embedder(offline=args.offline, embedding_model=args.embedding_model)
         load_seconds = round(time.perf_counter() - started, 4)
+        reranker = (MMarcoCrossEncoder(model_snapshot(MMARCO_MODEL, MMARCO_REVISION, ["tokenizer.json", MMARCO_FILE],
+                                                     offline=args.offline)) if args.rerank_mmarco else None)
         results, settings = compare(version, scope, questions, documents, embedder, embedding_model=args.embedding_model,
-                                    english_course=args.english_course)
+                                    english_course=args.english_course, reranker=reranker)
         settings["model_load_seconds"] = load_seconds
         output.mkdir(parents=True, exist_ok=False)
         for name, result in results.items():

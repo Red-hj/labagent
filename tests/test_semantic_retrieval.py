@@ -1,7 +1,8 @@
 import unittest
 
 from labagent import knowledge
-from scripts.compare_course_retrieval import SemanticIndex, compare, fuse_rankings, text_windows, unit
+from scripts.compare_course_retrieval import (SemanticIndex, compare, fuse_rankings, promote_shared_first, rerank_with_mmarco,
+                                              text_windows, unit)
 from scripts.evaluate_course_retrieval import valid_span
 
 
@@ -63,10 +64,55 @@ class SemanticRetrievalTests(unittest.TestCase):
                      {"id": "latin", "query": "default gateway", "category": "direct", "language": "zh"}]
         results, _ = compare("one", "semantic-test", questions, docs, FakeEmbedder(), english_course=True)
         routed = results["local_multilingual_semantic_english_course"]
+        agreed = results["local_multilingual_semantic_english_course_agreement"]
         self.assertEqual(routed["query_routes"], {"han": "local_multilingual_semantic", "latin": "bm25_section_titles"})
         self.assertEqual(routed["predictions"]["han"], results["local_multilingual_semantic"]["predictions"]["han"])
         expected = knowledge.rank_documents(questions[1]["query"], docs, scope="semantic-test", section_titles=True)["results"]
         self.assertEqual([row["chunk_id"] for row in routed["predictions"]["latin"]], [row["chunk_id"] for row in expected])
+        self.assertEqual(agreed["predictions"]["latin"], routed["predictions"]["latin"])
+        self.assertEqual(agreed["query_routes"], routed["query_routes"])
+
+    def test_reranking_promotes_only_existing_body_matches_and_keeps_other_candidates_in_order(self):
+        a, b, c = ({"chunk_id": name, "content": name.upper()} for name in ("a", "b", "c"))
+        candidates = [a, b, c]
+        match = {**c, "match_type": "body"}
+        self.assertEqual(promote_shared_first(candidates, [match]), [c, a, b])
+        self.assertEqual(promote_shared_first(candidates, [{**match, "match_type": "title_only"}]), candidates)
+        self.assertEqual(promote_shared_first(candidates, [{**match, "chunk_id": "other"}]), candidates)
+        self.assertEqual(promote_shared_first(candidates, []), candidates)
+        self.assertEqual(promote_shared_first([], [match]), [])
+
+    def test_mmarco_reordering_keeps_candidates_and_stable_ties(self):
+        hits = [{"chunk_id": key, "content": text} for key, text in (("a", "first"), ("b", "second"), ("c", "third"))]
+        result = rerank_with_mmarco(hits, [-3.0, 5.1, 5.1])
+        self.assertEqual([(r["chunk_id"], r["content"]) for r in result], [("b", "second"), ("c", "third"), ("a", "first")])
+        self.assertEqual([r["score"] for r in result], [5.1, 5.1, -3.0])
+        for invalid in ([], [1.0, 2.0, float("nan")]):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                rerank_with_mmarco(hits, invalid)
+
+    def test_mmarco_scores_only_chinese_queries_and_cites_the_same_original_passages(self):
+        class FakeCrossEncoder:
+            def __init__(self):
+                self.requests = []
+
+            def score(self, query, hits):
+                self.requests.append((query, len(hits)))
+                return list(range(len(hits)))
+
+        docs = [document("出口", "A gateway forwards packets."), document("续约", "Renew a lease.")]
+        questions = [{"id": "zh", "query": "默认网关", "category": "direct", "language": "zh"},
+                     {"id": "en", "query": "gateway", "category": "direct", "language": "en"}]
+        reranker = FakeCrossEncoder()
+        methods, _ = compare("one", "semantic-test", questions, docs, FakeEmbedder(), reranker=reranker)
+        baseline = methods["local_multilingual_semantic_english_course"]["predictions"]
+        ranked = methods["local_multilingual_semantic_english_course_mmarco"]
+        self.assertEqual(reranker.requests, [("默认网关", 2)])
+        self.assertEqual(ranked["predictions"]["en"], baseline["en"])
+        self.assertTrue(ranked["settings"]["reranker_revision"])
+        corpus = {doc["id"]: doc["content"] for doc in docs}
+        self.assertEqual([valid_span(row, corpus) for row in ranked["predictions"]["zh"]],
+                         [valid_span(row, corpus) for row in reversed(baseline["zh"])])
 
     def test_long_passage_is_covered_without_context_truncation(self):
         text = "开头" + "x" * 580 + "gateway"
