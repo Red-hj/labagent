@@ -140,6 +140,13 @@ def rerank_with_mmarco(hits, logits):
     return [{**hit, "score": round(score, 7), "retrieval_reason": "mMARCO 对候选重新排序"} for hit, score in reordered]
 
 
+def keep_first_from_narrow_ranking(narrow, expanded):
+    if not narrow:
+        return expanded[:TOP_K]
+    first = narrow[0]
+    return [first, *(hit for hit in expanded if hit["chunk_id"] != first["chunk_id"])][:TOP_K]
+
+
 class MMarcoCrossEncoder:
     def __init__(self, snapshot):
         from onnxruntime import InferenceSession, SessionOptions
@@ -165,7 +172,13 @@ class MMarcoCrossEncoder:
         return logits.reshape(-1).tolist()
 
 
-def compare(version, scope, questions, documents, embedder, *, embedding_model="minilm", english_course=False, reranker=None):
+def compare(version, scope, questions, documents, embedder, *, embedding_model="minilm", english_course=False,
+            reranker=None, rerank_depth=TOP_K):
+    if type(rerank_depth) is not int or not TOP_K <= rerank_depth <= RANK_WINDOW:
+        raise ValueError(f"重排候选数须为 {TOP_K}～{RANK_WINDOW}")
+    expanded_rerank = rerank_depth > TOP_K
+    if expanded_rerank and reranker is None:
+        raise ValueError("扩大重排候选需要 mMARCO")
     profile = EMBEDDING_MODELS[embedding_model]
     passages = [passage for document in documents for passage in knowledge.chunks(document)]
     started = time.perf_counter()
@@ -178,8 +191,14 @@ def compare(version, scope, questions, documents, embedder, *, embedding_model="
     routed_method = profile["semantic_method"] + "_english_course"
     agreement_method = routed_method + "_agreement"
     mmarco_method = routed_method + "_mmarco"
+    expanded_method = f"{mmarco_method}_depth{rerank_depth}"
+    anchored_method = expanded_method + "_anchored"
     english_course = english_course or reranker is not None
-    routed_methods = (routed_method, agreement_method) if reranker is None else (routed_method, agreement_method, mmarco_method)
+    routed_methods = [routed_method, agreement_method]
+    if reranker is not None:
+        routed_methods.append(mmarco_method)
+    if expanded_rerank:
+        routed_methods.extend((expanded_method, anchored_method))
     if english_course:
         for method in routed_methods:
             methods[method] = {"version": version, "scope": scope, "method": method, "sources": sources,
@@ -201,7 +220,13 @@ def compare(version, scope, questions, documents, embedder, *, embedding_model="
             agreed = promote_shared_first(routed, section_hits) if use_semantic else routed
             grouped[routed_method], grouped[agreement_method] = routed, agreed
             if reranker is not None:
-                grouped[mmarco_method] = rerank_with_mmarco(routed, reranker.score(query, routed)) if use_semantic else routed
+                narrow = rerank_with_mmarco(routed, reranker.score(query, routed)) if use_semantic else routed
+                grouped[mmarco_method] = narrow
+                if expanded_rerank:
+                    candidates = semantic[:rerank_depth]
+                    expanded = rerank_with_mmarco(candidates, reranker.score(query, candidates)) if use_semantic else routed
+                    grouped[expanded_method] = expanded[:TOP_K]
+                    grouped[anchored_method] = keep_first_from_narrow_ranking(narrow, expanded)
             for method in routed_methods:
                 methods[method]["query_routes"][qid] = route
             if agreed != routed:
@@ -227,7 +252,13 @@ def compare(version, scope, questions, documents, embedder, *, embedding_model="
         if reranker is not None:
             methods[mmarco_method]["settings"] = {**methods[routed_method]["settings"], "rerank": "mmarco_semantic_top_3",
                                                    "reranker_model": MMARCO_MODEL, "reranker_revision": MMARCO_REVISION,
-                                                   "reranker_file": MMARCO_FILE, "reranker_token_budget": MMARCO_WINDOW}
+                                                   "reranker_file": MMARCO_FILE, "reranker_token_budget": MMARCO_WINDOW,
+                                                   "rerank_depth": TOP_K}
+        if expanded_rerank:
+            methods[expanded_method]["settings"] = {**methods[mmarco_method]["settings"],
+                                                     "rerank": "mmarco_semantic_expanded", "rerank_depth": rerank_depth}
+            methods[anchored_method]["settings"] = {**methods[expanded_method]["settings"],
+                                                     "first_result": "narrow_mmarco_first"}
     return methods, settings
 
 
@@ -265,6 +296,8 @@ def main():
     parser.add_argument("--embedding-model", choices=EMBEDDING_MODELS, default="minilm", help="选择本地多语言向量模型")
     parser.add_argument("--english-course", action="store_true", help="额外评测英文课件中含汉字问法的语义检索")
     parser.add_argument("--rerank-mmarco", action="store_true", help="额外评测英文课件里中文问题的本地 mMARCO 重排")
+    parser.add_argument("--rerank-depth", type=int, choices=range(TOP_K, RANK_WINDOW + 1),
+                        help="让 mMARCO 对更多语义候选重排，每题最多返回 3 条")
     parser.add_argument("--offline", action="store_true", help="只使用已缓存的固定模型快照")
     args = parser.parse_args()
     try:
@@ -281,10 +314,11 @@ def main():
         started = time.perf_counter()
         embedder = load_embedder(offline=args.offline, embedding_model=args.embedding_model)
         load_seconds = round(time.perf_counter() - started, 4)
+        use_mmarco = args.rerank_mmarco or args.rerank_depth is not None
         reranker = (MMarcoCrossEncoder(model_snapshot(MMARCO_MODEL, MMARCO_REVISION, ["tokenizer.json", MMARCO_FILE],
-                                                     offline=args.offline)) if args.rerank_mmarco else None)
+                                                     offline=args.offline)) if use_mmarco else None)
         results, settings = compare(version, scope, questions, documents, embedder, embedding_model=args.embedding_model,
-                                    english_course=args.english_course, reranker=reranker)
+                                    english_course=args.english_course, reranker=reranker, rerank_depth=args.rerank_depth or TOP_K)
         settings["model_load_seconds"] = load_seconds
         output.mkdir(parents=True, exist_ok=False)
         for name, result in results.items():

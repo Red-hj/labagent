@@ -114,6 +114,32 @@ class SemanticRetrievalTests(unittest.TestCase):
         self.assertEqual([valid_span(row, corpus) for row in ranked["predictions"]["zh"]],
                          [valid_span(row, corpus) for row in reversed(baseline["zh"])])
 
+    def test_expanded_ranking_retrieves_beyond_the_first_three_and_can_keep_the_previous_first(self):
+        class FakeCrossEncoder:
+            def __init__(self):
+                self.requests = []
+
+            def score(self, query, hits):
+                self.requests.append((query, len(hits)))
+                return list(range(len(hits)))
+
+        docs = [document(f"Note {i}", f"A gateway forwards packets in exercise {i}.") for i in range(6)]
+        questions = [{"id": "zh", "query": "默认网关", "category": "direct", "language": "zh"},
+                     {"id": "en", "query": "gateway", "category": "direct", "language": "en"}]
+        reranker = FakeCrossEncoder()
+        results, _ = compare("one", "semantic-test", questions, docs, FakeEmbedder(), reranker=reranker, rerank_depth=6)
+        name = "local_multilingual_semantic_english_course_mmarco"
+        narrow, expanded, anchored = (results[f"{name}{suffix}"]["predictions"] for suffix in ("", "_depth6", "_depth6_anchored"))
+        self.assertEqual(reranker.requests, [("默认网关", 3), ("默认网关", 6)])
+        self.assertEqual(expanded["en"], narrow["en"])
+        self.assertEqual(anchored["en"], narrow["en"])
+        self.assertFalse({row["chunk_id"] for row in expanded["zh"]} & {row["chunk_id"] for row in narrow["zh"]})
+        self.assertEqual(anchored["zh"], [narrow["zh"][0], *expanded["zh"][:2]])
+        self.assertEqual(results[f"{name}_depth6"]["settings"]["rerank_depth"], 6)
+        self.assertEqual(results[f"{name}_depth6_anchored"]["settings"]["first_result"], "narrow_mmarco_first")
+        corpus = {row["id"]: row["content"] for row in docs}
+        self.assertTrue(all(valid_span(row, corpus) for row in anchored["zh"]))
+
     def test_long_passage_is_covered_without_context_truncation(self):
         text = "开头" + "x" * 580 + "gateway"
         windows = list(text_windows(text, lambda value: min(128, len(value) + 2)))
