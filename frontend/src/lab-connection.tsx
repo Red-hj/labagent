@@ -27,11 +27,15 @@ export function LabConnectionView({state, controller}: {state:LabState; controll
     <details open><summary>第一次连接：准备工具 → 输入连接码 → 采集输出</summary>
       <ol>
         <li>
-          <strong>在实验电脑上准备本地工具</strong>
-          <p className="section-note">需要 Python、LabAgent 项目，以及能读取实验设备的 MCP 服务。MCP 是本地工具接口，用于把设备检查开放给 LabAgent。</p>
-          <p className="section-note"><a href="https://github.com/Red-hj/labagent" target="_blank" rel="noreferrer">获取项目</a> · <a href="https://github.com/Red-hj/labagent/blob/main/docs/接口说明.md#网站连接学生电脑v0201" target="_blank" rel="noreferrer">查看配置说明</a>。配置文件需按实际环境创建；下面的 runtime/mcp-ensp.json 是示例路径，请替换为自己的配置文件。</p>
-          <code className="lab-command">python scripts/connect_lab.py runtime/mcp-ensp.json --check</code>
-          <p className="section-note">先看到“本机 MCP 自检通过”和可用检查列表，再继续配对。配置示例不会自动安装 MCP 服务；自检也不会执行设备采集。</p>
+          <strong>下载并准备本地连接程序</strong>
+          <p className="section-note">实验电脑需要 Python 3.10 或更新版本。<a href="/api/lab/connector" download>下载实验电脑连接包</a>，解压后在 Windows 双击 connect.cmd；首次运行会询问设备地址和端口、实际读取接口输出，再等待网页连接码。</p>
+          <p className="section-note">内置接入器适用于 Huawei VRP 的 Telnet 控制台。先启动模拟设备，在模拟器中完成首次登录并看到 &lt;R1&gt; 等命令提示符；按模拟器显示的实际控制台地址和端口填写。</p>
+          <details><summary>手动运行或使用已有 MCP 配置</summary>
+            <code className="lab-command">python scripts/connect_lab.py --setup</code>
+            <p className="section-note">向导会生成本地配置，无需另外安装 ensp-mcp。准备完成后，实际读取每台设备的第一项检查：</p>
+            <code className="lab-command">python scripts/connect_lab.py --probe</code>
+            <p className="section-note">--check 只检查工具列表；--probe 会读取设备输出。已有 MCP 配置可在命令中指定文件路径。<a href="https://github.com/Red-hj/labagent/blob/main/docs/接口说明.md#内置-huawei-vrp-控制台接入v0211" target="_blank" rel="noreferrer">查看配置说明</a></p>
+          </details>
         </li>
         <li>
           <strong>生成连接码，在实验电脑输入</strong>
@@ -44,7 +48,7 @@ export function LabConnectionView({state, controller}: {state:LabState; controll
       <p id="lab-pair-code" className="lab-pair-code" hidden={!state.code}>{state.code ? `连接码：${state.code}（5分钟内有效）` : ""}</p>
       <p className="section-note">连接码5分钟内有效，只在自己的实验电脑输入；重新生成会断开旧连接。本地配置与设备凭据留在电脑上。</p>
           <p className="section-note">生成连接码后，在实验电脑的 LabAgent 项目目录运行下面的程序，并在终端提示处输入连接码。请保持程序运行。</p>
-          <code className="lab-command">python scripts/connect_lab.py runtime/mcp-ensp.json</code>
+          <code className="lab-command">python scripts/connect_lab.py</code>
         </li>
         <li>
           <strong>回到网页刷新，选择检查</strong>

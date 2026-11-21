@@ -164,6 +164,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "diagnosis_backend": self.server.diagnosis_backend, "diagnosis_configured": self.server.cloud_configured if self.server.diagnosis_backend == "agentarts" else configured(), "llm_configured": configured(), "llm": public_config(), "replay_available": replay_available()})
         if not self.team_access():
             return
+        if path == "/api/lab/connector":
+            from .connector_package import build_connector_package
+            content = build_connector_package()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="labagent-connector.zip"')
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            return self.wfile.write(content)
         if path == "/api/learning":
             from .learning import solution_allowed, COOKIE as LEARNING_COOKIE
             user = self.personal_user(strict=False)
