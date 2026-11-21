@@ -59,6 +59,18 @@ class ConnectorTests(unittest.TestCase):
         self.assertIn("test：服务未连接", errors)
         self.assertIn("没有可用检查", errors)
 
+    def test_missing_config_explains_setup_before_starting_mcp_or_pairing(self):
+        self.config.unlink()
+        with patch("scripts.connect_lab.LabMCPTools") as lab, patch("scripts.connect_lab.Website") as website:
+            status, output, errors = self.run_main("--check")
+        self.assertEqual(status, 1)
+        self.assertIn(str(self.config), errors)
+        self.assertIn("data/examples/mcp-ensp.example.json", errors)
+        self.assertIn("实际配置文件", errors)
+        self.assertEqual(output, "")
+        lab.assert_not_called()
+        website.assert_not_called()
+
     def test_partial_connection_reports_warning_and_lists_available_tools(self):
         self.settings["servers"]["offline"] = {"command": str(self.config.parent / "missing.exe")}
         self.write_config()
