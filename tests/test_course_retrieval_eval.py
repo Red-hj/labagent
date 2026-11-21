@@ -45,6 +45,33 @@ class CourseRetrievalEvaluationTests(unittest.TestCase):
             if "## Reset" in row["content"]:
                 self.assertTrue(row["content"].startswith("## Reset"))
 
+    def test_section_titles_follow_continuations_and_ignore_fenced_commands(self):
+        content = ("# Manual\n  ## Adjacency ##\n" + "intro " * 23 + "\n````text\n## Fake heading\n````\n"
+                   "Evidence after code.\n\n## Routes\nAnother chapter.")
+        doc = knowledge.make_document({"title": "Lab guide", "content": content})
+        source = {doc["id"]: content}
+        plain = list(knowledge.chunks(doc, size=88))
+        contextual = list(knowledge.chunks(doc, size=88, section_titles=True))
+        self.assertEqual([row["chunk_id"] for row in plain], [row["chunk_id"] for row in contextual])
+        self.assertEqual([valid_span(row, source) for row in plain], [valid_span(row, source) for row in contextual])
+        continued = next(row for row in contextual if "Evidence after code." in row["content"])
+        self.assertEqual(continued["section_title"], "Adjacency")
+        self.assertNotIn("section_title", contextual[0])
+        self.assertNotIn("section_title", contextual[-1])
+
+    def test_section_title_only_match_stays_outside_the_body_match_tier(self):
+        content = "# Manual\n## Designated router\n" + "timer example\n" * 66
+        doc = knowledge.make_document({"title": "Lab guide", "content": content})
+        baseline = knowledge.rank_documents("designated", [doc])
+        self.assertEqual(len(baseline["results"]), 1)
+        ranked = knowledge.rank_documents("designated", [doc], section_titles=True)
+        first, continuation = ranked["results"]
+        self.assertEqual(first["match_type"], "body")
+        self.assertEqual(continuation["match_type"], "title_only")
+        self.assertEqual(continuation["section_title"], "Designated router")
+        self.assertNotIn("Designated", continuation["content"])
+        self.assertIsNotNone(valid_span(continuation, {doc["id"]: content}))
+
     def test_diversification_prefers_distinct_results_within_the_same_relevance_tier(self):
         first = {"id": "one", "char_start": 0, "char_end": 600, "match_type": "body"}
         repeated = {**first, "char_start": 480, "char_end": 800}

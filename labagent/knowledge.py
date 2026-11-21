@@ -201,31 +201,40 @@ def list_scopes():
     return sorted(scopes)
 
 
-def section_boundaries(text):
+def markdown_headings(text):
     headings, fence = [], None
     position = 0
     for line in text.splitlines(keepends=True):
-        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line.rstrip("\r\n"))
+        stripped = line.rstrip("\r\n")
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", stripped)
         if marker:
             run, tail = marker.groups()
             if fence is None:
                 fence = (run[0], len(run))
             elif run[0] == fence[0] and len(run) >= fence[1] and not tail.strip():
                 fence = None
-        elif fence is None and (heading := re.match(r"^ {0,3}(#{1,6})[ \t]+\S", line)):
-            headings.append((len(heading[1]), position))
+        elif fence is None and (heading := re.match(r"^ {0,3}(#{1,6})[ \t]+(\S.*)$", stripped)):
+            title = re.sub(r"[ \t]+#+[ \t]*$", "", heading[2]).rstrip()
+            headings.append((len(heading[1]), position, position + len(line), title))
         position += len(line)
-    sections = [start for level, start in headings if level >= 2]
+    return headings
+
+
+def section_boundaries(text, *, headings=None):
+    headings = markdown_headings(text) if headings is None else headings
+    sections = [offset for level, offset, _, _ in headings if level >= 2]
     # Keep a document's title and introduction with its first real section.
-    return (sections or [start for _, start in headings])[1:]
+    return (sections or [offset for _, offset, _, _ in headings])[1:]
 
 
-def chunks(document, size=600, *, overlap=0):
+def chunks(document, size=600, *, overlap=0, section_titles=False):
     text = document["content"]
     if not 0 <= 2 * overlap < size:
         raise ValueError("相邻片段的重叠长度须小于片段长度的一半")
     newlines = [match.start() for match in re.finditer("\n", text)]
-    section_ends = section_boundaries(text)
+    headings = markdown_headings(text)
+    heading_offsets = [offset for _, offset, _, _ in headings] if section_titles else []
+    section_ends = section_boundaries(text, headings=headings)
     sectioned = bool(section_ends) or document.get("sectioned", False)
     section_ends.append(len(text))
     metadata = {key: value for key, value in document.items() if key not in ("content", "sectioned")}
@@ -248,9 +257,16 @@ def chunks(document, size=600, *, overlap=0):
         chunk = f"section-{number}" if sectioned else str(number)
         if overlap:
             chunk = f"overlap-{overlap}:{chunk}"
-        yield {**metadata, "content": text[start:end],
-               "chunk_id": f"{document['id']}:{chunk}", "char_start": start, "char_end": end,
-               "line_start": bisect_right(newlines, start - 1) + 1, "line_end": bisect_right(newlines, end - 2) + 1}
+        passage = {**metadata, "content": text[start:end],
+                   "chunk_id": f"{document['id']}:{chunk}", "char_start": start, "char_end": end,
+                   "line_start": bisect_right(newlines, start - 1) + 1, "line_end": bisect_right(newlines, end - 2) + 1}
+        if section_titles:
+            index = bisect_right(heading_offsets, start) - 1
+            if index >= 0:
+                level, _, heading_end, title = headings[index]
+                if level >= 2 and heading_end <= start:
+                    passage["section_title"] = title
+        yield passage
         if overlap and within_section:
             # Reuse text within the same section, preferring a complete line in the shared window.
             overlap_start = max(start + 1, end - overlap)
@@ -316,7 +332,7 @@ def select_distinct_spans(ranked, limit):
 
 
 def rank_documents(query, documents, codes=None, scope="default", limit=3, warnings=None, *,
-                   bilingual_terms=False, chunk_overlap=0, diversify_overlap=False):
+                   bilingual_terms=False, chunk_overlap=0, diversify_overlap=False, section_titles=False):
     """Use the production ranking on a fixed corpus, including offline evaluations."""
     validate_scope(scope)
     if not isinstance(query, str) or len(query) > 10000:
@@ -324,9 +340,10 @@ def rank_documents(query, documents, codes=None, scope="default", limit=3, warni
     if type(limit) is not int or not 1 <= limit <= 10:
         raise ValueError("检索数量须为1～10")
     codes = codes or []
-    passages = [chunk for document in documents for chunk in chunks(document, overlap=chunk_overlap)]
+    passages = [chunk for document in documents for chunk in chunks(document, overlap=chunk_overlap, section_titles=section_titles)]
     bodies = [Counter(search_tokens(passage["content"])) for passage in passages]
-    counters = [body + Counter(search_tokens(passage["title"]) * 2) for passage, body in zip(passages, bodies)]
+    counters = [body + Counter(search_tokens(passage["title"] + " " + passage.get("section_title", "")) * 2)
+                for passage, body in zip(passages, bodies)]
     lengths = [sum(counter.values()) for counter in counters]
     average = sum(lengths) / max(len(lengths), 1) or 1
     frequency = Counter(token for counter in counters for token in counter)
@@ -366,6 +383,9 @@ def rank_documents(query, documents, codes=None, scope="default", limit=3, warni
     if diversify_overlap:
         settings["prefer_distinct_spans"] = True
         method += "_diverse"
+    if section_titles:
+        settings["section_titles"] = True
+        method = "bm25_section_titles" if method == "local_bm25_with_fault_tags" else method + "_section_titles"
     return {"scope": scope, "method": method, "query": query, "results": results,
             "match_summary": {"status": match_status, "answerability": "not_assessed", "note": REFERENCE_NOTE},
             "settings": settings,

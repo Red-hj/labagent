@@ -17,6 +17,7 @@ HIT_FIELDS = ('id', 'chunk_id', 'content', 'char_start', 'char_end', 'line_start
 TOP_K = 3
 CHUNK_OVERLAP = 120
 BM25_AUDIT_SETTINGS = {'local_bm25_with_fault_tags': {}, 'bm25_ospf_bilingual_terms': {'bilingual_terms': True},
+                       'bm25_section_titles': {'section_titles': True},
                        f'bm25_overlap_{CHUNK_OVERLAP}': {'chunk_overlap': CHUNK_OVERLAP},
                        f'bm25_overlap_{CHUNK_OVERLAP}_diverse': {'chunk_overlap': CHUNK_OVERLAP, 'diversify_overlap': True},
                        f'bm25_overlap_{CHUNK_OVERLAP}_merged': {'chunk_overlap': CHUNK_OVERLAP}}
@@ -84,7 +85,8 @@ def merge_overlapping_hits(hits, corpus):
     return results
 
 
-def run_search(version, scope, questions, *, bilingual_terms=False, chunk_overlap=0, diversify_overlap=False, merge_overlap=False):
+def run_search(version, scope, questions, *, bilingual_terms=False, chunk_overlap=0, diversify_overlap=False,
+               merge_overlap=False, section_titles=False):
     documents, warnings = knowledge.corpus(scope)
     if warnings:
         raise ValueError('课程资料读取或校验失败，请修复后重新检索')
@@ -95,6 +97,8 @@ def run_search(version, scope, questions, *, bilingual_terms=False, chunk_overla
         options['chunk_overlap'] = chunk_overlap
     if diversify_overlap:
         options['diversify_overlap'] = True
+    if section_titles:
+        options['section_titles'] = True
     searches = {q['id']: knowledge.rank_documents(q['query'], documents, scope=scope, limit=TOP_K, **options) for q in questions}
     first = next(iter(searches.values()), {})
     method, settings = first.get('method', 'local_bm25_with_fault_tags'), first.get('settings', {})
@@ -260,6 +264,7 @@ def main():
             methods.add_argument('--overlap-chunks', action='store_true', help='试用同章节片段保留最多 120 字重叠')
             methods.add_argument('--diversify-overlap', action='store_true', help='在 120 字重叠切分上优先返回不同原文范围')
             methods.add_argument('--merge-overlap', action='store_true', help='合并前三条重叠原文并保留完整证据')
+            methods.add_argument('--section-titles', action='store_true', help='按 Markdown 章节标题辅助排序')
         else:
             sub.add_argument('--labels', required=True, type=Path)
             sub.add_argument('--predictions', required=True, type=Path)
@@ -276,7 +281,8 @@ def main():
         if args.command == 'search':
             result = run_search(version, scope, questions, bilingual_terms=args.bilingual_terms,
                                 chunk_overlap=CHUNK_OVERLAP if args.overlap_chunks or args.diversify_overlap or args.merge_overlap else 0,
-                                diversify_overlap=args.diversify_overlap, merge_overlap=args.merge_overlap)
+                                diversify_overlap=args.diversify_overlap, merge_overlap=args.merge_overlap,
+                                section_titles=args.section_titles)
         else:
             labels = read(args.labels)
             result = evaluate(version, scope, questions, labels, read(args.predictions), ids, corpus)
