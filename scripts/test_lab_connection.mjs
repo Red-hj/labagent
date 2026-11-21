@@ -100,3 +100,25 @@ for (const path of ["/api/lab/tools","/api/lab/bridge","/api/lab/bridge/disconne
   f.busy(false); await f.controller.pair("电脑"); assert.equal(f.calls.length,1);
 }
 console.log("React MCP passed: pairing, tool parameters, collection, busy controls, explicit retry and stale owner replies");
+
+{
+  const f=fixture(); await f.controller.loadTools();
+  f.asked.length=0;
+  await f.controller.collect(f.state().tools[0],args,true);
+  assert.equal(f.materials.length,1);
+  assert.equal(f.asked.length,1,"Collect and verify continues the conversation once");
+  assert.equal(f.asked[0][1],"verify");
+  assert.equal(f.state().busy,false,"Collection must release busy before asking the agent");
+  assert.equal(f.state().checkReady,false,"Automatic verification should not leave a duplicate action");
+  assert.match(f.render(),/采集并核对/);
+  assert.match(f.render(),/仅采集材料/);
+}
+for (const reset of [false,true]) {
+  const f=fixture(); await f.controller.loadTools();
+  const barrier=f.delay("/api/lab/collect");
+  const request=f.controller.collect(f.state().tools[0],args,true);
+  if (reset) {f.controller.reset(); barrier.resolve({materials:{"old.log":"old account"}});}
+  else barrier.reject(Error("Device offline"));
+  await request;
+  assert.equal(f.asked.length,0,"Failed or old-owner collection cannot start a diagnosis");
+}

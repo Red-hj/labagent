@@ -34,5 +34,6 @@ def dialogue(attempts):
                       "assistant": answer, "summary": analysis.get("summary", ""),
                       "steps": analysis.get("steps", []), "evidence": evidence,
                       "created_at": attempt["created_at"], "status": result["status"], "model_status": model.get("status"),
-                      "material_names": list(payload.get("configs", {})), "recording_ids": payload.get("recordings", [])})
+                      "material_names": list(payload.get("configs", {})), "recording_ids": payload.get("recordings", []),
+                      "material_changes": result.get("material_changes")})
     return turns

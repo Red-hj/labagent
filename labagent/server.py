@@ -634,6 +634,10 @@ class Handler(BaseHTTPRequestHandler):
         user = self.personal_user()
         owner = "room:" + payload["room_id"] if payload.get("room_id") else user["id"] if user else None
         result["memory_used"] = [{"kind": item["kind"], "title": item["title"]} for item in payload.get("personal_memory", [])]
+        from .material_changes import compare_materials
+        history = self.store.history(payload["session_id"]) if payload.get("session_id") else None
+        result["material_changes"] = compare_materials(
+            history["attempts"][-1]["input"].get("configs", {}) if history else None, payload["configs"])
         saved = self.store.save(payload, result, owner=owner)
         self.server.rooms.record_diagnosis(payload, saved)
         if user:

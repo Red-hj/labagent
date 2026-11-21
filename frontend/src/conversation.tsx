@@ -13,6 +13,13 @@ export interface Citation {
   quote: string;
 }
 
+export interface MaterialChanges {
+  has_previous: boolean;
+  changed: boolean;
+  items: Array<{material:string; kind:"added" | "removed" | "updated"; added:number; removed:number;
+    redacted_only:boolean; truncated:boolean; preview:Array<{kind:"added" | "removed"; line:number; text:string}>}>;
+}
+
 export interface Turn {
   attempt?: number;
   user: string;
@@ -23,6 +30,7 @@ export interface Turn {
   summary?: string;
   steps?: string[];
   material_names?: string[];
+  material_changes?: MaterialChanges | null;
   evidence?: Citation[];
 }
 
@@ -35,8 +43,20 @@ interface ConversationProps {
 function Evidence({turn, onMaterials}: {turn: Turn; onMaterials: OpenMaterials}) {
   if (!turn.attempt) return null;
   return <details className="chat-evidence">
-    <summary>本轮材料与依据</summary>
+    <summary>本轮材料与依据{turn.material_changes?.changed && ` · ${turn.material_changes.items.length}份材料有变化`}</summary>
     {turn.summary && turn.summary !== turn.assistant && <p>{turn.summary}</p>}
+    {turn.material_changes?.changed && (
+      <section aria-label="本轮材料变化">
+        <p>与上一轮提交的材料对照，继续结合实际输出核对实验目标。</p>
+        {turn.material_changes!.items.map(change => <div key={change.material}>
+          <p><strong>{change.material}</strong> · {change.kind === "added" ? "新增材料" : change.kind === "removed" ? "移除材料" : "材料已更新"} · 新增 {change.added} 行，移除 {change.removed} 行</p>
+          {change.redacted_only && <p>敏感行有更新，内容已省略。</p>}
+          {change.preview.length > 0 && <pre style={{whiteSpace:"pre-wrap", maxHeight:240, overflow:"auto"}}>{change.preview.map(row =>
+            `${row.kind === "added" ? "+" : "-"} ${row.kind === "added" ? "新" : "旧"}第${row.line}行：${row.text}`).join("\n")}</pre>}
+          {change.truncated && <p>仅展示部分变化，可查看本轮材料或上一轮材料的完整内容。</p>}
+        </div>)}
+      </section>
+    )}
     <button type="button" className="text-button" onClick={() => onMaterials(turn)}>查看当时提交的材料</button>
     {(turn.evidence || []).map((citation, index) => <div key={index}>
       <button type="button" className="text-button" onClick={() => onMaterials(turn, citation)}>

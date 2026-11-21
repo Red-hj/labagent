@@ -228,6 +228,21 @@ def generate_open_report(history):
             if "chunk_id" in doc:
                 rows.append(f"  - 版本 {clean(doc.get('version'))}；第{doc['line_start']}～{doc['line_end']}行；正文 SHA256 {doc['content_hash']}")
                 rows.append("  - 保存的原文片段：" + clean(doc["content"]))
+    changes = [(number, item) for number, attempt in enumerate(attempts, 1)
+               for item in attempt["result"].get("material_changes", {}).get("items", [])]
+    if changes:
+        rows += ["", "## 前后材料变化", "", "各轮材料与上一轮提交对照；实验目标是否完成以复测结果为准。"]
+        for number, change in changes:
+            rows += ["", f"第{number}轮：{clean(change['material'])}，新增{change['added']}行、移除{change['removed']}行。"]
+            if change["redacted_only"]:
+                rows.append("敏感行有更新，内容已省略。")
+            if change["preview"]:
+                rows += ["", "```diff"]
+                rows += [f"{'+' if row['kind'] == 'added' else '-'} {'新' if row['kind'] == 'added' else '旧'}第{row['line']}行：{row['text']}"
+                         for row in change["preview"]]
+                rows.append("```")
+            if change["truncated"]:
+                rows.append("仅展示部分变化，完整内容保留在各轮材料快照中。")
     tools = [(number, tool) for number, attempt in enumerate(attempts, 1) for tool in attempt["result"].get("llm", {}).get("tool_trace", [])]
     if tools:
         rows += ["", "## 工具执行记录", ""]

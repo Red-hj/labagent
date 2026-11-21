@@ -79,9 +79,10 @@ export function createLabConnection(options: LabOptions) {
     } catch (error) { if (owner === epoch) failed(error); }
     finally { if (owner === epoch) update({phase:"idle"}); }
   }
-  async function collect(tool: LabTool, args: Record<string, string>) {
+  async function collect(tool: LabTool, args: Record<string, string>, verify = false) {
     if (!available()) return;
     const owner = epoch;
+    let collected = false;
     update({phase:"collecting", error:false, message:"正在从已连接的实验设备读取输出…"});
     options.setCollecting?.(true);
     update({});
@@ -90,18 +91,25 @@ export function createLabConnection(options: LabOptions) {
         tool:tool.function.name, ...(tool.bridge_id ? {bridge_id:tool.bridge_id} : {}), arguments:args});
       if (owner !== epoch) return;
       options.addMaterials(data.materials);
+      collected = true;
       update({checkReady:true, message:"设备输出已加入当前材料。点“核对这一步”继续，会话保留。"});
     } catch (error) { if (owner === epoch) failed(error); }
     finally {
       options.setCollecting?.(false);
       update(owner === epoch ? {phase:"idle"} : {});
     }
+    if (collected && verify && owner === epoch) check();
+  }
+  function check() {
+    if (!available() || !state.checkReady) return;
+    update({checkReady:false});
+    options.ask("请比较刚采集的输出与上一轮材料，核对当前这一步，说明观察到的变化和下一步操作。", "verify");
   }
   return {
     getSnapshot:() => state,
     subscribe:(listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     loadTools, pair, disconnect, collect,
-    check:() => { if (available() && state.checkReady) options.ask("请用我刚从实验电脑采集的输出核对当前这一步，说明观察到了什么，再引导我做下一小步。", "verify"); },
+    check,
     refreshBusy:() => { if (state.busy !== options.busy()) update({}); },
     reset:() => { epoch++; state = initial(); update({}); }
   };
