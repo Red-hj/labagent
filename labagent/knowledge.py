@@ -3,6 +3,7 @@ from bisect import bisect_right
 from collections import Counter
 from datetime import datetime, timezone
 import hashlib
+from itertools import groupby
 import json
 import math
 import os
@@ -284,7 +285,38 @@ def search(query, codes=None, scope="default", limit=3, *, course_documents=None
     return rank_documents(query, documents, codes, scope, limit, warnings)
 
 
-def rank_documents(query, documents, codes=None, scope="default", limit=3, warnings=None, *, bilingual_terms=False, chunk_overlap=0):
+def passage_span(passage):
+    return passage["id"], passage["char_start"], passage["char_end"]
+
+
+def spans_overlap(first, second):
+    return first[0] == second[0] and max(first[1], second[1]) < min(first[2], second[2])
+
+
+def select_distinct_spans(ranked, limit):
+    """Defer overlapping results within each relevance tier and fill any unused slots."""
+    results, spans = [], []
+    for _, tier in groupby(ranked, key=lambda result: result["match_type"] == "title_only"):
+        deferred = []
+        for result in tier:
+            span = passage_span(result)
+            if any(spans_overlap(span, previous) for previous in spans):
+                deferred.append((result, span))
+            else:
+                results.append(result)
+                spans.append(span)
+                if len(results) == limit:
+                    return results
+        for result, span in deferred[:limit - len(results)]:
+            results.append(result)
+            spans.append(span)
+        if len(results) == limit:
+            break
+    return results
+
+
+def rank_documents(query, documents, codes=None, scope="default", limit=3, warnings=None, *,
+                   bilingual_terms=False, chunk_overlap=0, diversify_overlap=False):
     """Use the production ranking on a fixed corpus, including offline evaluations."""
     validate_scope(scope)
     if not isinstance(query, str) or len(query) > 10000:
@@ -321,7 +353,7 @@ def rank_documents(query, documents, codes=None, scope="default", limit=3, warni
                 reason = "正文中英术语匹配"
             ranked.append({**passage, "score": round(score, 5), "retrieval_reason": reason, "match_type": match_type})
     ranked.sort(key=lambda item: (item["match_type"] == "title_only", -item["score"], item["chunk_id"]))
-    results = ranked[:limit]
+    results = select_distinct_spans(ranked, limit) if diversify_overlap else ranked[:limit]
     match_status = "no_match" if not results else "title_only" if all(p["match_type"] == "title_only" for p in results) else "reference_candidates"
     settings = {"question_stopwords": "v1", "body_before_title_only": True}
     method = "local_bm25_with_fault_tags"
@@ -331,6 +363,9 @@ def rank_documents(query, documents, codes=None, scope="default", limit=3, warni
     if bilingual_terms:
         settings["bilingual_terms"] = "ospf_zh_to_en_v1"
         method = f"{method}_bilingual_terms" if chunk_overlap else "bm25_ospf_bilingual_terms"
+    if diversify_overlap:
+        settings["prefer_distinct_spans"] = True
+        method += "_diverse"
     return {"scope": scope, "method": method, "query": query, "results": results,
             "match_summary": {"status": match_status, "answerability": "not_assessed", "note": REFERENCE_NOTE},
             "settings": settings,

@@ -1,7 +1,7 @@
 import unittest
 
 from labagent import knowledge
-from scripts.evaluate_course_retrieval import diagnose_misses, evaluate, valid_span
+from scripts.evaluate_course_retrieval import diagnose_misses, evaluate, merge_overlapping_hits, valid_span
 
 
 class CourseRetrievalEvaluationTests(unittest.TestCase):
@@ -44,6 +44,49 @@ class CourseRetrievalEvaluationTests(unittest.TestCase):
             self.assertIsNotNone(valid_span(row, {doc["id"]: content}))
             if "## Reset" in row["content"]:
                 self.assertTrue(row["content"].startswith("## Reset"))
+
+    def test_diversification_prefers_distinct_results_within_the_same_relevance_tier(self):
+        first = {"id": "one", "char_start": 0, "char_end": 600, "match_type": "body"}
+        repeated = {**first, "char_start": 480, "char_end": 800}
+        different = {**repeated, "id": "two"}
+        adjacent = {**first, "char_start": 600, "char_end": 1000}
+        title = {**first, "id": "three", "match_type": "title_only"}
+        self.assertEqual(knowledge.select_distinct_spans([first, repeated, different, adjacent, title], 3),
+                         [first, different, adjacent])
+        self.assertEqual(knowledge.select_distinct_spans([first, repeated, title], 3), [first, repeated, title])
+        self.assertEqual(knowledge.select_distinct_spans([first, repeated, title], 2), [first, repeated])
+
+    def test_report_counts_questions_with_overlapping_valid_spans(self):
+        content = "start to finish"
+        first = {"id": "source", "char_start": 0, "char_end": 8, "line_start": 1, "line_end": 1, "content": content[:8]}
+        repeated = {**first, "char_start": 5, "char_end": 15, "content": content[5:]}
+        adjacent = {**repeated, "char_start": 8, "content": content[8:]}
+        questions = [{"id": qid, "category": "direct", "language": "en"} for qid in ("q1", "q2", "q3")]
+        predictions = {"q1": [first, repeated], "q2": [first, adjacent], "q3": [first, {**repeated, "line_end": 2}]}
+        report = evaluate("one", "course", questions, {"version": "one", "cases": {q['id']: [] for q in questions}},
+                          {"version": "one", "scope": "course", "method": "test", "predictions": predictions},
+                          {}, {"source": content})
+        self.assertEqual([row["overlapping_candidates"] for row in report["records"]], [True, False, False])
+        self.assertEqual(report["all"]["overlapping_candidates"]["numerator"], 1)
+        self.assertEqual(report["all"]["overlapping_candidates"]["denominator"], 3)
+
+    def test_merged_hit_keeps_both_ends_of_the_evidence_and_original_offsets(self):
+        content = "hello here\nsecond line\nthird line"
+        corpus = {"guide": content, "separate": "a distinct source"}
+
+        def hit(source, start, end):
+            source_text = corpus[source]
+            return {"id": source, "chunk_id": f"{source}:{start}-{end}", "char_start": start, "char_end": end,
+                    "line_start": source_text.count("\n", 0, start) + 1, "line_end": source_text.count("\n", 0, end - 1) + 1,
+                    "content": source_text[start:end]}
+
+        original = [hit("guide", 0, 9), hit("guide", 12, 24), hit("guide", 8, 16), hit("separate", 0, 9)]
+        merged, other = merge_overlapping_hits(original, corpus)
+        self.assertEqual(valid_span(merged, corpus), ("guide", 0, 24))
+        self.assertEqual(other, original[-1])
+        self.assertTrue(all(row["content"] in merged["content"] for row in original[:-1]))
+        adjacent = [hit("guide", 0, 8), hit("guide", 8, 13)]
+        self.assertEqual(merge_overlapping_hits(adjacent, corpus), adjacent)
 
     def test_miss_analysis_distinguishes_split_evidence_from_ranking(self):
         boundary = knowledge.make_document({"title": "Boundary", "content": "x" * 580 + "\nfirst step\n" + "y" * 35})

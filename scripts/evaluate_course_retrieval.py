@@ -2,6 +2,7 @@
 
 import argparse
 from pathlib import Path
+from itertools import combinations
 import json
 import sys
 
@@ -16,7 +17,9 @@ HIT_FIELDS = ('id', 'chunk_id', 'content', 'char_start', 'char_end', 'line_start
 TOP_K = 3
 CHUNK_OVERLAP = 120
 BM25_AUDIT_SETTINGS = {'local_bm25_with_fault_tags': {}, 'bm25_ospf_bilingual_terms': {'bilingual_terms': True},
-                       f'bm25_overlap_{CHUNK_OVERLAP}': {'chunk_overlap': CHUNK_OVERLAP}}
+                       f'bm25_overlap_{CHUNK_OVERLAP}': {'chunk_overlap': CHUNK_OVERLAP},
+                       f'bm25_overlap_{CHUNK_OVERLAP}_diverse': {'chunk_overlap': CHUNK_OVERLAP, 'diversify_overlap': True},
+                       f'bm25_overlap_{CHUNK_OVERLAP}_merged': {'chunk_overlap': CHUNK_OVERLAP}}
 
 
 def load_package(folder):
@@ -58,7 +61,30 @@ def prepare_corpus(scope, sources):
     return ids, {doc['id']: doc['content'] for doc in documents}
 
 
-def run_search(version, scope, questions, *, bilingual_terms=False, chunk_overlap=0):
+def merge_overlapping_hits(hits, corpus):
+    """Combine selected spans while retaining all of their original text."""
+    results = []
+    for hit in hits:
+        span = knowledge.passage_span(hit)
+        overlapping = [i for i, selected in enumerate(results)
+                       if knowledge.spans_overlap(span, knowledge.passage_span(selected))]
+        if not overlapping:
+            results.append(hit)
+            continue
+        source, start, end = span
+        start = min(start, *(results[i]['char_start'] for i in overlapping))
+        end = max(end, *(results[i]['char_end'] for i in overlapping))
+        content = corpus[source]
+        first = overlapping[0]
+        results[first] = {**results[first], 'chunk_id': f'{source}:merged-{start}-{end}', 'content': content[start:end],
+                          'char_start': start, 'char_end': end,
+                          'line_start': content.count('\n', 0, start) + 1, 'line_end': content.count('\n', 0, end - 1) + 1}
+        for index in reversed(overlapping[1:]):
+            results.pop(index)
+    return results
+
+
+def run_search(version, scope, questions, *, bilingual_terms=False, chunk_overlap=0, diversify_overlap=False, merge_overlap=False):
     documents, warnings = knowledge.corpus(scope)
     if warnings:
         raise ValueError('课程资料读取或校验失败，请修复后重新检索')
@@ -67,15 +93,24 @@ def run_search(version, scope, questions, *, bilingual_terms=False, chunk_overla
         options['bilingual_terms'] = True
     if chunk_overlap:
         options['chunk_overlap'] = chunk_overlap
+    if diversify_overlap:
+        options['diversify_overlap'] = True
     searches = {q['id']: knowledge.rank_documents(q['query'], documents, scope=scope, limit=TOP_K, **options) for q in questions}
     first = next(iter(searches.values()), {})
-    result = {'version': version, 'scope': scope, 'method': first.get('method', 'local_bm25_with_fault_tags'), 'predictions': {
-        q['id']: [{field: passage[field] for field in HIT_FIELDS}
-                  for passage in searches[q['id']]['results']]
-        for q in questions
-    }}
+    method, settings = first.get('method', 'local_bm25_with_fault_tags'), first.get('settings', {})
+    if merge_overlap:
+        method += '_merged'
+        settings = {**settings, 'merge_overlapping_hits': True}
+    corpus = {doc['id']: doc['content'] for doc in documents}
+    predictions = {}
+    for qid, search in searches.items():
+        hits = search['results']
+        if merge_overlap:
+            hits = merge_overlapping_hits(hits, corpus)
+        predictions[qid] = [{field: passage[field] for field in HIT_FIELDS} for passage in hits]
+    result = {'version': version, 'scope': scope, 'method': method, 'predictions': predictions}
     result['match_summaries'] = {qid: search['match_summary'] for qid, search in searches.items()}
-    result['settings'] = first.get('settings', {})
+    result['settings'] = settings
     result['sources'] = [knowledge.summary(doc) for doc in documents]
     return result
 
@@ -138,6 +173,8 @@ def summarize(rows):
             'evidence_coverage': score(sum(row['evidence_found'] for row in answerable), sum(row['evidence_total'] for row in answerable)),
             'unanswerable_returned': score(sum(bool(row['returned']) for row in unanswered), len(unanswered)),
             'unanswerable_empty': score(sum(not row['returned'] for row in unanswered), len(unanswered)),
+            'overlapping_candidates': score(sum(row['overlapping_candidates'] for row in rows), len(rows)),
+            'context_chars': sum(row['context_chars'] for row in rows),
             'source_alignment': score(valid_passages, count_passages)}
 
 
@@ -155,18 +192,21 @@ def evaluate(version, scope, questions, labels, predictions, ids, corpus):
         passages = submitted[q['id']]
         if not isinstance(passages, list) or len(passages) > TOP_K:
             raise ValueError(f"{q['id']} 需要 0～{TOP_K} 条候选")
-        rank, invalid, found = None, 0, set()
+        rank, invalid, found, valid_spans = None, 0, set(), []
         for number, passage in enumerate(passages, 1):
             span = valid_span(passage, corpus)
             if span is None:
                 invalid += 1
                 continue
+            valid_spans.append(span)
             matches = covered_targets(span, targets)
             if matches:
                 found.update(matches)
                 rank = rank or number
         rows.append({'id': q['id'], 'category': q['category'], 'language': q['language'], 'answerable': bool(targets),
                      'rank': rank, 'returned': len(passages), 'invalid_citations': invalid,
+                     'overlapping_candidates': any(knowledge.spans_overlap(a, b) for a, b in combinations(valid_spans, 2)),
+                     'context_chars': sum(end - start for _, start, end in valid_spans),
                      'evidence_found': len(found), 'evidence_total': len(targets)})
     result = {'version': version, 'scope': scope, 'method': predictions['method'], 'questions': len(rows),
               'all': summarize(rows), 'records': rows}
@@ -179,7 +219,7 @@ def evaluate(version, scope, questions, labels, predictions, ids, corpus):
 def diagnose_misses(report, questions, labels, ids, corpus, documents):
     """Check if missed evidence can fit in a candidate and where BM25 ranks it."""
     if report['method'] not in BM25_AUDIT_SETTINGS:
-        raise ValueError('漏检分析支持本脚本的 BM25、术语扩展及重叠切分预测')
+        raise ValueError('漏检分析支持本脚本生成的 BM25 预测')
     options = BM25_AUDIT_SETTINGS[report['method']]
     candidates = [valid_span(chunk, corpus) for doc in documents
                   for chunk in knowledge.chunks(doc, overlap=options.get('chunk_overlap', 0))]
@@ -202,7 +242,8 @@ def diagnose_misses(report, questions, labels, ids, corpus, documents):
             cause = 'outside_top_10' if rank is None else 'rank_4_to_10' if rank > TOP_K else 'missing_from_predictions'
         counts[cause] += 1
         misses.append({'id': qid, 'cause': cause, 'rank_at_10': rank})
-    return {'candidate_count': len(candidates), 'counts': counts, 'cases': misses}
+    return {'candidate_count': len(candidates), 'counts': counts, 'cases': misses,
+            'rank_stage': 'before_merge' if report['method'].endswith('_merged') else 'returned_ranking'}
 
 
 def main():
@@ -217,6 +258,8 @@ def main():
             methods = sub.add_mutually_exclusive_group()
             methods.add_argument('--bilingual-terms', action='store_true', help='试用中文 OSPF 术语到英文正文的候选排序')
             methods.add_argument('--overlap-chunks', action='store_true', help='试用同章节片段保留最多 120 字重叠')
+            methods.add_argument('--diversify-overlap', action='store_true', help='在 120 字重叠切分上优先返回不同原文范围')
+            methods.add_argument('--merge-overlap', action='store_true', help='合并前三条重叠原文并保留完整证据')
         else:
             sub.add_argument('--labels', required=True, type=Path)
             sub.add_argument('--predictions', required=True, type=Path)
@@ -232,7 +275,8 @@ def main():
         ids, corpus = prepare_corpus(scope, sources)
         if args.command == 'search':
             result = run_search(version, scope, questions, bilingual_terms=args.bilingual_terms,
-                                chunk_overlap=CHUNK_OVERLAP if args.overlap_chunks else 0)
+                                chunk_overlap=CHUNK_OVERLAP if args.overlap_chunks or args.diversify_overlap or args.merge_overlap else 0,
+                                diversify_overlap=args.diversify_overlap, merge_overlap=args.merge_overlap)
         else:
             labels = read(args.labels)
             result = evaluate(version, scope, questions, labels, read(args.predictions), ids, corpus)
