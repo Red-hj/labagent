@@ -122,7 +122,14 @@ class CloudRelayFlowTests(unittest.TestCase):
                 names=[t["function"]["name"] for t in options["tools"]]
                 self.assertIn("lab_test_r1",names)
                 return call("lab_test_r1",ARGUMENTS)
-            observed=json.loads(messages[-1]["content"]); row=observed["lines"][-1]
+            observed=json.loads(messages[-1]["content"])
+            if "has_previous" in observed:
+                self.material_comparison=observed
+                observed=next(json.loads(message["content"]) for message in reversed(messages)
+                    if message["role"]=="tool" and "source_id" in json.loads(message["content"]))
+            elif json.loads(messages[1]["content"]).get("interaction",{}).get("type")=="verify":
+                return call("compare_materials",{})
+            row=observed["lines"][-1]
             return call("submit_learning_step",step(evidence=[{"source_id":observed["source_id"],"line":row["line"],"quote":row["text"]}]))
         model_patch=patch("labagent.investigation.chat_completion",side_effect=model); model_patch.start(); self.addCleanup(model_patch.stop)
 
@@ -152,6 +159,16 @@ class CloudRelayFlowTests(unittest.TestCase):
                 status,second,_=pending.result(timeout=10)
                 self.assertEqual(status,200,second)
                 self.assertEqual(second["session_id"],result["session_id"])
+                self.assertTrue(second["material_changes"]["changed"])
+                change=second["material_changes"]["items"][0]
+                self.assertEqual(change["kind"],"updated")
+                self.assertEqual(change["added"],1)
+                self.assertEqual(change["removed"],0)
+                self.assertIn("second collection marker",change["preview"][0]["text"])
+                self.assertIn("second collection marker",self.material_comparison["changes"][0]["diff"])
+                self.assertEqual(second["dialogue"][-1]["material_changes"],second["material_changes"])
+                self.assertNotEqual(second["status"],"verified_from_observations",
+                                    "Changed output alone must not complete an experiment")
                 self.assertIn("second collection marker",next(iter(second["collected_materials"].values())),"A refreshed tool output must replace the same saved material on the website")
         self.assertEqual(status,200,result)
         self.assertEqual(result["llm"]["status"],"ok")
@@ -160,6 +177,9 @@ class CloudRelayFlowTests(unittest.TestCase):
         store=self.server.RequestHandlerClass.keywords["store"]
         history=store.history(result["session_id"])
         self.assertIn("10.12.0.1/24 up up",json.dumps(history,ensure_ascii=False))
+        from labagent.report import generate_report
+        self.assertIn("前后材料变化",generate_report(history))
+        self.assertIn("second collection marker",generate_report(history))
         cloud=self.service.store.history(result["agentarts"]["session_id"])
         for token in self.tokens:
             self.assertNotIn(token,json.dumps(history)); self.assertNotIn(token,json.dumps(cloud)); self.assertNotIn(token,json.dumps(self.messages))
