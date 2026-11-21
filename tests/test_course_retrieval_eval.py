@@ -1,9 +1,67 @@
 import unittest
 
-from scripts.evaluate_course_retrieval import evaluate
+from labagent import knowledge
+from scripts.evaluate_course_retrieval import diagnose_misses, evaluate, valid_span
 
 
 class CourseRetrievalEvaluationTests(unittest.TestCase):
+    def test_bilingual_candidate_matches_english_body_and_preserves_citable_offsets(self):
+        documents = [knowledge.make_document({"title": title, "content": content}) for title, content in (
+            ("Packet types", "\nA link-state advertisement (LSA) describes part of the topology."),
+            ("Link-state advertisement", "The interface keeps a timer."),
+            ("邻接", "邻居交换数据库描述报文。"))]
+        baseline = knowledge.rank_documents("链路状态通告携带什么？", documents)
+        result = knowledge.rank_documents("链路状态通告携带什么？", documents, bilingual_terms=True)
+        self.assertEqual(baseline["results"], [])
+        hit, = result["results"]
+        self.assertEqual(hit["id"], documents[0]["id"])
+        self.assertEqual(hit["match_type"], "body")
+        self.assertEqual(result["match_summary"]["answerability"], "not_assessed")
+        self.assertIsNotNone(valid_span(hit, {doc["id"]: doc["content"] for doc in documents}))
+
+    def test_bilingual_candidate_distinguishes_designated_and_backup_roles(self):
+        backup = knowledge.make_document({"title": "Backup", "content": "The backup designated router is available."})
+        primary = knowledge.make_document({"title": "Primary", "content": "The designated router originates a network LSA."})
+        documents = [backup, primary]
+        for query, expected in (("备份指定路由器", backup), ("指定路由器", primary)):
+            with self.subTest(query=query):
+                result = knowledge.rank_documents(query, documents, bilingual_terms=True)
+                hit, = result["results"]
+                self.assertEqual(hit["id"], expected["id"])
+        english = knowledge.rank_documents("Network LSA", documents)
+        self.assertEqual(knowledge.rank_documents("Network LSA", documents, bilingual_terms=True)["results"], english["results"])
+
+    def test_overlapping_chunks_preserve_cross_boundary_evidence_and_section_limits(self):
+        evidence = "Step A completed.\nStep B completed."
+        content = "# Lab\n## Verify\n" + "x" * 47 + evidence + "\n\n## Reset\nUse the original configuration."
+        doc = knowledge.make_document({"title": "Exercise", "content": content})
+        baseline = list(knowledge.chunks(doc, size=85))
+        overlap = list(knowledge.chunks(doc, size=85, overlap=24))
+        self.assertFalse(any(evidence in row["content"] for row in baseline))
+        self.assertTrue(any(evidence in row["content"] for row in overlap))
+        for row in overlap:
+            self.assertLessEqual(len(row["content"]), 85)
+            self.assertIsNotNone(valid_span(row, {doc["id"]: content}))
+            if "## Reset" in row["content"]:
+                self.assertTrue(row["content"].startswith("## Reset"))
+
+    def test_miss_analysis_distinguishes_split_evidence_from_ranking(self):
+        boundary = knowledge.make_document({"title": "Boundary", "content": "x" * 580 + "\nfirst step\n" + "y" * 35})
+        ranked = knowledge.make_document({"title": "Reference", "content": "hello " + "other info " * 30})
+        distractors = [knowledge.make_document({"title": f"Packet {i}", "content": "hello hello"}) for i in range(3)]
+        documents = [boundary, ranked, *distractors]
+        corpus = {doc["id"]: doc["content"] for doc in documents}
+        ids = {"boundary": boundary["id"], "ranked": ranked["id"]}
+        questions = [{"id": name, "query": query, "category": "direct", "language": "en"}
+                     for name, query in (("q1", "first step"), ("q2", "hello"), ("q3", "routerdeadinterval"))]
+        labels = {"version": "one", "cases": {"q1": [{"document": "boundary", "start_line": 2, "end_line": 3}],
+                  **{name: [{"document": "ranked", "start_line": 1, "end_line": 1}] for name in ("q2", "q3")}}}
+        report = evaluate("one", "course", questions, labels, {"version": "one", "scope": "course",
+                          "method": "local_bm25_with_fault_tags", "predictions": {q["id"]: [] for q in questions}}, ids, corpus)
+        result = diagnose_misses(report, questions, labels, ids, corpus, documents)
+        self.assertEqual(result["counts"], {"outside_chunks": 1, "rank_4_to_10": 1, "outside_top_10": 1, "missing_from_predictions": 0})
+        self.assertEqual([item["rank_at_10"] for item in result["cases"]], [None, 4, None])
+
     def test_ranking_requires_full_support_and_verifies_source_offsets(self):
         prefix, evidence = 'chapter\n', 'supporting evidence'
         content = prefix + evidence + '\n'

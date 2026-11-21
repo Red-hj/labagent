@@ -19,6 +19,29 @@ IMPORT_LOCK = threading.Lock()
 # Keep protocol names, numbers and negation; remove only common question/function words.
 SEARCH_STOPWORDS = frozenset("a an the is are been being do does did what how why where when which please could to of for in on at by with about from that this these those it its your my me and or 如何 什么 怎么 是否 为什 请问 哪些 一个 进行".split())
 REFERENCE_NOTE = "检索结果是词面相关的候选参考，未判断原文是否足以回答问题；设备实际参数仍需当前配置或运行输出。"
+OSPF_BILINGUAL_TERMS = tuple((re.compile(chinese), re.compile(rf"\b(?:{english})\b", re.I)) for chinese, english in (
+    (r"链路状态(?:通告|公告)", r"link[-\s]+state\s+advertisements?|lsas?"),
+    (r"链路状态数据库", r"link[-\s]+state\s+databases?|lsdbs?"),
+    (r"最短路径优先", r"shortest[-\s]+path\s+first|spf"),
+    (r"最短路径树", r"shortest[-\s]+path\s+trees?"),
+    (r"(?:备份|备用)指定路由器", r"backup\s+designated\s+routers?|bdrs?"),
+    (r"(?<!备份)(?<!备用)指定路由器", r"(?<!backup )designated\s+routers?|drs?"),
+    (r"邻接关系|建立邻接", r"adjacenc(?:y|ies)|adjacent"),
+    (r"骨干区", r"backbone(?:\s+area)?"),
+    (r"区域边界路由器", r"area\s+border\s+routers?|abrs?"),
+    (r"自治系统边界路由器", r"autonomous\s+system\s+boundary\s+routers?|asbrs?"),
+    (r"数据库描述", r"database\s+description|dd\s+packets?"),
+    (r"链路状态请求", r"link[-\s]+state\s+requests?|lsr"),
+    (r"链路状态更新", r"link[-\s]+state\s+updates?|lsu"),
+    (r"链路状态确认", r"link[-\s]+state\s+acknowledg(?:e)?ments?|lsack"),
+    (r"等价多路径|等价负载分担", r"equal[-\s]+cost\s+multipath|ecmp"),
+    (r"死亡间隔|失效间隔", r"routerdeadinterval|dead\s+interval"),
+    (r"(?:网络|子网)掩码", r"(?:network|subnet)\s+masks?"),
+    (r"广播网络", r"broadcast\s+networks?"),
+    (r"点到点", r"point[-\s]+to[-\s]+point"),
+    (r"路由器优先级", r"router\s+priorit(?:y|ies)"),
+))
+CJK = re.compile(r"[\u4e00-\u9fff]")
 
 
 def notes_directory():
@@ -196,8 +219,10 @@ def section_boundaries(text):
     return (sections or [start for _, start in headings])[1:]
 
 
-def chunks(document, size=600):
+def chunks(document, size=600, *, overlap=0):
     text = document["content"]
+    if not 0 <= 2 * overlap < size:
+        raise ValueError("相邻片段的重叠长度须小于片段长度的一半")
     newlines = [match.start() for match in re.finditer("\n", text)]
     section_ends = section_boundaries(text)
     sectioned = bool(section_ends) or document.get("sectioned", False)
@@ -211,7 +236,8 @@ def chunks(document, size=600):
             break
         section_end = section_ends[bisect_right(section_ends, start)]
         end = min(start + size, section_end)
-        if end < section_end:
+        within_section = end < section_end
+        if within_section:
             boundary = text.rfind("\n", start + size // 2, end)
             if boundary > start:
                 end = boundary
@@ -219,10 +245,18 @@ def chunks(document, size=600):
             end -= 1
         number += 1
         chunk = f"section-{number}" if sectioned else str(number)
+        if overlap:
+            chunk = f"overlap-{overlap}:{chunk}"
         yield {**metadata, "content": text[start:end],
                "chunk_id": f"{document['id']}:{chunk}", "char_start": start, "char_end": end,
                "line_start": bisect_right(newlines, start - 1) + 1, "line_end": bisect_right(newlines, end - 2) + 1}
-        start = end
+        if overlap and within_section:
+            # Reuse text within the same section, preferring a complete line in the shared window.
+            overlap_start = max(start + 1, end - overlap)
+            boundary = text.find("\n", overlap_start, end - 1)
+            start = boundary + 1 if boundary >= 0 else overlap_start
+        else:
+            start = end
 
 
 def tokens(text):
@@ -250,7 +284,7 @@ def search(query, codes=None, scope="default", limit=3, *, course_documents=None
     return rank_documents(query, documents, codes, scope, limit, warnings)
 
 
-def rank_documents(query, documents, codes=None, scope="default", limit=3, warnings=None):
+def rank_documents(query, documents, codes=None, scope="default", limit=3, warnings=None, *, bilingual_terms=False, chunk_overlap=0):
     """Use the production ranking on a fixed corpus, including offline evaluations."""
     validate_scope(scope)
     if not isinstance(query, str) or len(query) > 10000:
@@ -258,32 +292,48 @@ def rank_documents(query, documents, codes=None, scope="default", limit=3, warni
     if type(limit) is not int or not 1 <= limit <= 10:
         raise ValueError("检索数量须为1～10")
     codes = codes or []
-    passages = [chunk for document in documents for chunk in chunks(document)]
+    passages = [chunk for document in documents for chunk in chunks(document, overlap=chunk_overlap)]
     bodies = [Counter(search_tokens(passage["content"])) for passage in passages]
     counters = [body + Counter(search_tokens(passage["title"]) * 2) for passage, body in zip(passages, bodies)]
     lengths = [sum(counter.values()) for counter in counters]
     average = sum(lengths) / max(len(lengths), 1) or 1
     frequency = Counter(token for counter in counters for token in counter)
     query_tokens = set(search_tokens(query))
+    terms = [english for chinese, english in OSPF_BILINGUAL_TERMS if chinese.search(query)] if bilingual_terms else []
+    matches = [[term for term in terms if term.search(passage["content"])] if terms and not CJK.search(passage["content"]) else []
+               for passage in passages]
+    alias_frequency = Counter(term for matched in matches for term in matched)
     ranked = []
-    for passage, body, counter, length in zip(passages, bodies, counters, lengths):
+    for passage, body, counter, length, matched_terms in zip(passages, bodies, counters, lengths, matches):
         lexical = 0.0
         for token in query_tokens & counter.keys():
             tf = counter[token]
             idf = math.log(1 + (len(passages) - frequency[token] + .5) / (frequency[token] + .5))
             lexical += idf * tf * 2.2 / (tf + 1.2 * (.25 + .75 * length / average))
         matched_codes = set(codes) & set(passage.get("codes", []))
-        score = lexical + 20 * len(matched_codes)
+        alias_score = sum(math.log(1 + (len(passages) - alias_frequency[term] + .5) / (alias_frequency[term] + .5))
+                          for term in matched_terms)
+        score = lexical + alias_score + 20 * len(matched_codes)
         if score > 0:
-            match_type = "fault_tag" if matched_codes else "body" if query_tokens & body.keys() else "title_only"
+            match_type = "fault_tag" if matched_codes else "body" if matched_terms or query_tokens & body.keys() else "title_only"
             reason = {"fault_tag": "故障标签匹配", "body": "正文关键词匹配", "title_only": "仅标题匹配，正文未命中关键词"}[match_type]
+            if match_type == "body" and matched_terms:
+                reason = "正文中英术语匹配"
             ranked.append({**passage, "score": round(score, 5), "retrieval_reason": reason, "match_type": match_type})
     ranked.sort(key=lambda item: (item["match_type"] == "title_only", -item["score"], item["chunk_id"]))
     results = ranked[:limit]
     match_status = "no_match" if not results else "title_only" if all(p["match_type"] == "title_only" for p in results) else "reference_candidates"
-    return {"scope": scope, "method": "local_bm25_with_fault_tags", "query": query, "results": results,
+    settings = {"question_stopwords": "v1", "body_before_title_only": True}
+    method = "local_bm25_with_fault_tags"
+    if chunk_overlap:
+        settings["chunk_overlap"] = chunk_overlap
+        method = f"bm25_overlap_{chunk_overlap}"
+    if bilingual_terms:
+        settings["bilingual_terms"] = "ospf_zh_to_en_v1"
+        method = f"{method}_bilingual_terms" if chunk_overlap else "bm25_ospf_bilingual_terms"
+    return {"scope": scope, "method": method, "query": query, "results": results,
             "match_summary": {"status": match_status, "answerability": "not_assessed", "note": REFERENCE_NOTE},
-            "settings": {"question_stopwords": "v1", "body_before_title_only": True},
+            "settings": settings,
             "document_count": len(documents), "chunk_count": len(passages), "warnings": warnings or []}
 
 

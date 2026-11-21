@@ -14,6 +14,9 @@ from scripts.evaluate_b import read, score
 
 HIT_FIELDS = ('id', 'chunk_id', 'content', 'char_start', 'char_end', 'line_start', 'line_end')
 TOP_K = 3
+CHUNK_OVERLAP = 120
+BM25_AUDIT_SETTINGS = {'local_bm25_with_fault_tags': {}, 'bm25_ospf_bilingual_terms': {'bilingual_terms': True},
+                       f'bm25_overlap_{CHUNK_OVERLAP}': {'chunk_overlap': CHUNK_OVERLAP}}
 
 
 def load_package(folder):
@@ -55,18 +58,24 @@ def prepare_corpus(scope, sources):
     return ids, {doc['id']: doc['content'] for doc in documents}
 
 
-def run_search(version, scope, questions):
+def run_search(version, scope, questions, *, bilingual_terms=False, chunk_overlap=0):
     documents, warnings = knowledge.corpus(scope)
     if warnings:
         raise ValueError('课程资料读取或校验失败，请修复后重新检索')
-    searches = {q['id']: knowledge.rank_documents(q['query'], documents, scope=scope, limit=TOP_K) for q in questions}
-    result = {'version': version, 'scope': scope, 'method': 'local_bm25_with_fault_tags', 'predictions': {
+    options = {}
+    if bilingual_terms:
+        options['bilingual_terms'] = True
+    if chunk_overlap:
+        options['chunk_overlap'] = chunk_overlap
+    searches = {q['id']: knowledge.rank_documents(q['query'], documents, scope=scope, limit=TOP_K, **options) for q in questions}
+    first = next(iter(searches.values()), {})
+    result = {'version': version, 'scope': scope, 'method': first.get('method', 'local_bm25_with_fault_tags'), 'predictions': {
         q['id']: [{field: passage[field] for field in HIT_FIELDS}
                   for passage in searches[q['id']]['results']]
         for q in questions
     }}
     result['match_summaries'] = {qid: search['match_summary'] for qid, search in searches.items()}
-    result['settings'] = next(iter(searches.values()))['settings'] if searches else {}
+    result['settings'] = first.get('settings', {})
     result['sources'] = [knowledge.summary(doc) for doc in documents]
     return result
 
@@ -98,6 +107,26 @@ def valid_span(passage, corpus):
     return passage['id'], start, end
 
 
+def reference_targets(labels, ids, corpus):
+    if not isinstance(labels, list):
+        raise ValueError('每题标注须为数组；资料不足题使用空数组')
+    targets = []
+    for label in labels:
+        if not isinstance(label, dict) or set(label) != {'document', 'start_line', 'end_line'}:
+            raise ValueError('标注须包含 document、start_line、end_line')
+        doc_id = ids[label['document']]
+        targets.append((doc_id, *reference_bounds(corpus[doc_id], label['start_line'], label['end_line'])))
+    if len(set(targets)) != len(targets):
+        raise ValueError('同一题包含重复标注')
+    return targets
+
+
+def covered_targets(span, targets):
+    doc, start, end = span
+    return {index for index, (target_doc, first, last) in enumerate(targets)
+            if doc == target_doc and start <= first and end >= last}
+
+
 def summarize(rows):
     answerable = [row for row in rows if row['answerable']]
     unanswered = [row for row in rows if not row['answerable']]
@@ -122,16 +151,7 @@ def evaluate(version, scope, questions, labels, predictions, ids, corpus):
         raise ValueError('预测、题集和答案的题号必须一一对应')
     rows = []
     for q in questions:
-        targets = []
-        if not isinstance(expected[q['id']], list):
-            raise ValueError('每题标注须为数组；资料不足题使用空数组')
-        for label in expected[q['id']]:
-            if not isinstance(label, dict) or set(label) != {'document', 'start_line', 'end_line'}:
-                raise ValueError('标注须包含 document、start_line、end_line')
-            doc_id = ids[label['document']]
-            targets.append((doc_id, *reference_bounds(corpus[doc_id], label['start_line'], label['end_line'])))
-        if len(set(targets)) != len(targets):
-            raise ValueError('同一题包含重复标注')
+        targets = reference_targets(expected[q['id']], ids, corpus)
         passages = submitted[q['id']]
         if not isinstance(passages, list) or len(passages) > TOP_K:
             raise ValueError(f"{q['id']} 需要 0～{TOP_K} 条候选")
@@ -141,11 +161,10 @@ def evaluate(version, scope, questions, labels, predictions, ids, corpus):
             if span is None:
                 invalid += 1
                 continue
-            doc, start, end = span
-            for index, (match, first, last) in enumerate(targets):
-                if doc == match and start <= first and end >= last:
-                    found.add(index)
-                    rank = rank or number
+            matches = covered_targets(span, targets)
+            if matches:
+                found.update(matches)
+                rank = rank or number
         rows.append({'id': q['id'], 'category': q['category'], 'language': q['language'], 'answerable': bool(targets),
                      'rank': rank, 'returned': len(passages), 'invalid_citations': invalid,
                      'evidence_found': len(found), 'evidence_total': len(targets)})
@@ -157,6 +176,35 @@ def evaluate(version, scope, questions, labels, predictions, ids, corpus):
     return result
 
 
+def diagnose_misses(report, questions, labels, ids, corpus, documents):
+    """Check if missed evidence can fit in a candidate and where BM25 ranks it."""
+    if report['method'] not in BM25_AUDIT_SETTINGS:
+        raise ValueError('漏检分析支持本脚本的 BM25、术语扩展及重叠切分预测')
+    options = BM25_AUDIT_SETTINGS[report['method']]
+    candidates = [valid_span(chunk, corpus) for doc in documents
+                  for chunk in knowledge.chunks(doc, overlap=options.get('chunk_overlap', 0))]
+    if any(span is None for span in candidates):
+        raise ValueError('候选片段无法定位到原文')
+    queries = {q['id']: q['query'] for q in questions}
+    counts = dict.fromkeys(('outside_chunks', 'rank_4_to_10', 'outside_top_10', 'missing_from_predictions'), 0)
+    misses = []
+    for row in report['records']:
+        if not row['answerable'] or row['rank'] is not None:
+            continue
+        qid = row['id']
+        targets = reference_targets(labels['cases'][qid], ids, corpus)
+        rank = None
+        if not any(covered_targets(span, targets) for span in candidates):
+            cause = 'outside_chunks'
+        else:
+            ranked = knowledge.rank_documents(queries[qid], documents, scope=report['scope'], limit=10, **options)['results']
+            rank = next((i for i, chunk in enumerate(ranked, 1) if covered_targets(valid_span(chunk, corpus), targets)), None)
+            cause = 'outside_top_10' if rank is None else 'rank_4_to_10' if rank > TOP_K else 'missing_from_predictions'
+        counts[cause] += 1
+        misses.append({'id': qid, 'cause': cause, 'rank_at_10': rank})
+    return {'candidate_count': len(candidates), 'counts': counts, 'cases': misses}
+
+
 def main():
     load_env(ROOT / '.env')
     parser = argparse.ArgumentParser(description=__doc__)
@@ -165,9 +213,14 @@ def main():
         sub = commands.add_parser(command)
         sub.add_argument('package', type=Path, help='包含 manifest.json、questions.json 和原文的目录')
         sub.add_argument('output', type=Path)
-        if command == 'score':
+        if command == 'search':
+            methods = sub.add_mutually_exclusive_group()
+            methods.add_argument('--bilingual-terms', action='store_true', help='试用中文 OSPF 术语到英文正文的候选排序')
+            methods.add_argument('--overlap-chunks', action='store_true', help='试用同章节片段保留最多 120 字重叠')
+        else:
             sub.add_argument('--labels', required=True, type=Path)
             sub.add_argument('--predictions', required=True, type=Path)
+            sub.add_argument('--diagnose-misses', action='store_true', help='用当前 BM25 候选定位切分或排序造成的漏检')
     args = parser.parse_args()
     try:
         output_path = args.output.resolve()
@@ -177,8 +230,14 @@ def main():
             raise ValueError('输出文件已存在，请换用新文件名以保留对照结果')
         version, scope, sources, questions = load_package(args.package)
         ids, corpus = prepare_corpus(scope, sources)
-        result = (run_search(version, scope, questions) if args.command == 'search' else
-                  evaluate(version, scope, questions, read(args.labels), read(args.predictions), ids, corpus))
+        if args.command == 'search':
+            result = run_search(version, scope, questions, bilingual_terms=args.bilingual_terms,
+                                chunk_overlap=CHUNK_OVERLAP if args.overlap_chunks else 0)
+        else:
+            labels = read(args.labels)
+            result = evaluate(version, scope, questions, labels, read(args.predictions), ids, corpus)
+            if args.diagnose_misses:
+                result['miss_analysis'] = diagnose_misses(result, questions, labels, ids, corpus, knowledge.corpus(scope)[0])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open('x', encoding='utf-8') as output:
             json.dump(result, output, ensure_ascii=False, indent=2)
