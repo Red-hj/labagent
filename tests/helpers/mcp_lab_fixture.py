@@ -5,6 +5,16 @@ import sys
 import time
 
 ready = False
+phase = sys.argv[1] if len(sys.argv) > 1 else None
+captures = Path(__file__).resolve().parents[2] / "data/team_cases/lab_02/map_materials"
+
+
+def replay(device, command, capture_phase):
+    raw = (captures / capture_phase / f"{device}-run.log").read_text(encoding="utf-8")
+    if command.startswith("ping "):
+        header = "PING " + command.rsplit(" ", 1)[-1]
+        return header + raw.split("\n" + header, 1)[1]
+    return raw.split(f"<{device}>{command}\n", 1)[1].split(f"\n<{device}>", 1)[0]
 
 
 def send(value):
@@ -27,16 +37,24 @@ for line in sys.stdin:
         else:
             send({"id": request_id, "result": {"tools": [{"name": "device_exec", "inputSchema": {"type": "object", "properties": {"target": {"type": "string"}, "command": {"type": "string"}}, "required": ["target", "command"]}}], "nextCursor": "second"}})
     elif method == "tools/call":
-        command = message["params"]["arguments"].get("command")
+        arguments = message["params"]["arguments"]
+        device, command = arguments.get("target"), arguments.get("command")
         if command == "fail":
             send({"id": request_id, "result": {"isError": True, "content": [{"type": "text", "text": "Device offline"}]}})
         elif command == "slow":
             time.sleep(2)
             send({"id": request_id, "result": {"content": [{"type": "text", "text": "late"}]}})
+        elif phase in {"fault", "repaired"}:
+            commands = {"R1": "ip route show table main", "R2": "ip route show table main",
+                        "PC1": "ping -n -c 5 -i 0.2 -W 1 -w 8 192.168.20.10",
+                        "PC2": "ping -n -c 5 -i 0.2 -W 1 -w 8 192.168.10.10"}
+            if device not in commands or commands[device] != command:
+                send({"id": request_id, "result": {"isError": True, "content": [{"type": "text", "text": "Capture unavailable"}]}})
+                continue
+            send({"id": request_id, "result": {"content": [{"type": "text", "text": replay(device, command, phase)}]}})
         elif command == "ip route show table main":
             # Replay the body returned by a collector that strips the CLI prompt.
-            capture = Path(__file__).resolve().parents[2] / "data/team_cases/lab_02/map_materials/repaired/R1-run.log"
-            text = capture.read_text(encoding="utf-8").split("<R1>ip route show table main\n", 1)[1].split("\n<R1>", 1)[0]
+            text = replay("R1", command, "repaired")
             send({"id": request_id, "result": {"content": [{"type": "text", "text": text}]}})
         else:
             send({"method": "notifications/message", "params": {"level": "info", "data": "Reading synthetic device"}})
