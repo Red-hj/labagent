@@ -1,3 +1,3 @@
 """Local, evidence-based network laboratory assistant."""
 
-__version__ = "0.21.3"
+__version__ = "0.21.4"
