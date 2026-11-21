@@ -66,7 +66,9 @@ ROUTE_TOOL = {"type": "function", "function": {
 
 def evidence_blocks(sources, *, include_history=False):
     blocks = []
-    for source_id, source in sources.items():
+    # A terminal transcript pasted in the current message keeps its existing precedence.
+    for source_id in sorted(sources, key=lambda key: key == "message:current"):
+        source = sources[source_id]
         if source["kind"] in {"user_question", "repair_run"}:
             continue
         if source["kind"] == "user_message" and source_id != "message:current" and not include_history:
@@ -152,6 +154,17 @@ def submitted_pings(sources):
 
 
 def check_goals(criteria, sources, *, include_history=False):
+    # A different upload order can renumber a source while its quoted instruction stays the same.
+    by_name = {source["device"]: source for source in sources.values()}
+    rebound = []
+    for goal in criteria:
+        ref = goal["instruction"]
+        source = by_name.get(ref.get("device"))
+        if (source and source["source_id"] != ref["source_id"] and 0 < ref["line"] <= len(source["lines"])
+                and source["lines"][ref["line"] - 1] == ref["quote"]):
+            goal = {**goal, "instruction": {**ref, "source_id": source["source_id"]}}
+        rebound.append(goal)
+    criteria = rebound
     blocks = evidence_blocks(sources, include_history=include_history)
     explicit = explicit_area_goals(sources)
     area_lines = {(g["instruction"]["source_id"], g["instruction"]["line"]) for g in explicit}
