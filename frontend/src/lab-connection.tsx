@@ -4,10 +4,10 @@ import {flushSync} from "react-dom";
 import {createLabConnection, type LabController, type LabOptions, type LabState, type LabTool} from "./lab-connection-state";
 export {createLabConnection} from "./lab-connection-state";
 
-function ToolForm({tool, disabled, onCollect}: {tool:LabTool; disabled:boolean; onCollect:(args:Record<string,string>) => void}) {
+function ToolForm({tool, disabled, onCollect}: {tool:LabTool; disabled:boolean; onCollect:(args:Record<string,string>, verify:boolean) => void}) {
   const [values, setValues] = useState<Record<string,string>>(() => Object.fromEntries(
     Object.entries(tool.function.parameters.properties).map(([key, definition]) => [key, definition.enum[0]])));
-  return <form onSubmit={event => { event.preventDefault(); if (!disabled) onCollect(values); }}>
+  return <form onSubmit={event => { event.preventDefault(); if (!disabled) onCollect(values, true); }}>
     <p>{tool.function.description}</p>
     {Object.entries(tool.function.parameters.properties).map(([key, definition]) => <label key={key}>
       {key === "command" ? "要检查的内容" : key}
@@ -15,7 +15,7 @@ function ToolForm({tool, disabled, onCollect}: {tool:LabTool; disabled:boolean; 
         {definition.enum.map(value => <option key={value} value={value}>{value}</option>)}
       </select>
     </label>)}
-    <button type="submit" className="secondary-button" disabled={disabled}>采集到当前材料</button>
+    <button type="submit" className="secondary-button" disabled={disabled}>采集并核对</button>\n    <button type="button" className="text-button" disabled={disabled} onClick={() => onCollect(values, false)}>仅采集材料</button>
   </form>;
 }
 
@@ -69,7 +69,7 @@ export function LabConnectionView({state, controller}: {state:LabState; controll
     </div>
     <div id="lab-tools" aria-busy={state.phase === "collecting"}>
       {state.tools.map(tool => <ToolForm key={JSON.stringify([tool.bridge_id,tool.function.name,tool.function.parameters.properties])}
-        tool={tool} disabled={disabled} onCollect={args => { void controller.collect(tool,args); }}/>) }
+        tool={tool} disabled={disabled} onCollect={(args, verify) => { void controller.collect(tool,args,verify); }}/>) }
     </div>
   </>;
 }
