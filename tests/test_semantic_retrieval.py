@@ -24,6 +24,50 @@ def document(title, content):
 
 
 class SemanticRetrievalTests(unittest.TestCase):
+    def test_asymmetric_prefixes_apply_to_every_window_and_count_toward_the_budget(self):
+        doc = document("网关", "route " * 40 + "gateway")
+        embedder = FakeEmbedder()
+        index = SemanticIndex(list(knowledge.chunks(doc)), embedder, token_budget=40,
+                              query_prefix="query: ", passage_prefix="passage: ")
+        passage_windows = list(embedder.inputs)
+        self.assertGreater(len(passage_windows), 1)
+        self.assertTrue(all(value.startswith("passage: ") for value in passage_windows))
+        self.assertTrue(any(value.endswith("gateway") for value in passage_windows))
+        query = "路由 " * 50 + "默认网关"
+        results = index.search(query)
+        query_windows = embedder.inputs[len(passage_windows):]
+        self.assertGreater(len(query_windows), 1)
+        self.assertTrue(all(value.startswith("query: ") for value in query_windows))
+        self.assertTrue(any(value.endswith("默认网关") for value in query_windows))
+        self.assertTrue(all(embedder.token_count(value) <= 40 for value in embedder.inputs))
+        self.assertEqual(results[0]["content"], doc["content"])
+
+    def test_e5_predictions_record_the_model_snapshot_and_keep_citation_text(self):
+        docs = [document("默认出口", "The default gateway forwards packets.")]
+        questions = [{"id": "q1", "query": "默认网关", "category": "同义", "language": "zh"}]
+        embedder = FakeEmbedder()
+        results, settings = compare("one", "semantic-test", questions, docs, embedder, embedding_model="e5-small")
+        self.assertEqual(set(results), {"local_bm25_with_fault_tags", "local_multilingual_e5_small", "bm25_e5_small_rrf"})
+        self.assertEqual(settings["model"], "intfloat/multilingual-e5-small")
+        self.assertEqual(len(settings["revision"]), 40)
+        self.assertEqual(embedder.inputs, ["passage: The default gateway forwards packets.", "query: 默认网关"])
+        corpus = {docs[0]["id"]: docs[0]["content"]}
+        for method in ("local_multilingual_e5_small", "bm25_e5_small_rrf"):
+            hit, = results[method]["predictions"]["q1"]
+            self.assertIsNotNone(valid_span(hit, corpus))
+
+    def test_english_course_routes_based_on_query_text_and_preserves_native_candidate_order(self):
+        docs = [document("Exercise notes", "The default gateway forwards packets."), document("Other", "Renew a lease.")]
+        # Language labels do not determine retrieval behavior.
+        questions = [{"id": "han", "query": "默认网关如何转发？", "category": "direct", "language": "en"},
+                     {"id": "latin", "query": "default gateway", "category": "direct", "language": "zh"}]
+        results, _ = compare("one", "semantic-test", questions, docs, FakeEmbedder(), english_course=True)
+        routed = results["local_multilingual_semantic_english_course"]
+        self.assertEqual(routed["query_routes"], {"han": "local_multilingual_semantic", "latin": "bm25_section_titles"})
+        self.assertEqual(routed["predictions"]["han"], results["local_multilingual_semantic"]["predictions"]["han"])
+        expected = knowledge.rank_documents(questions[1]["query"], docs, scope="semantic-test", section_titles=True)["results"]
+        self.assertEqual([row["chunk_id"] for row in routed["predictions"]["latin"]], [row["chunk_id"] for row in expected])
+
     def test_long_passage_is_covered_without_context_truncation(self):
         text = "开头" + "x" * 580 + "gateway"
         windows = list(text_windows(text, lambda value: min(128, len(value) + 2)))
