@@ -790,7 +790,10 @@ $("analyze").addEventListener("click", async () => {
   }
 });
 for (const button of document.querySelectorAll("[data-intent]")) button.addEventListener("click", () => {
-  const text = {ask:"请解释当前疑点为什么会造成这个现象，用实验中的材料说明。", repair:"请基于当前材料给出具体修改步骤，以及每一步之后应观察什么。", verify:"请沿用当前排查和实验目标，比较我补充的新材料与上一轮的改动，核对修改后的配置和实际测试输出；如果仍缺新输出，请明确指出需要补充什么。"}[button.dataset.intent];
+  const guided = window.LabLearning?.enabled();
+  const text = {ask:"请解释当前疑点为什么会造成这个现象，用实验中的材料说明。",
+    repair:guided ? "请接着当前实验步骤，引导我做下一个小动作，解释在哪里操作、应该观察什么。" : "请基于当前材料给出具体修改步骤，以及每一步之后应观察什么。",
+    verify:guided ? "请比较新材料与上一轮观察，核对当前这一步的变化，说明依据并给一个下一步操作；缺少输出时，具体告诉我看哪里。" : "请沿用当前排查和实验目标，比较我补充的新材料与上一轮的改动，核对修改后的配置和实际测试输出；如果仍缺新输出，请明确指出需要补充什么。"}[button.dataset.intent];
   performInteraction(button.dataset.intent, text);
 });
 $("chat-new-reply").addEventListener("click", () => { $("conversation").scrollTop = $("conversation").scrollHeight; $("chat-new-reply").hidden = true; });
