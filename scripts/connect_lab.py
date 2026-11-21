@@ -13,6 +13,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from labagent.mcp_client import LabMCPTools, MCPError, NoRedirect
+from labagent.device_console import ConsoleError
 
 
 class Website:
@@ -64,15 +65,65 @@ def execute_job(lab, website, job):
     return True
 
 
+def configure_console(path):
+    from labagent.device_console import validate_devices
+    path = path.resolve()
+    if not path.is_relative_to(ROOT / "runtime"):
+        raise MCPError("请将新配置保存在项目 runtime 目录，例如 runtime/mcp-ensp.json。")
+    devices_path = path.with_name(path.stem + ".devices.json")
+    if path.exists() or devices_path.exists():
+        raise MCPError("配置文件已经存在。可直接运行 --probe 检查；需要另一份配置时，请在命令中指定新的 runtime 文件名。")
+    print("配置 Huawei VRP 实验设备的 Telnet 控制台。", flush=True)
+    print("先启动模拟设备，并在模拟器控制台完成首次登录，确认出现 <R1> 或 <Huawei> 等提示符。", flush=True)
+    print("请按模拟器显示的控制台端口填写；主机地址默认为本机。", flush=True)
+    devices = {}
+    while len(devices) < 16:
+        name = input("设备名称（例如 R1；直接回车结束）：").strip()
+        if not name:
+            break
+        host = input("控制台主机（默认 127.0.0.1）：").strip() or "127.0.0.1"
+        try:
+            port = int(input("控制台端口：").strip())
+        except ValueError:
+            raise MCPError("请填写模拟器中的实际控制台端口数字。") from None
+        if name in devices:
+            raise MCPError("设备名称重复，请给每台设备使用不同名称。")
+        devices[name] = {"host": host, "port": port}
+        # Validate each entry before generating either file.
+        validate_devices({"devices": devices})
+    normalized = validate_devices({"devices": devices})
+    spec = {"command": sys.executable, "args": ["-B", "scripts/device_mcp.py",
+        devices_path.relative_to(ROOT).as_posix()], "cwd": ".", "timeout": 25, "tools": {}}
+    for name, device in normalized.items():
+        spec["tools"][name.lower()] = {"name": "device_exec", "effect": "observe", "device": name,
+            "description": f"读取实验设备 {name} 的接口、路由、邻居与配置输出",
+            "arguments": {"target": name}, "choices": {"command": device["commands"]}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with devices_path.open("x", encoding="utf-8") as target:
+        json.dump({"devices": normalized}, target, ensure_ascii=False, indent=2)
+    with path.open("x", encoding="utf-8") as target:
+        json.dump({"servers": {"console": spec}}, target, ensure_ascii=False, indent=2)
+    print(f"本地配置已保存：{path.relative_to(ROOT)}", flush=True)
+    print(f"接下来运行：python scripts/connect_lab.py {path.relative_to(ROOT).as_posix()} --probe", flush=True)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="让LabAgent网站采集本机已配置的MCP实验输出；Ctrl+C断开")
-    parser.add_argument("config", type=Path, help="本地MCP工具映射配置，不会上传配置或设备凭据")
+    parser.add_argument("config", type=Path, nargs="?", default=Path("runtime/mcp-ensp.json"), help="本地MCP工具映射配置，不会上传配置或设备凭据")
     parser.add_argument("--site", default="https://labagent-15yh.onrender.com")
-    parser.add_argument("--check", action="store_true", help="检查本机MCP连接并列出可用检查，然后退出；无需网站连接码")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--setup", action="store_true", help="交互生成内置 Huawei VRP 控制台配置")
+    mode.add_argument("--probe", action="store_true", help="每台设备实际读取第一项检查，确认设备输出；无需连接码")
+    mode.add_argument("--check", action="store_true", help="检查本机MCP连接并列出可用检查，然后退出；无需网站连接码")
     args = parser.parse_args()
+    if not args.config.is_absolute():
+        args.config = ROOT / args.config
     try:
+        if args.setup:
+            return configure_console(args.config)
         if not args.config.is_file():
-            raise MCPError(f"未找到 MCP 配置文件：{args.config}。请先按 docs/接口说明.md 配置本地 MCP 服务，"
+            raise MCPError(f"未找到 MCP 配置文件：{args.config}。Huawei VRP 控制台可先运行 python scripts/connect_lab.py --setup；其他 MCP 服务按 docs/接口说明.md 配置。"
                            "可参考 data/examples/mcp-ensp.example.json；再把命令中的路径替换为实际配置文件。")
         with LabMCPTools(args.config) as lab:
             for warning in lab.warnings:
@@ -87,6 +138,19 @@ def main():
                     print("  " + name + "：" + " / ".join(schema["enum"]), flush=True)
             if args.check:
                 print("本机MCP自检通过，已发现上述检查；设备输出将在网页发起采集后读取。", flush=True)
+                return 0
+            if args.probe:
+                for tool in lab.tools:
+                    fn = tool["function"]
+                    choices = {name: definition["enum"][0] for name, definition in fn["parameters"]["properties"].items()}
+                    print("正在实际读取：" + fn["description"], flush=True)
+                    try:
+                        observed = lab.execute(fn["name"], choices)
+                    except MCPError as error:
+                        raise MCPError(str(error) + "。请检查设备启动、控制台端口，以及是否已完成首次登录。") from None
+                    print(observed["device"] + " · " + observed["command"], flush=True)
+                    print(observed["text"], flush=True)
+                print("设备读取通过。运行相同命令并去掉 --probe，即可输入网页连接码并保持在线。", flush=True)
                 return 0
             website = Website(args.site)
             print("请在网站登录个人账号，打开‘连接我的实验电脑’生成连接码。", flush=True)
@@ -119,9 +183,9 @@ def main():
     except KeyboardInterrupt:
         print("\n本地连接已停止。网页将在稍后显示离线。")
     except EOFError:
-        print("未读到连接码，请在终端中运行连接程序，或先用--check检查本机MCP。", file=sys.stderr)
+        print("未读到设备配置，请在终端中运行 --setup。" if args.setup else "未读到连接码，请在终端中运行连接程序，或先用 --check 检查本机 MCP。", file=sys.stderr)
         return 1
-    except (MCPError, PermissionError, ConnectionError, OSError, json.JSONDecodeError) as error:
+    except (MCPError, ConsoleError, PermissionError, ConnectionError, OSError, json.JSONDecodeError) as error:
         print(str(error), file=sys.stderr)
         return 1
     return 0
