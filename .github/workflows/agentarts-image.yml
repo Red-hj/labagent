@@ -26,6 +26,7 @@ jobs:
           image="$(cat runtime/release/image.txt)"
           docker run --rm "$image" python -B scripts/verify_agentarts.py
           docker run --rm "$image" python -B -m unittest discover -s tests -p test_session_recovery.py -v
+          docker run --rm "$image" python -B -m unittest discover -s tests -p test_experiment_state.py -v
           docker run --rm "$image" python -B -m unittest discover -s tests -p test_knowledge.py -v
           docker run --rm "$image" python -B -m unittest discover -s tests -p test_cloud_knowledge.py -v
           docker run --rm "$image" python -B -m unittest discover -s tests -p test_material_snapshots.py -v
