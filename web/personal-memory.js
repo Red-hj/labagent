@@ -106,7 +106,7 @@ window.LabPersonal = (() => {
         memory_enabled:$("personal-register-memory").checked});
       await c.api(registering ? "/api/account/register" : "/api/account/login", credentials);
       $("personal-password").value = ""; resetPasswordVisibility(); latest = null; c.newConversation();
-      await refresh(); registering = false; renderAuthMode(); await c.refreshHistory(); channel?.postMessage("changed");
+      await refresh(); registering = false; renderAuthMode(); await c.refreshHistory(); channel?.postMessage("changed"); c.afterSignIn?.();
       c.message("个人账号已登录，后续排查将使用你的记忆设置。");
     } catch (error) { $("personal-error").textContent = error.message; }
     finally { saving = false; authPending(false); }
@@ -176,5 +176,5 @@ window.LabPersonal = (() => {
     });
     refresh().catch(() => { $("personal-entry").textContent = "个人账号 / 记忆"; });
   }
-  return {init, setResult:result => { latest = result; }};
+  return {init, signedIn:() => Boolean(user), setResult:result => { latest = result; }};
 })();

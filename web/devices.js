@@ -2,11 +2,24 @@
 // Computer connections belong to the account; collected evidence belongs to a conversation.
 window.LabDevices = (() => {
   const get = id => document.getElementById(id);
-  let controller = null;
+  let controller = null, returnAfterSignIn = false;
+  function open() {
+    const dialog = get("lab-connection");
+    if (dialog.open) return;
+    dialog.showModal(); get("devices-entry").setAttribute("aria-expanded", "true");
+    void controller.loadTools();
+  }
+  function afterSignIn() {
+    if (!returnAfterSignIn || !window.LabPersonal.signedIn()) return;
+    returnAfterSignIn = false;
+    get("personal-dialog").close(); open();
+  }
   function init(options) {
     const dialog = get("lab-connection"), entry = get("devices-entry");
     controller = window.LabConversation.mountLabConnection(get("lab-connection-view"), {
       ...options,
+      signedIn:() => window.LabPersonal.signedIn(),
+      signIn:() => { returnAfterSignIn = true; dialog.close(); get("personal-entry").click(); },
       ask:(text, type) => { dialog.close(); options.ask(text, type); }
     });
     const showStatus = () => {
@@ -17,11 +30,8 @@ window.LabDevices = (() => {
     };
     controller.subscribe(showStatus);
     showStatus();
-    entry.addEventListener("click", () => {
-      if (dialog.open) return;
-      dialog.showModal(); entry.setAttribute("aria-expanded", "true");
-      void controller.loadTools();
-    });
+    entry.addEventListener("click", open);
+    get("personal-dialog").addEventListener("close", () => { if (!window.LabPersonal.signedIn()) returnAfterSignIn = false; });
     get("devices-close").addEventListener("click", () => dialog.close());
     dialog.addEventListener("close", () => {
       entry.setAttribute("aria-expanded", "false"); entry.focus();
@@ -30,6 +40,6 @@ window.LabDevices = (() => {
       dialog.close(); get("personal-entry").click();
     });
   }
-  return {init, refreshBusy:() => controller?.refreshBusy(),
+  return {init, afterSignIn, refreshBusy:() => controller?.refreshBusy(),
     resetContext:() => controller?.resetContext(), reset:() => controller?.reset()};
 })();
