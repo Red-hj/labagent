@@ -1057,7 +1057,7 @@ window.LabKnowledge.init({api,element,message,busy:() => busy,scope:() => knowle
   knowledgeScope = scope;
   if (sessionId) $("result-state").textContent = "参考资料已更新 · 下方为上一次分析";
 }});
-window.LabPersonal.init({api,element,message,identityChanged:() => window.LabDevices?.reset(),busy:() => busy || workspaceTransfer,
+window.LabPersonal.init({api,element,message,identityChanged:() => window.LabDevices?.reset(),afterSignIn:() => window.LabDevices?.afterSignIn(),busy:() => busy || workspaceTransfer,
   newConversation:() => $("new-diagnosis").click(), refreshHistory:() => window.LabHistory.refresh(),
   question:() => $("problem").value, shared:() => Boolean(roomHeaders()["X-LabAgent-Room"])});
 window.LabTasks.init({api, headers:roomHeaders, progress:receiveProgress,
