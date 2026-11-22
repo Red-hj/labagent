@@ -138,7 +138,7 @@ function syncContinuation() {
 }
 function setBusy(value) {
   busy = value || materialLoading;
-  window.LabLearning?.refreshBusy();
+  window.LabDevices?.refreshBusy();
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "load-demo"]) $(id).disabled = busy;
   for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = busy || workspaceTransfer;
   $("new-conversation").disabled = busy;
@@ -803,6 +803,7 @@ $("conversation").addEventListener("scroll", () => {
 $("new-diagnosis").addEventListener("click", () => {
   if (busy) return;
   window.LabLearning?.reset();
+  window.LabDevices?.resetContext();
   ++previewNumber;
   window.LabPersonal.setResult(null);
   window.LabWorkspace.leave();
@@ -853,7 +854,7 @@ async function connectService() {
   } finally { clearTimeout(wakeup); }
 }
 async function start() {
-  await window.LabLearning?.init({api, busy:() => busy || materialLoading,
+  const assistantOptions = {api, busy:() => busy || materialLoading,
     setCollecting:value => { materialLoading = value; setBusy(value); },
     ask:(text, type = "ask") => {
       if (busy || materialLoading) return;
@@ -871,7 +872,9 @@ async function start() {
       if (next.size > 20) throw new Error("当前材料已满20份，请先精简材料。");
       for (const [name, text] of Object.entries(incoming)) materials.set(name, text);
       evidenceKind = "user_submitted"; renderMaterials(); materialChanged("设备输出已加入，可在当前会话核对这一步。");
-    }});
+    }};
+  window.LabDevices?.init(assistantOptions);
+  await window.LabLearning?.init(assistantOptions);
 
   const health = await connectService(); serviceState = "ready"; diagnosisBackend = health.diagnosis_backend || "local"; modelReady = health.diagnosis_configured ?? health.llm_configured; online = health.online; videoReady = health.replay_available; setBusy(false);
   if (online) {
@@ -1041,7 +1044,7 @@ window.LabKnowledge.init({api,element,message,busy:() => busy,scope:() => knowle
   knowledgeScope = scope;
   if (sessionId) $("result-state").textContent = "参考资料已更新 · 下方为上一次分析";
 }});
-window.LabPersonal.init({api,element,message,busy:() => busy || workspaceTransfer,
+window.LabPersonal.init({api,element,message,identityChanged:() => window.LabDevices?.reset(),busy:() => busy || workspaceTransfer,
   newConversation:() => $("new-diagnosis").click(), refreshHistory:() => window.LabHistory.refresh(),
   question:() => $("problem").value, shared:() => Boolean(roomHeaders()["X-LabAgent-Room"])});
 start().catch(error => { serviceState = "unavailable"; modelReady = false; setBusy(false); message("暂时无法连接服务：" + error.message, true); });

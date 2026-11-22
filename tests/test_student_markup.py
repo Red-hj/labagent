@@ -1,4 +1,4 @@
-"""Ensure optional collapsed panels cannot hide the main student workflow."""
+"""Keep the optional computer module separate from the diagnosis workflow."""
 from html.parser import HTMLParser
 from pathlib import Path
 import unittest
@@ -30,8 +30,8 @@ class StudentMarkupTests(unittest.TestCase):
         structure = Structure(source)
         for control in ("problem", "analyze", "message", "demo-panel", "open-knowledge"):
             with self.subTest(control=control):
-                self.assertNotIn(("details", "lab-connection"), structure.parents[control])
+                self.assertNotIn(("dialog", "lab-connection"), structure.parents[control])
         for control in ("lab-connection-view",):
             with self.subTest(control=control):
-                self.assertIn(("details", "lab-connection"), structure.parents[control])
+                self.assertIn(("dialog", "lab-connection"), structure.parents[control])
                 self.assertNotIn(("div", "diagnosis-panel"), structure.parents[control])

@@ -102,6 +102,21 @@ for (const path of ["/api/lab/tools","/api/lab/bridge","/api/lab/bridge/disconne
 console.log("React MCP passed: pairing, tool parameters, collection, busy controls, explicit retry and stale owner replies");
 
 {
+  const f=fixture(); await f.controller.pair("持续连接的电脑");
+  f.controller.resetContext();
+  assert.equal(f.state().bridge.name,"持续连接的电脑");
+  assert.equal(f.state().code,"AABBCCDDEEFF0011","New conversations keep the pending pairing code");
+  f.online();await f.controller.loadTools();
+  const barrier=f.delay("/api/lab/collect"), request=f.controller.collect(f.state().tools[0],args,true);
+  f.controller.resetContext();barrier.resolve({materials:{"previous-conversation.log":"old output"}});await request;
+  assert.equal(f.materials.length,0,"A completed old collection cannot enter the new conversation");
+  assert.equal(f.asked.length,0);assert.equal(f.state().bridge.state,"online");
+  assert.equal(f.state().checkReady,false);
+  await f.controller.collect(f.state().tools[0],args,true);
+  assert.equal(f.materials.length,1);assert.equal(f.asked.length,1);
+}
+
+{
   const f=fixture(); await f.controller.loadTools();
   f.asked.length=0;
   await f.controller.collect(f.state().tools[0],args,true);

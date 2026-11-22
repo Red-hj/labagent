@@ -46,4 +46,5 @@ jobs:
           node tests/test_workspace_interactions.js
           node tests/test_chat_requests.js
           node tests/test_learning.js
+          node tests/test_devices.js
           node tests/test_execution_state.js

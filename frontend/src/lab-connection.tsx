@@ -15,7 +15,8 @@ function ToolForm({tool, disabled, onCollect}: {tool:LabTool; disabled:boolean; 
         {definition.enum.map(value => <option key={value} value={value}>{value}</option>)}
       </select>
     </label>)}
-    <button type="submit" className="secondary-button" disabled={disabled}>采集并核对</button>\n    <button type="button" className="text-button" disabled={disabled} onClick={() => onCollect(values, false)}>仅采集材料</button>
+    <button type="submit" className="secondary-button" disabled={disabled}>采集并核对</button>
+    <button type="button" className="text-button" disabled={disabled} onClick={() => onCollect(values, false)}>仅采集材料</button>
   </form>;
 }
 
@@ -24,7 +25,7 @@ export function LabConnectionView({state, controller}: {state:LabState; controll
   const disabled = state.busy || state.phase !== "idle";
   return <>
     <p className="section-note">在实验电脑上运行本地连接程序，网站便可读取你选择的设备输出。输出加入当前材料后，继续核对正在做的这一步。</p>
-    <details open><summary>第一次连接：准备工具 → 输入连接码 → 采集输出</summary>
+    <details open={state.bridge?.state !== "online"}><summary>第一次连接：准备工具 → 输入连接码 → 采集输出</summary>
       <ol>
         <li>
           <strong>下载并准备本地连接程序</strong>
@@ -81,6 +82,8 @@ function LabConnection({controller}: {controller:LabController}) {
 
 export function mountLabConnection(container: HTMLElement, options: LabOptions) {
   const controller = createLabConnection(options), root = createRoot(container);
-  flushSync(() => root.render(<LabConnection controller={controller}/>));
-  return controller;
+  let owner = 0;
+  const render = () => root.render(<LabConnection key={owner} controller={controller}/>);
+  flushSync(render);
+  return {...controller, reset:() => { controller.reset(); owner++; flushSync(render); }};
 }
