@@ -28,6 +28,8 @@ jobs:
           docker run --rm "$image" python -B -m unittest discover -s tests -p test_session_recovery.py -v
           docker run --rm "$image" python -B -m unittest discover -s tests -p test_knowledge.py -v
           docker run --rm "$image" python -B -m unittest discover -s tests -p test_cloud_knowledge.py -v
+          docker run --rm "$image" python -B -m unittest discover -s tests -p test_material_snapshots.py -v
+          docker run --rm "$image" python -B -m unittest discover -s tests -p test_mcp_learning.py -v
       - name: Export image for SWR upload
         run: |
           image="$(cat runtime/release/image.txt)"

@@ -27,7 +27,7 @@ class CloudWorkflow:
             not platform_started_at or
             started_at - previous.get("last_activity_at", 0) >= max(1, self.idle_timeout - 30) or
             started_at - platform_started_at >= max(1, self.max_age - 300))
-        request = {"materials": deepcopy(payload["configs"])}
+        request = {"materials": deepcopy(payload["configs"]), "material_mode": "replace"}
         request["course_documents"] = export_course_documents(payload.get("knowledge_scope", "default"))
         request["personal_memory"] = deepcopy(payload.get("personal_memory", []))
         if lab_connection:
@@ -73,6 +73,8 @@ class CloudWorkflow:
             raise ValueError("云端尚不支持个人记忆，请更新AgentArts镜像后继续；此前的网页记录已保留。")
         if expected and response.get("course_document_ids") != expected:
             raise ValueError("云端尚未接收本轮课程资料，请更新AgentArts镜像后重试；此前的网页记录已保留。")
+        if response.get("materials_replaced") is not True:
+            raise ValueError("云端尚未按当前材料列表同步，请更新AgentArts运行时后继续；当前材料和对话已保留。")
         result = response.get("result")
         if not isinstance(result, dict) or not all(key in result for key in
                 ("created_at", "config_fingerprint", "hint_level", "findings", "status")):
