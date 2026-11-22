@@ -1060,4 +1060,6 @@ window.LabKnowledge.init({api,element,message,busy:() => busy,scope:() => knowle
 window.LabPersonal.init({api,element,message,identityChanged:() => window.LabDevices?.reset(),busy:() => busy || workspaceTransfer,
   newConversation:() => $("new-diagnosis").click(), refreshHistory:() => window.LabHistory.refresh(),
   question:() => $("problem").value, shared:() => Boolean(roomHeaders()["X-LabAgent-Room"])});
+window.LabTasks.init({api, headers:roomHeaders, progress:receiveProgress,
+  waiting:text => window.LabConversation.updatePending($("conversation"), {message:text, delivered:true})});
 start().catch(error => { serviceState = "unavailable"; modelReady = false; setBusy(false); message("暂时无法连接服务：" + error.message, true); });

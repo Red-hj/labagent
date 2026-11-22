@@ -4,26 +4,27 @@
   const key = () => "labagent-active-task:" + (options.headers()["X-LabAgent-Room"] || "personal");
   const remember = id => { try { id ? sessionStorage.setItem(key(), id) : sessionStorage.removeItem(key()); } catch {} };
   function stored() { try { return sessionStorage.getItem(key()); } catch { return null; } }
-  function stopped(message) { const error = new Error(message || "已停止本轮检查，材料已保留。"); error.code = "task_stopped"; return error; }
+  function stopped(message) { const error = new Error(message || "已停止本轮检查，材料已保留。"); error.code = "task_stopped"; error.keepTask = true; return error; }
   function display(state = "running") {
     const button = document.getElementById("stop-request");
     button.hidden = !current;
     button.disabled = state === "cancelling" || state === "finalizing";
     button.textContent = state === "cancelling" ? "正在停止…" : state === "finalizing" ? "正在保存…" : "停止";
   }
-  function finish(id) { if (current?.id === id) { current = null; display(); } if (stored() === id) remember(null); }
+  function finish(id, keep = false) { if (current?.id === id) { current = null; display(); if (!keep && stored() === id) remember(null); } }
   function accept(event, request) {
     options.progress(event, request);
     if (event.type === "result") return event.result;
     if (event.type === "cancelled") throw stopped(event.message);
-    if (event.type === "error") { const error = new Error(event.message); error.terminal = true; throw error; }
+    if (event.type === "error") { const error = new Error(event.message); error.terminal = true; error.keepTask = true; throw error; }
     return null;
   }
   async function watch(id, request, snapshot = null) {
     current = {id, request}; remember(id); display(snapshot?.state);
+    let keep = false;
     try {
       for (;;) {
-        try { snapshot = snapshot || await options.api("/api/tasks/" + id); }
+        try { snapshot = snapshot || await options.api("/api/tasks/" + id + "?status_only=1"); }
         catch (error) {
           if ([401,403,404].includes(error.status)) { error.terminal = true; throw error; }
           options.waiting("连接暂时中断，正在恢复任务状态；检查不会重新发起。");
@@ -33,11 +34,12 @@
         display(snapshot.state);
         if (snapshot.result) return snapshot.result;
         if (["cancelled", "interrupted"].includes(snapshot.state)) throw stopped(snapshot.message);
-        if (snapshot.state === "failed") { const error = new Error(snapshot.message || "本轮处理失败，材料已保留。"); error.terminal = true; throw error; }
+        if (snapshot.state === "failed") { const error = new Error(snapshot.message || "本轮处理失败，材料已保留。"); error.terminal = true; error.keepTask = true; throw error; }
         snapshot = null;
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
-    } finally { finish(id); }
+    } catch (error) { keep = Boolean(error.keepTask); throw error; }
+    finally { finish(id, keep); }
   }
   async function run(input, request) {
     const id = crypto.randomUUID().replaceAll("-", "");
@@ -65,7 +67,7 @@
       } finally { reader.releaseLock(); }
       return await watch(id, request);
     } catch (error) {
-      if (error.terminal || error.code === "task_stopped") throw error;
+      if (error.terminal || error.code === "task_stopped") { finish(id, Boolean(error.keepTask)); throw error; }
       return await watch(id, request);
     } finally { finish(id); }
   }

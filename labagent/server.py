@@ -177,6 +177,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if match := re.fullmatch(r"/api/tasks/([a-f0-9]{32})", path):
             task = self.accessible_task(match[1])
+            if task and parse_qs(urlparse(self.path).query).get("status_only") == ["1"]:
+                task.pop("input", None)
             return self.reply(task or {"error": "任务不存在"}, 200 if task else 404)
         if path == "/api/lab/connector":
             from .connector_package import build_connector_package
@@ -448,7 +450,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self.accessible_task(match[1]):
                 return self.reply({"error": "任务不存在"}, 404)
             # Consume the JSON body before keeping this HTTP connection alive.
-            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 <= length <= 4096:
+                return self.reply({"error": "停止请求格式无效"}, 400)
+            self.rfile.read(length)
             self.server.tasks.cancel(match[1])
             return self.reply(self.accessible_task(match[1]))
         room_match = re.fullmatch(r"/api/rooms/([a-f0-9]{32})", path)
