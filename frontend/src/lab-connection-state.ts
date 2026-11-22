@@ -31,7 +31,7 @@ const initial = (): LabState => ({bridge:null, code:null, tools:[], warnings:[],
 
 // The account/session owner calls reset; in-flight replies cannot add old materials.
 export function createLabConnection(options: LabOptions) {
-  let state = initial(), epoch = 0;
+  let state = initial(), epoch = 0, contextEpoch = 0;
   const listeners = new Set<() => void>();
   const update = (changes: Partial<LabState>) => {
     state = {...state, ...changes, busy:options.busy()};
@@ -81,7 +81,7 @@ export function createLabConnection(options: LabOptions) {
   }
   async function collect(tool: LabTool, args: Record<string, string>, verify = false) {
     if (!available()) return;
-    const owner = epoch;
+    const owner = epoch, context = contextEpoch;
     let collected = false;
     update({phase:"collecting", error:false, message:"正在从已连接的实验设备读取输出…"});
     options.setCollecting?.(true);
@@ -89,16 +89,16 @@ export function createLabConnection(options: LabOptions) {
     try {
       const data = await options.api<{materials:Record<string,string>}>("/api/lab/collect", {
         tool:tool.function.name, ...(tool.bridge_id ? {bridge_id:tool.bridge_id} : {}), arguments:args});
-      if (owner !== epoch) return;
+      if (owner !== epoch || context !== contextEpoch) return;
       options.addMaterials(data.materials);
       collected = true;
       update({checkReady:true, message:"设备输出已加入当前材料。点“核对这一步”继续，会话保留。"});
-    } catch (error) { if (owner === epoch) failed(error); }
+    } catch (error) { if (owner === epoch && context === contextEpoch) failed(error); }
     finally {
       options.setCollecting?.(false);
       update(owner === epoch ? {phase:"idle"} : {});
     }
-    if (collected && verify && owner === epoch) check();
+    if (collected && verify && owner === epoch && context === contextEpoch) check();
   }
   function check() {
     if (!available() || !state.checkReady) return;
@@ -111,7 +111,8 @@ export function createLabConnection(options: LabOptions) {
     loadTools, pair, disconnect, collect,
     check,
     refreshBusy:() => { if (state.busy !== options.busy()) update({}); },
-    reset:() => { epoch++; state = initial(); update({}); }
+    resetContext:() => { contextEpoch++; update({checkReady:false}); },
+    reset:() => { epoch++; contextEpoch++; state = initial(); update({}); }
   };
 }
 export type LabController = ReturnType<typeof createLabConnection>;
