@@ -76,12 +76,15 @@ class LearningApiTests(unittest.TestCase):
 
     def test_learning_script_is_served_by_asset_allowlist(self):
         # Read the actual route response without assuming static files are generic.
-        raw = f"GET /learning.js HTTP/1.0\r\nHost: 127.0.0.1:{self.server.server_port}\r\n\r\n".encode()
-        sock = RequestSocket(raw)
-        with patch.object(Handler, "log_message"):
-            self.server.RequestHandlerClass(sock, ("127.0.0.1", 12345), self.server)
-        self.assertTrue(sock.output.getvalue().startswith(b"HTTP/1.0 200"))
-        self.assertIn(b"window.LabLearning", sock.output.getvalue())
+        for path, marker in (("/learning.js", b"window.LabLearning"), ("/devices.js", b"window.LabDevices"),
+                             ("/devices.css", b".connection-dialog")):
+            with self.subTest(path=path):
+                raw = f"GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{self.server.server_port}\r\n\r\n".encode()
+                sock = RequestSocket(raw)
+                with patch.object(Handler, "log_message"):
+                    self.server.RequestHandlerClass(sock, ("127.0.0.1", 12345), self.server)
+                self.assertTrue(sock.output.getvalue().startswith(b"HTTP/1.0 200"))
+                self.assertIn(marker, sock.output.getvalue())
 
 
 if __name__ == "__main__": unittest.main()

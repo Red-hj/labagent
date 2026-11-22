@@ -10,8 +10,7 @@ class Node {
 }
 const nodes = new Map();
 const node = id => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id); };
-let mountedOptions=null, labResets=0, busyRefreshes=0;
-const context = {window:{LabConversation:{mountLabConnection:(container, options) => {mountedOptions=options; return {reset:() => {labResets++;}, refreshBusy:() => {busyRefreshes++;}};}}}, document:{getElementById:node, createElement:() => new Node(), querySelectorAll:() => []}};
+const context = {window:{}, document:{getElementById:node, createElement:() => new Node(), querySelectorAll:() => []}};
 vm.runInNewContext(fs.readFileSync("web/learning.js", "utf8"), context);
 const learning = context.window.LabLearning;
 (async () => {
@@ -23,8 +22,6 @@ const learning = context.window.LabLearning;
       throw new Error("Unexpected request " + path);
     }};
   await learning.init(options);
-  assert.equal(mountedOptions,options,"MCP component receives the current page callbacks");
-  learning.refreshBusy(); assert.equal(busyRefreshes,1);
   assert.equal(learning.enabled(), true);
   assert.equal(learning.apply({configs:{}}).learning.level, 1);
   node("learning-level").value = "3"; node("learning-level").handlers.change();
@@ -40,6 +37,5 @@ const learning = context.window.LabLearning;
   granted = false; learning.reset(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(node("learning-solution-option").disabled, true);
   assert.equal(node("learning-current").hidden, true);
-  assert.equal(labResets,1,"Account/session reset also clears the MCP component");
-  console.log("Learning controls passed: progressive hints, account-bound access refresh, history, code clearing and MCP component lifecycle");
+  console.log("Learning controls passed independently: progressive hints, account-bound access refresh, history and code clearing");
 })().catch(error => { console.error(error); process.exitCode = 1; });
