@@ -15,6 +15,7 @@ from .knowledge import search, validate_scope, validate_course_documents
 from .personal import validate_memory_context
 from .model import configured, chat_completion, ModelError, public_config, bounded_setting
 from .session_state import RESOLVED_OUTCOMES, experiment_goal
+from .experiment_state import experiment_context, summarize_experiment
 from .progress import emit_progress, ToolProgress
 from .experiment_goals import (GOAL_TOOL, ROUTE_TOOL, area_instruction_supports_goal, validate_goal_fields,
                                check_goals, check_route_selection, checked_frr_area_repair, complete_config, evidence_blocks,
@@ -232,7 +233,7 @@ def validate_submission(args, sources, seen, *, conversational=False, checked_pi
         raise ValueError("最多3个假设")
     if not isinstance(requests, list) or not (0 if conversational or comparing or route_checked or args.get("outcome") == "observations_passed" else 1) <= len(requests) <= 6:
         raise ValueError("请提供明确的补充证据请求；追问交流时可为空")
-    checked = []
+    checked, ruled_out = [], []
     for hypothesis in hypotheses:
         if not isinstance(hypothesis, dict) or set(hypothesis) - {"state"} != {"title", "reasoning", "evidence"}:
             raise ValueError("字段不符合工具定义")
@@ -247,9 +248,9 @@ def validate_submission(args, sources, seen, *, conversational=False, checked_pi
             citations.append(checked_citation(citation, sources, seen))
         title = short_text(hypothesis["title"], 160)
         reasoning = short_text(hypothesis["reasoning"], 1000)
-        if state == "unverified":
-            checked.append({"title": title, "reasoning": reasoning, "state": state,
-                            "evidence": citations, "citation_check": "exact_seen_lines"})
+        (checked if state == "unverified" else ruled_out).append({
+            "title": title, "reasoning": reasoning, "state": state,
+            "evidence": citations, "citation_check": "exact_seen_lines"})
     checked_requests = []
     for request in requests:
         exact_keys(request, ("device", "information", "why"))
@@ -284,7 +285,7 @@ def validate_submission(args, sources, seen, *, conversational=False, checked_pi
             raise ValueError("恢复反馈须来自本轮追问")
         verification = {"targets": targets or required_targets or [], "source": "user_report", "evidence": citations}
         checked, checked_requests = [], []
-    return {"summary": summary, "reply": reply, "steps": [short_text(step, 800) for step in steps], "hypotheses": checked, "evidence_requests": checked_requests,
+    return {"summary": summary, "reply": reply, "steps": [short_text(step, 800) for step in steps], "hypotheses": checked, "ruled_out": ruled_out, "evidence_requests": checked_requests,
             "outcome": outcome, "verification": verification, "verification_targets": targets,
             "experiment_goal": short_text(args["experiment_goal"], 500) if args.get("experiment_goal") else "",
             "boundary": "依据本次提交的材料与工具记录生成。"}
@@ -608,6 +609,7 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
             "verification_targets": (previous or {}).get("verification_targets", []),
             "saved_goals": (previous or {}).get("goal_assessment", {}).get("criteria", []),
             "previous_plan": safe_value((previous or {}).get("diagnostic_plan", {})),
+            "experiment_state": safe_value(experiment_context(previous, payload, previous_materials)),
             "operation_history": {"event_count": inspect_history(sources)["event_count"], "tool": "inspect_operation_timeline"},
             "conversation": safe_value((conversation or [])[-6:])}, ensure_ascii=False)}]
     if payload.get("interaction"):
@@ -808,7 +810,9 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
         if not closed and not pending and payload.get("interaction", {}).get("type") in ("ask", "repair"):
             pending = (previous or {}).get("pending_requests", (previous or {}).get("evidence_requests", []))
         analysis["pending_requests"] = pending
-        analysis["experiment_goal"] = (previous or {}).get("experiment_goal") or analysis.get("experiment_goal") or experiment_goal(payload)
+        analysis["experiment_goal"] = ((previous or {}).get("experiment_goal") or
+                                       (previous or {}).get("experiment_state", {}).get("goal") or
+                                       analysis.get("experiment_goal") or experiment_goal(payload))
         if not analysis.get("verification_targets"):
             analysis["verification_targets"] = (previous or {}).get("verification_targets", [])
         ground_investigation_targets(analysis, submitted_host_addresses(payload, sources))
@@ -827,6 +831,9 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
         requests = ["请启用可用模型或补充当前材料后继续开放排查。"]
     if model.get("status") == "ok":
         model["text"] = analysis["summary"]
+    if analysis or (previous or {}).get("experiment_state"):
+        analysis["experiment_state"] = summarize_experiment(previous, payload, sources, analysis, previous_materials,
+                                                           succeeded=model.get("status") == "ok")
     interaction_checks = {item["tool"]: item["result"] for item in model["tool_trace"] if item["status"] == "ok" and item["tool"] in ("compare_materials", "check_submitted_pings")}
     route_lookups = {(item["result"]["device"].casefold(), item["result"]["target"]): item["result"] for item in model["tool_trace"]
                      if item["status"] == "ok" and item["tool"] == "check_route_selection"}
