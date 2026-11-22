@@ -299,6 +299,8 @@ class Handler(BaseHTTPRequestHandler):
                   "/execution-state.js": ("execution-state.js", "text/javascript; charset=utf-8"),
                   "/react-conversation.js.LEGAL.txt": ("react-conversation.js.LEGAL.txt", "text/plain; charset=utf-8"),
                   "/learning.js": ("learning.js", "text/javascript; charset=utf-8"),
+                  "/devices.js": ("devices.js", "text/javascript; charset=utf-8"),
+                  "/devices.css": ("devices.css", "text/css; charset=utf-8"),
                   "/network-room.js": ("network-room.js", "text/javascript; charset=utf-8"), "/network-room.css": ("network-room.css", "text/css; charset=utf-8"),
                   "/session-history.js": ("session-history.js", "text/javascript; charset=utf-8"), "/session-history.css": ("session-history.css", "text/css; charset=utf-8"),
                   "/course-knowledge.js": ("course-knowledge.js", "text/javascript; charset=utf-8"), "/course-knowledge.css": ("course-knowledge.css", "text/css; charset=utf-8"),
