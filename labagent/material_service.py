@@ -106,7 +106,13 @@ class MaterialService:
             materials = request.get("materials", {})
             if not isinstance(materials, dict):
                 raise ValueError("materials须为材料名称与正文组成的对象")
-            payload["configs"].update(materials)
+            material_mode = request.get("material_mode", "merge")
+            if material_mode not in ("merge", "replace"):
+                raise ValueError("material_mode须为merge或replace")
+            if material_mode == "replace":
+                payload["configs"] = deepcopy(materials)
+            else:
+                payload["configs"].update(materials)
             # Privilege is supplied and checked afresh, never restored from history.
             payload.pop("learning", None)
             for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings", "requirements", "topology", "command_outputs", "hint_level", "learning"):
@@ -136,6 +142,7 @@ class MaterialService:
                     "session_recovered": restored is not None,
                     "personal_memory_applied": True,
                     "lab_connection_applied": lab_tools is not None,
+                    "materials_replaced": material_mode == "replace",
                     "course_document_ids": sorted(document["id"] for document in payload.get("course_documents", [])),
                     "reply": result["investigation"].get("reply") or model.get("message") or result["hint"],
                     "result": result}
