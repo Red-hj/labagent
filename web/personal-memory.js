@@ -56,7 +56,10 @@ window.LabPersonal = (() => {
     $("personal-error").textContent = ""; return true;
   }
   async function refresh() {
-    const state = await c.api("/api/account"); user = state.user; renderAccount();
+    const state = await c.api("/api/account"), previousOwner = user?.id;
+    user = state.user;
+    if (previousOwner !== user?.id) c.identityChanged?.();
+    renderAccount();
     if (!user) { $("personal-memory-list").replaceChildren(); resetForm(); return; }
     const saved = await c.api("/api/memories");
     user.memory_enabled = saved.enabled; $("personal-enabled").checked = saved.enabled;

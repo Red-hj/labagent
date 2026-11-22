@@ -2,7 +2,7 @@
 // Learning controls add to the existing conversation and material submission flow.
 window.LabLearning = (() => {
   const get = id => document.getElementById(id);
-  let active = false, unlocked = false, level = 1, callbacks = null, lab = null, accessEpoch = 0;
+  let active = false, unlocked = false, level = 1, callbacks = null, accessEpoch = 0;
   function note(text, error = false) {
     get("learning-note").textContent = text;
     get("learning-note").classList.toggle("error", error);
@@ -28,14 +28,12 @@ window.LabLearning = (() => {
   }
   async function init(options) {
     callbacks = options;
-    lab = window.LabConversation.mountLabConnection(get("lab-connection-view"), options);
     try {
       const data = await callbacks.api("/api/learning");
       active = data.enabled; unlocked = data.solution_unlocked;
       get("learning-panel").hidden = !active;
       get("learning-solution-option").disabled = !unlocked;
       get("learning-unlock").hidden = !data.can_unlock;
-      get("lab-connection").hidden = !data.mcp_configured && !("bridge_available" in data);
       if (active) {
         get("problem").placeholder = "做到哪一步了？哪里不懂，或出现了什么现象？还没准备好截图也可以先问。";
         get("followup-message").placeholder = "说说你刚做了什么、看到了什么，或哪里还不懂…";
@@ -68,10 +66,9 @@ window.LabLearning = (() => {
       if (epoch !== accessEpoch) return;
       unlocked = data.solution_unlocked;
       get("learning-solution-option").disabled = !unlocked;
-      get("lab-connection").hidden = !data.mcp_configured && !("bridge_available" in data);
       if (!unlocked && level === 3) { level = 1; get("learning-level").value = "1"; }
     } catch (_) { if (epoch !== accessEpoch) return; unlocked = false; level = 1; get("learning-level").value = "1"; get("learning-solution-option").disabled = true; }
   }
-  return {init, apply, show, enabled:() => active, refreshBusy:() => lab?.refreshBusy(),
-    reset:() => { accessEpoch++; lab?.reset(); level = 1; get("learning-level").value = "1"; get("learning-current").hidden = true; refreshAccess(); }};
+  return {init, apply, show, enabled:() => active,
+    reset:() => { accessEpoch++; level = 1; get("learning-level").value = "1"; get("learning-current").hidden = true; refreshAccess(); }};
 })();

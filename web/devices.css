@@ -1,0 +1,27 @@
+.devices-entry { display:inline-flex; align-items:center; justify-content:center; gap:7px; }
+.devices-entry svg { flex:none; width:16px; height:16px; }
+.devices-entry[data-state="online"] { border-color:#c9e6da; color:#277453; background:#f4fbf7; }
+.connection-dialog { box-sizing:border-box; width:min(720px,calc(100vw - 32px)); max-height:calc(100dvh - 40px); padding:0 28px 24px; overflow:auto; border:1px solid #e4e7ef; border-radius:20px; background:#fff; color:#24314a; box-shadow:0 24px 80px #17264026; }
+.connection-dialog::backdrop { background:#1420384d; backdrop-filter:blur(6px); }
+.connection-heading { position:sticky; top:0; z-index:2; display:flex; justify-content:space-between; align-items:center; gap:16px; padding:22px 0 16px; background:#fff; border-bottom:1px solid #edf0f6; }
+.connection-heading h2 { margin:0; font-size:21px; }
+.connection-heading-actions { display:flex; align-items:center; gap:12px; }
+.connection-heading-actions .text-button { font-size:12px; }
+.connection-close { flex:none; width:36px; height:36px; border:0; border-radius:8px; background:#f5f6fa; color:#59657a; font-size:24px; line-height:1; }
+.connection-dialog input,.connection-dialog select { box-sizing:border-box; width:100%; max-width:100%; min-height:42px; padding:9px 11px; border:1px solid #dfe3ec; border-radius:8px; font:inherit; background:#fff; color:inherit; }
+.connection-dialog label { display:block; margin:15px 0 7px; }
+.connection-dialog details { margin:14px 0; }
+.connection-dialog summary { cursor:pointer; line-height:1.6; }
+.connection-dialog li { margin:15px 0; }
+.connection-dialog ol { padding-left:24px; }
+.connection-dialog .lab-command { overflow-wrap:anywhere; white-space:pre-wrap; }
+.connection-dialog #lab-tools form { margin-top:18px; padding-top:12px; border-top:1px solid #edf0f6; }
+.connection-dialog [hidden] { display:none!important; }
+@media(max-width:620px) {
+  header { flex-wrap:wrap; }
+  .header-actions { width:100%; max-width:none; flex-direction:row; flex-wrap:wrap; align-items:center; justify-content:flex-start; gap:7px; }
+  .devices-entry,.personal-entry { max-width:calc(50vw - 26px); }
+  .connection-dialog { width:calc(100vw - 24px); max-height:calc(100dvh - 24px); padding:0 18px 20px; border-radius:16px; }
+  .connection-heading { padding-top:18px; }
+  .connection-dialog input,.connection-dialog select { font-size:16px; }
+}
