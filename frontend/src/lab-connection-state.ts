@@ -14,6 +14,8 @@ export interface LabOptions {
   setCollecting?: (value: boolean) => void;
   addMaterials: (materials: Record<string, string>) => void;
   ask: (text: string, type: string) => void;
+  signedIn?: () => boolean;
+  signIn?: () => void;
 }
 export interface LabState {
   bridge: Bridge | null;
@@ -25,16 +27,17 @@ export interface LabState {
   message: string;
   error: boolean;
   checkReady: boolean;
+  signedIn: boolean | null;
 }
 const initial = (): LabState => ({bridge:null, code:null, tools:[], warnings:[], phase:"idle",
-  busy:false, message:"尚未连接实验电脑。首次使用请先完成上面的本地工具准备与自检，也可直接上传配置、截图或日志。", error:false, checkReady:false});
+  busy:false, message:"准备好本地连接程序后，生成连接码即可接入。", error:false, checkReady:false, signedIn:null});
 
 // The account/session owner calls reset; in-flight replies cannot add old materials.
 export function createLabConnection(options: LabOptions) {
-  let state = initial(), epoch = 0, contextEpoch = 0;
+  let state = {...initial(), signedIn:options.signedIn?.() ?? null}, epoch = 0, contextEpoch = 0;
   const listeners = new Set<() => void>();
   const update = (changes: Partial<LabState>) => {
-    state = {...state, ...changes, busy:options.busy()};
+    state = {...state, ...changes, busy:options.busy(), signedIn:options.signedIn?.() ?? null};
     for (const listener of listeners) listener();
   };
   function available() { return state.phase === "idle" && !options.busy(); }
@@ -109,6 +112,7 @@ export function createLabConnection(options: LabOptions) {
     getSnapshot:() => state,
     subscribe:(listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     loadTools, pair, disconnect, collect,
+    signIn:() => options.signIn?.(),
     check,
     refreshBusy:() => { if (state.busy !== options.busy()) update({}); },
     resetContext:() => { contextEpoch++; update({checkReady:false}); },
