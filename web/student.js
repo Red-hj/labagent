@@ -101,29 +101,7 @@ function receiveProgress(event, request = activeRequest) {
 async function diagnose(input) {
   const request = activeRequest;
   await window.LabWorkspace.prepareDiagnosis(input);
-  const response = await fetch("/api/diagnose/stream", {method:"POST", credentials:"same-origin", signal:AbortSignal.timeout(330000), headers:{"Content-Type":"application/json", ...roomHeaders()}, body:JSON.stringify(input)});
-  if (!response.ok) {
-    const data = (response.headers.get("Content-Type") || "").includes("application/json") ? await response.json() : {};
-    throw new Error(data.error || "本次诊断未能开始，请稍后重试。");
-  }
-  const reader = response.body.getReader(), decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      const {done, value} = await reader.read();
-      buffer += decoder.decode(value, {stream:!done});
-      let newline;
-      while ((newline = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
-        if (!line.trim()) continue;
-        const event = JSON.parse(line);
-        if (!receiveProgress(event, request)) continue;
-        if (event.type === "result") return event.result;
-        if (event.type === "error") throw new Error(event.message);
-      }
-      if (done) throw new Error("连接已中断，未收到完整诊断结果。可以重新提交。");
-    }
-  } finally { reader.releaseLock(); }
+  return window.LabTasks.run(input, request);
 }
 function syncWorkspaceLayout() {
   const hasOutput = materials.size || sessionId || busy || sessionProblem || !$("request-status").hidden || !$("process-section").hidden || !$("repair-section").hidden;
@@ -527,6 +505,10 @@ function finishRequest(state, text) {
   clearInterval(requestTimer); requestTimer = null;
   $("request-status").hidden = true; setBusy(false);
   $("processing-progress").open = false;
+  if (state === "cancelled") {
+    window.LabConversation.stopPending($("conversation"), text);
+    message(text);
+  }
   if (state === "error" && activeRequest) {
     window.LabConversation.removeLastFailure($("conversation"), activeRequest.text);
     if (!$("conversation").querySelector(".chat-transient")) pendingTurn(activeRequest.text);
@@ -552,12 +534,13 @@ async function performInteraction(type, text) {
     const result = await diagnose(input);
     if (activeRequest !== request) return;
     showResult(result);
-    if (result.llm?.status === "ok") {
+    if (result.llm?.status === "cancelled") finishRequest("cancelled", result.llm.message);
+    else if (result.llm?.status === "ok") {
       finishRequest("success", {ask:"回复已生成，已显示在对话末尾。", repair:"修改步骤已生成。", update:"补充材料已处理，诊断已更新。", verify:"本轮复测核对完成，结果已更新。"}[type]);
     } else finishRequest("error", (result.llm?.message || "本次请求未完成。") + " 输入已保留，可以再次提交。");
   } catch (error) {
     if (request && activeRequest !== request) return;
-    if (activeRequest) finishRequest("error", diagnosisFailure(error) + " 输入已保留。");
+    if (activeRequest) finishRequest(error.code === "task_stopped" ? "cancelled" : "error", diagnosisFailure(error) + " 输入已保留。");
     else message(error.message, true);
   } finally {
     if (request && activeRequest === request) { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
@@ -660,6 +643,7 @@ function showResult(result) {
   const ok = result.llm?.status === "ok";
   const intent = result.conversation?.at(-1)?.intent;
   $("result-state").textContent = ok ? (result.status === "verified_from_observations" && intent !== "ask" ? "本轮测试通过 · 排查完成" : {ask:"本次回复", repair:"修改步骤", verify:"本轮材料核对", update:"补充材料后的进展"}[intent] || "本次排查发现") : "本次分析尚未完成";
+  if (result.llm?.status === "cancelled") $("result-state").textContent = "本轮已停止 · 材料与记录已保留";
   if (ok && result.status === "comparison_complete") $("result-state").textContent = "候选修复对照完成";
   if (result.status === "comparison_complete") $("diagnosis-progress").hidden = true;
   else $("diagnosis-progress").hidden = false;
@@ -780,10 +764,10 @@ $("analyze").addEventListener("click", async () => {
     const result = await diagnose(input);
     if (activeRequest !== request) return;
     showResult(result);
-    finishRequest(result.llm?.status === "ok" ? "success" : "error", result.llm?.status === "ok" ? "诊断完成，结果已显示并保存。" : (result.llm?.message || "本次诊断未完成。") + " 材料已保留，可以再次提交。");
+    finishRequest(result.llm?.status === "cancelled" ? "cancelled" : result.llm?.status === "ok" ? "success" : "error", result.llm?.status === "ok" ? "诊断完成，结果已显示并保存。" : (result.llm?.message || "本次诊断未完成。") + " 材料已保留，可以再次提交。");
   } catch (error) {
     if (request && activeRequest !== request) return;
-    if (activeRequest) finishRequest("error", diagnosisFailure(error) + " 材料已保留。");
+    if (activeRequest) finishRequest(error.code === "task_stopped" ? "cancelled" : "error", diagnosisFailure(error) + " 材料已保留。");
     else message(error.message, true);
   } finally {
     if (request && activeRequest === request) { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
@@ -853,6 +837,34 @@ async function connectService() {
     }
   } finally { clearTimeout(wakeup); }
 }
+async function restoreTask() {
+  let task;
+  try { task = await window.LabTasks.restore(); }
+  catch (error) { message("任务状态暂未恢复：" + error.message, true); return false; }
+  if (!task) return false;
+  const requestedSession = new URLSearchParams(location.search).get("session");
+  if (requestedSession && task.input.session_id && requestedSession !== task.input.session_id) return false;
+  if (task.input.room_id && task.input.room_id !== roomHeaders()["X-LabAgent-Room"]) return false;
+  materials.clear();
+  for (const [name, text] of Object.entries(task.input.configs || {})) materials.set(name, text);
+  $("problem").value = task.input.question === defaultQuestion ? "" : task.input.question || "";
+  knowledgeScope = task.input.knowledge_scope || "default"; evidenceKind = task.input.evidence_kind || "user_submitted";
+  renderMaterials();
+  const type = task.input.interaction?.type || "analyze", text = task.input.interaction?.message || task.input.question || "继续处理实验材料";
+  const request = beginRequest(type, text); request.taskId = task.id;
+  try {
+    const result = await window.LabTasks.watch(task.id, request, task);
+    if (activeRequest !== request) return true;
+    showResult(result);
+    finishRequest(result.llm?.status === "cancelled" ? "cancelled" : result.llm?.status === "ok" ? "success" : "error",
+      result.llm?.message || "已恢复本轮结果，未重新发起检查。");
+  } catch (error) {
+    if (activeRequest === request) finishRequest(error.code === "task_stopped" ? "cancelled" : "error", error.message);
+  } finally {
+    if (activeRequest === request) { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
+  }
+  return true;
+}
 async function start() {
   const assistantOptions = {api, busy:() => busy || materialLoading,
     setCollecting:value => { materialLoading = value; setBusy(value); },
@@ -882,7 +894,7 @@ async function start() {
     document.querySelector("footer span:last-child").textContent = "测试过程保存在当前在线服务";
   }
   window.LabHistory.refresh();
-  if (await window.LabWorkspace.start()) return;
+  if (await window.LabWorkspace.start()) { await restoreTask(); return; }
   const savedSession = new URLSearchParams(window.location.search).get("session");
   if (savedSession && /^[a-f0-9]{32}$/.test(savedSession)) {
     let saved;
@@ -919,6 +931,7 @@ async function start() {
     message(legacySession ? "已打开早期规则诊断记录。可查看对话与报告，点击“新对话”开始新的排查。" : "已恢复完整对话，可以继续交流或补充材料。");
     if (matchMedia("(max-width:1100px)").matches) $("dialogue-section").scrollIntoView({block:"start"});
   }
+  if (await restoreTask()) return;
   const pendingRecording = new URLSearchParams(window.location.search).get("recording");
   if (pendingRecording && /^[a-f0-9]{32}$/.test(pendingRecording)) {
     setBusy(true);

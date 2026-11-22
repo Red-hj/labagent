@@ -67,7 +67,7 @@ function Evidence({turn, onMaterials}: {turn: Turn; onMaterials: OpenMaterials})
 }
 
 function TurnView({turn, onMaterials}: {turn: Turn; onMaterials: OpenMaterials}) {
-  const failed = Boolean(turn.model_status && turn.model_status !== "ok");
+  const failed = Boolean(turn.model_status && !["ok", "cancelled"].includes(turn.model_status));
   const names = turn.material_names || [];
   return <div className={"chat-turn" + (failed ? " chat-saved-error" : "")} data-request-text={failed ? turn.user : undefined}>
     <div className="chat-message chat-user">
@@ -140,6 +140,14 @@ export function updatePending(container: HTMLElement, changes: Partial<PendingRe
 
 export function failPending(container: HTMLElement, error: string, onRetry: () => void) {
   updatePending(container, {error, onRetry});
+}
+
+export function stopPending(container: HTMLElement, message: string) {
+  const state = mounted.get(container);
+  if (!state?.pending) return;
+  state.turns = [...state.turns, {user:state.pending.text, assistant:message, model_status:"cancelled"}];
+  state.pending = null;
+  paint(state);
 }
 
 export function renderProgress(container: HTMLElement, entries: ProgressEntry[]) {

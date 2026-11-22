@@ -15,7 +15,7 @@ class CloudWorkflow:
         self.client_factory = client_factory or (
             lambda session: AgentArtsClient.from_environment(platform_session_id=session))
 
-    def run(self, payload, *, lab_connection=None):
+    def run(self, payload, *, lab_connection=None, task_connection=None):
         history = self.store.history(payload["session_id"]) if payload.get("session_id") else None
         previous = history["attempts"][-1]["result"].get("agentarts") if history else None
         if history and not previous:
@@ -32,6 +32,8 @@ class CloudWorkflow:
         request["personal_memory"] = deepcopy(payload.get("personal_memory", []))
         if lab_connection:
             request["lab_connection"] = deepcopy(lab_connection)
+        if task_connection:
+            request["task_connection"] = deepcopy(task_connection)
         for key in ("question", "use_llm", "evidence_kind", "knowledge_scope", "recordings", "requirements", "topology", "command_outputs", "hint_level", "learning"):
             if key in payload:
                 request[key] = deepcopy(payload[key])
@@ -68,6 +70,8 @@ class CloudWorkflow:
             raise ValueError("云端镜像尚不支持会话恢复，请更新AgentArts镜像后重试；此前的网页记录已保留。")
         if lab_connection and response.get("lab_connection_applied") is not True:
             raise ValueError("云端镜像尚不支持实验电脑工具回传，请更新AgentArts运行时后继续。")
+        if task_connection and response.get("task_control_applied") is not True:
+            raise ValueError("请更新云端运行时以支持任务停止和恢复。")
         expected = sorted(document["id"] for document in request["course_documents"])
         if request["personal_memory"] and response.get("personal_memory_applied") is not True:
             raise ValueError("云端尚不支持个人记忆，请更新AgentArts镜像后继续；此前的网页记录已保留。")
@@ -80,7 +84,7 @@ class CloudWorkflow:
                 ("created_at", "config_fingerprint", "hint_level", "findings", "status")):
             raise ValueError("云端未返回完整诊断结果，请检查运行时镜像版本。")
         result = deepcopy(result)
-        if payload.get("learning") and not result.get("investigation", {}).get("learning"):
+        if payload.get("learning") and result.get("llm", {}).get("status") != "cancelled" and not result.get("investigation", {}).get("learning"):
             model_status = result.get("llm", {}).get("status")
             if model_status and model_status != "ok":
                 message = {

@@ -27,6 +27,7 @@ from .network_map import PATH_TOOL, build_map, explain_path
 from .learning import policy as learning_policy, STEP_TOOL, validate_step
 from .investigation_prompts import system_instructions
 from .tool_workflow import run_tool_workflow
+from .task_control import DiagnosisCancelled, check_cancelled
 from .tool_registry import ToolRegistry
 from .connectivity import address_literal, ground_ping_text, host_literals
 
@@ -649,6 +650,7 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
         nonlocal outcome, pending_learning, pending_item
         ids = set()
         for call in calls:
+            check_cancelled()
             if not isinstance(call, dict) or not isinstance(call.get("id"), str) or not call["id"] or call["id"] in ids or not isinstance(call.get("function"), dict):
                 raise ValueError("invalid tool call")
             ids.add(call["id"])
@@ -756,12 +758,15 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
 
     try:
         workflow = run_tool_workflow(select_check, execute_check, review=review_learning_step if active_learning else None)
+        check_cancelled()
         if outcome is not None:
             outcome["tool_workflow"] = workflow
             if connected:
                 outcome["mcp_warnings"] = connected.warnings
             return outcome
         return {"status": "step_limit", "message": "达到六轮排查上限，请缩小问题或补充材料后继续。", "tool_workflow": workflow, **info()}
+    except DiagnosisCancelled as error:
+        return {"status": "cancelled", "message": str(error), **info()}
     except ModelError as error:
         if error.call is not None:
             metadata.append({"round": len(metadata) + 1, **error.call})
@@ -782,9 +787,12 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
     model = run_investigator(payload, sources, previous, completion, conversation=conversation,
                              previous_materials=previous_materials, goal_checks=goal_checks, lab_tools=lab_tools)
     analysis = model.pop("investigation", {})
+    if model.get("status") == "cancelled":
+        analysis = {"summary": "已停止本轮检查。", "reply": model["message"], "hypotheses": [],
+                    "evidence_requests": [], "outcome": "investigating"}
     engine_state = model.pop("engine_state", {})
     same_materials = list(payload["configs"].items()) == list((previous_materials or {}).items())
-    previous_closed = (previous or {}).get("outcome") in RESOLVED_OUTCOMES
+    previous_closed = model.get("status") != "cancelled" and (previous or {}).get("outcome") in RESOLVED_OUTCOMES
     if not analysis and previous_closed and same_materials and not payload.get("learning"):
         analysis = dict(previous)
     saved_criteria = (previous or {}).get("goal_assessment", {}).get("criteria", [])
@@ -846,7 +854,7 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
     if reported:
         interaction_checks.pop("check_submitted_pings", None)
         interaction_checks["user_report"] = analysis["verification"]
-    status = "verified_from_observations" if passed else "resolved_by_user_report" if reported else "goals_pending" if analysis.get("outcome") == "goals_pending" else "needs_information"
+    status = "cancelled" if model.get("status") == "cancelled" else "verified_from_observations" if passed else "resolved_by_user_report" if reported else "goals_pending" if analysis.get("outcome") == "goals_pending" else "needs_information"
     only_runs = comparisons and all(source["kind"] in {"repair_run", "user_question", "user_message"} for source in sources.values())
     if only_runs and all(not item.get("error") for item in comparisons) and model.get("status") == "ok" and not requests:
         status = "comparison_complete"

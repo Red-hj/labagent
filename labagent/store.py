@@ -121,6 +121,8 @@ class Store:
                 db.execute("UPDATE rooms SET data=json_set(data,'$.session',NULL) WHERE json_extract(data,'$.session.session_id')=?", (session_id,))
             db.execute("DELETE FROM attempts WHERE session_id=?", (session_id,))
             db.execute("DELETE FROM personal_resources WHERE kind='session' AND resource_id=?", (session_id,))
+            if db.execute("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='diagnosis_tasks'").fetchone():
+                db.execute("DELETE FROM diagnosis_tasks WHERE session_id=?", (session_id,))
             for suffix in (".json", ".md"):
                 (self.path.parent / "exports" / (session_id + suffix)).unlink(missing_ok=True)
         return {"session_id": session_id, "deleted": True, "deleted_requests": count}
