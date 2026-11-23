@@ -7,6 +7,14 @@ STATUS_LABELS = {"needs_information": "继续排查", "resolved_by_user_report":
                  "verified_from_observations": "提交的测试输出核验通过", "goals_pending": "访问恢复反馈已记录，实验目标待完成", "comparison_complete": "候选修复对照完成"}
 
 
+def ordered_materials(configs, sources):
+    """Persist the observation order separately from each turn's source IDs."""
+    uploaded = {"submitted_material", "screenshot_ocr", "repair_run", "command_output"}
+    ordered = {item["device"]: configs[item["device"]] for item in sources
+               if item["kind"] in uploaded and item["device"] in configs}
+    return ordered | configs
+
+
 def experiment_goal(payload):
     requirements = payload.get("requirements", {})
     if isinstance(requirements.get("goal"), str) and requirements["goal"].strip():

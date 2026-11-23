@@ -13,6 +13,7 @@ from labagent.runtime_parser import parse_linux_routes
 from labagent.store import Store
 from labagent.workflow import available, run_open_workflow
 from test_investigation import ENV
+from test_mcp_learning import call, step
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURES = ROOT / "data/team_cases/lab_02/map_materials"
@@ -143,6 +144,61 @@ class LinuxRouteTests(unittest.TestCase):
         static["configs"]["R1-run.log"] = static["configs"]["R1-run.log"].replace("proto ospf", "proto static")
         assessment = check_goals(criteria(static), source_bundle(static)[0])
         self.assertEqual([row["status"] for row in assessment["checks"]], ["passed", "passed", "failed", "passed"])
+
+    @unittest.skipUnless(available(), "Install workflow dependencies")
+    def test_same_name_upload_replaces_older_observations_and_survives_session_restore(self):
+        repaired = (CAPTURES / "repaired/R1-run.log").read_text(encoding="utf-8")
+        fault = (CAPTURES / "fault/R1-run.log").read_text(encoding="utf-8")
+        ping_passed = (CAPTURES / "repaired/PC1-run.log").read_text(encoding="utf-8")
+        ping_failed = (CAPTURES / "fault/PC1-run.log").read_text(encoding="utf-8")
+        materials = {"R1-retest.log": repaired, "PC1-retest.log": ping_passed, "验证要求.txt": INSTRUCTIONS,
+                     "R1-previous.log": repaired, "PC1-previous.log": ping_passed}
+        request = {"diagnostic_mode": "open_network", "question": "核对 R1 路由来源和 PC1 的 Ping。", "use_llm": True,
+                   "configs": materials, "learning": {"level": 1}}
+
+        def complete(messages):
+            manifest = json.loads(messages[1]["content"])
+            instruction = next(item for item in manifest["materials"] if item["device"] == "验证要求.txt")
+            tools = [item["tool_call_id"] for item in messages if item["role"] == "tool"]
+            if not tools:
+                return call("read_source", {"source_id": instruction["source_id"], "start_line": 1, "end_line": 3})
+            if len(tools) == 1:
+                goals = criteria({"configs": {"验证要求.txt": INSTRUCTIONS}})
+                selected = [goals[0], goals[2]]
+                for goal in selected:
+                    goal["instruction"]["source_id"] = instruction["source_id"]
+                return call("check_experiment_goals", {} if manifest["saved_goals"] else {"goals": selected})
+            assessment = json.loads(messages[-1]["content"])
+            return call("submit_learning_step", step(stage="completed" if assessment["status"] == "passed" else "observe"))
+
+        base = ROOT / "runtime/tests"
+        base.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory, patch.dict("os.environ", ENV):
+            store = Store(Path(directory) / "sessions.sqlite3")
+            database = Path(directory) / "workflow.sqlite3"
+            first_payload = deepcopy(request)
+            first = store.save(first_payload, run_open_workflow(first_payload, database, complete))
+            self.assertEqual(first["status"], "verified_from_observations")
+            refreshed = {"R1-retest.log": fault, "PC1-retest.log": ping_failed}
+            second_payload = {**request, "session_id": first["session_id"], "configs": {**materials, **refreshed},
+                              "interaction": {"type": "verify", "message": "已更新 R1 的路由表和 PC1 的 Ping。"}}
+            second = store.save(second_payload, run_open_workflow(second_payload, database, complete))
+            attempt = store.history(first["session_id"])["attempts"][-1]
+            # Use the saved order when the graph checkpoint has expired and the browser resends all files.
+            resumed = {**second_payload, "configs": {"验证要求.txt": INSTRUCTIONS, **materials, **refreshed}}
+            restored = run_open_workflow(resumed, Path(directory) / "restored.sqlite3", complete, previous_attempt=attempt)
+            for result in (second, restored):
+                self.assertEqual(result["llm"]["status"], "ok")
+                self.assertEqual(result["status"], "needs_information")
+                checks = result["investigation"]["goal_assessment"]["checks"]
+                self.assertEqual([row["status"] for row in checks], ["failed", "needs_evidence"])
+                sources = {source["source_id"]: source["device"] for source in result["source_manifest"]}
+                for row, name in zip(checks, ("PC1-retest.log", "R1-retest.log")):
+                    self.assertTrue(row["evidence"])
+                    for ref in row["evidence"]:
+                        self.assertEqual(ref["device"], name)
+                        self.assertEqual(ref["quote"], refreshed[name].splitlines()[ref["line"] - 1])
+                    self.assertEqual(sources[row["instruction"]["source_id"]], "验证要求.txt")
 
     @unittest.skipUnless(available(), "Install workflow dependencies")
     def test_fault_to_repaired_workflow_finishes_with_all_four_goals_and_matching_report(self):

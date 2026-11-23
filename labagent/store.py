@@ -7,6 +7,7 @@ import uuid
 import re
 from .storage import data_directory
 from .conversations import conversation_title, dialogue
+from .session_state import ordered_materials
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,6 +31,8 @@ class Store:
             database.close()
 
     def save(self, payload, result, *, owner=None):
+        if result.get("mode") == "open_network" and result.get("source_manifest"):
+            payload = {**payload, "configs": ordered_materials(payload["configs"], result["source_manifest"])}
         if "learning" in payload:
             # A solution grant must never enter history, exports or shared rooms.
             payload = {**payload, "learning": {"level": payload["learning"].get("level", 1)}}

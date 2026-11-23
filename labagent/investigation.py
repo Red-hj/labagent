@@ -14,7 +14,7 @@ import time
 from .knowledge import search, validate_scope, validate_course_documents
 from .personal import validate_memory_context
 from .model import configured, chat_completion, ModelError, public_config, bounded_setting
-from .session_state import RESOLVED_OUTCOMES, experiment_goal
+from .session_state import RESOLVED_OUTCOMES, experiment_goal, ordered_materials
 from .experiment_state import experiment_context, summarize_experiment
 from .progress import emit_progress, ToolProgress
 from .experiment_goals import (GOAL_TOOL, ROUTE_TOOL, area_instruction_supports_goal, validate_goal_fields,
@@ -86,7 +86,7 @@ def validate_open(payload):
         short_text(interaction["message"], 4000)
 
 
-def source_bundle(payload, conversation=None):
+def source_bundle(payload, conversation=None, *, previous_materials=None):
     from .engine import fingerprint
     sources, warnings = {}, []
     for index, (device, text) in enumerate(payload["configs"].items(), 1):
@@ -98,6 +98,11 @@ def source_bundle(payload, conversation=None):
                     sources[f"config:{index}"]["kind"] = "repair_run"
             except ValueError:
                 pass
+    if previous_materials:
+        # Keep the previous order for carried files, then apply this turn's uploads.
+        unchanged = {name: index for index, (name, text) in enumerate(previous_materials.items())
+                     if payload["configs"].get(name) == text}
+        sources = dict(sorted(sources.items(), key=lambda item: unchanged.get(item[1]["device"], len(previous_materials))))
     if payload.get("question"):
         sources["question:initial"] = {"device": "实验问题与要求", "kind": "user_question", "text": payload["question"]}
     for index, output in enumerate(payload.get("command_outputs", []), 1):
@@ -691,6 +696,7 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
                     if existing:
                         source_id = existing
                         seen.difference_update({ref for ref in seen if ref[0] == source_id})
+                        sources.pop(source_id)
                     text = safe_text(observed["text"])
                     lines = text.splitlines()
                     sources[source_id] = {"source_id": source_id, "device": material, "kind": "command_output",
@@ -773,7 +779,7 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
 def investigate(payload, previous=None, completion=None, *, conversation=None, previous_materials=None, goal_checks=True, lab_tools=None):
     from .engine import fingerprint
     validate_open(payload)
-    sources, warnings = source_bundle(payload, conversation)
+    sources, warnings = source_bundle(payload, conversation, previous_materials=previous_materials)
     comparisons = discover_runs(sources)
     operations = inspect_history(sources)
     if operations["event_count"]:
@@ -783,6 +789,8 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
                              previous_materials=previous_materials, goal_checks=goal_checks, lab_tools=lab_tools)
     analysis = model.pop("investigation", {})
     engine_state = model.pop("engine_state", {})
+    source_manifest = manifest(sources)
+    payload["configs"] = ordered_materials(payload["configs"], source_manifest)
     same_materials = list(payload["configs"].items()) == list((previous_materials or {}).items())
     previous_closed = (previous or {}).get("outcome") in RESOLVED_OUTCOMES
     if not analysis and previous_closed and same_materials and not payload.get("learning"):
@@ -857,7 +865,7 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
             "hint": analysis.get("summary") or "提交材料后开始分析。", "knowledge": list(knowledge.values()), "knowledge_scope": payload.get("knowledge_scope", "default"),
             "knowledge_retrieval": {"warnings": warnings, "searches": reference_searches}, "planning_knowledge": [], "command_output_parsing": {},
             "next_steps": requests, "summary": {"faults": 0, "unknowns": 0, "static_checks_passed": 0}, "investigation": analysis,
-            "source_manifest": manifest(sources), "llm": model, "interaction_checks": interaction_checks,
+            "source_manifest": source_manifest, "llm": model, "interaction_checks": interaction_checks,
             "operation_history": {**operations, "focus_id": analysis.get("operation_focus") or operations["first_issue_id"]},
             "repair_comparisons": comparisons,
             "recordings": payload.get("recordings", []),
