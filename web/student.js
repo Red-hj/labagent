@@ -138,7 +138,7 @@ function syncContinuation() {
 }
 function setBusy(value) {
   busy = value || materialLoading;
-  window.LabLearning?.refreshBusy();
+  window.LabDevices?.refreshBusy();
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "load-demo"]) $(id).disabled = busy;
   for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = busy || workspaceTransfer;
   $("new-conversation").disabled = busy;
@@ -790,7 +790,10 @@ $("analyze").addEventListener("click", async () => {
   }
 });
 for (const button of document.querySelectorAll("[data-intent]")) button.addEventListener("click", () => {
-  const text = {ask:"请解释当前疑点为什么会造成这个现象，用实验中的材料说明。", repair:"请基于当前材料给出具体修改步骤，以及每一步之后应观察什么。", verify:"请沿用当前排查和实验目标，比较我补充的新材料与上一轮的改动，核对修改后的配置和实际测试输出；如果仍缺新输出，请明确指出需要补充什么。"}[button.dataset.intent];
+  const guided = window.LabLearning?.enabled();
+  const text = {ask:"请解释当前疑点为什么会造成这个现象，用实验中的材料说明。",
+    repair:guided ? "请接着当前实验步骤，引导我做下一个小动作，解释在哪里操作、应该观察什么。" : "请基于当前材料给出具体修改步骤，以及每一步之后应观察什么。",
+    verify:guided ? "请比较新材料与上一轮观察，核对当前这一步的变化，说明依据并给一个下一步操作；缺少输出时，具体告诉我看哪里。" : "请沿用当前排查和实验目标，比较我补充的新材料与上一轮的改动，核对修改后的配置和实际测试输出；如果仍缺新输出，请明确指出需要补充什么。"}[button.dataset.intent];
   performInteraction(button.dataset.intent, text);
 });
 $("chat-new-reply").addEventListener("click", () => { $("conversation").scrollTop = $("conversation").scrollHeight; $("chat-new-reply").hidden = true; });
@@ -800,6 +803,7 @@ $("conversation").addEventListener("scroll", () => {
 $("new-diagnosis").addEventListener("click", () => {
   if (busy) return;
   window.LabLearning?.reset();
+  window.LabDevices?.resetContext();
   ++previewNumber;
   window.LabPersonal.setResult(null);
   window.LabWorkspace.leave();
@@ -850,7 +854,7 @@ async function connectService() {
   } finally { clearTimeout(wakeup); }
 }
 async function start() {
-  await window.LabLearning?.init({api, busy:() => busy || materialLoading,
+  const assistantOptions = {api, busy:() => busy || materialLoading,
     setCollecting:value => { materialLoading = value; setBusy(value); },
     ask:(text, type = "ask") => {
       if (busy || materialLoading) return;
@@ -868,7 +872,9 @@ async function start() {
       if (next.size > 20) throw new Error("当前材料已满20份，请先精简材料。");
       for (const [name, text] of Object.entries(incoming)) materials.set(name, text);
       evidenceKind = "user_submitted"; renderMaterials(); materialChanged("设备输出已加入，可在当前会话核对这一步。");
-    }});
+    }};
+  window.LabDevices?.init(assistantOptions);
+  await window.LabLearning?.init(assistantOptions);
 
   const health = await connectService(); serviceState = "ready"; diagnosisBackend = health.diagnosis_backend || "local"; modelReady = health.diagnosis_configured ?? health.llm_configured; online = health.online; videoReady = health.replay_available; setBusy(false);
   if (online) {
@@ -1038,7 +1044,7 @@ window.LabKnowledge.init({api,element,message,busy:() => busy,scope:() => knowle
   knowledgeScope = scope;
   if (sessionId) $("result-state").textContent = "参考资料已更新 · 下方为上一次分析";
 }});
-window.LabPersonal.init({api,element,message,busy:() => busy || workspaceTransfer,
+window.LabPersonal.init({api,element,message,identityChanged:() => window.LabDevices?.reset(),afterSignIn:() => window.LabDevices?.afterSignIn(),busy:() => busy || workspaceTransfer,
   newConversation:() => $("new-diagnosis").click(), refreshHistory:() => window.LabHistory.refresh(),
   question:() => $("problem").value, shared:() => Boolean(roomHeaders()["X-LabAgent-Room"])});
 start().catch(error => { serviceState = "unavailable"; modelReady = false; setBusy(false); message("暂时无法连接服务：" + error.message, true); });

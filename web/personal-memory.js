@@ -56,7 +56,10 @@ window.LabPersonal = (() => {
     $("personal-error").textContent = ""; return true;
   }
   async function refresh() {
-    const state = await c.api("/api/account"); user = state.user; renderAccount();
+    const state = await c.api("/api/account"), previousOwner = user?.id;
+    user = state.user;
+    if (previousOwner !== user?.id) c.identityChanged?.();
+    renderAccount();
     if (!user) { $("personal-memory-list").replaceChildren(); resetForm(); return; }
     const saved = await c.api("/api/memories");
     user.memory_enabled = saved.enabled; $("personal-enabled").checked = saved.enabled;
@@ -103,7 +106,7 @@ window.LabPersonal = (() => {
         memory_enabled:$("personal-register-memory").checked});
       await c.api(registering ? "/api/account/register" : "/api/account/login", credentials);
       $("personal-password").value = ""; resetPasswordVisibility(); latest = null; c.newConversation();
-      await refresh(); registering = false; renderAuthMode(); await c.refreshHistory(); channel?.postMessage("changed");
+      await refresh(); registering = false; renderAuthMode(); await c.refreshHistory(); channel?.postMessage("changed"); c.afterSignIn?.();
       c.message("个人账号已登录，后续排查将使用你的记忆设置。");
     } catch (error) { $("personal-error").textContent = error.message; }
     finally { saving = false; authPending(false); }
@@ -173,5 +176,5 @@ window.LabPersonal = (() => {
     });
     refresh().catch(() => { $("personal-entry").textContent = "个人账号 / 记忆"; });
   }
-  return {init, setResult:result => { latest = result; }};
+  return {init, signedIn:() => Boolean(user), setResult:result => { latest = result; }};
 })();

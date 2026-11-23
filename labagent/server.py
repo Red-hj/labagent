@@ -164,6 +164,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "diagnosis_backend": self.server.diagnosis_backend, "diagnosis_configured": self.server.cloud_configured if self.server.diagnosis_backend == "agentarts" else configured(), "llm_configured": configured(), "llm": public_config(), "replay_available": replay_available()})
         if not self.team_access():
             return
+        if path == "/api/lab/connector":
+            from .connector_package import build_connector_package
+            content = build_connector_package()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="labagent-connector.zip"')
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            return self.wfile.write(content)
         if path == "/api/learning":
             from .learning import solution_allowed, COOKIE as LEARNING_COOKIE
             user = self.personal_user(strict=False)
@@ -288,6 +299,8 @@ class Handler(BaseHTTPRequestHandler):
                   "/execution-state.js": ("execution-state.js", "text/javascript; charset=utf-8"),
                   "/react-conversation.js.LEGAL.txt": ("react-conversation.js.LEGAL.txt", "text/plain; charset=utf-8"),
                   "/learning.js": ("learning.js", "text/javascript; charset=utf-8"),
+                  "/devices.js": ("devices.js", "text/javascript; charset=utf-8"),
+                  "/devices.css": ("devices.css", "text/css; charset=utf-8"),
                   "/network-room.js": ("network-room.js", "text/javascript; charset=utf-8"), "/network-room.css": ("network-room.css", "text/css; charset=utf-8"),
                   "/session-history.js": ("session-history.js", "text/javascript; charset=utf-8"), "/session-history.css": ("session-history.css", "text/css; charset=utf-8"),
                   "/course-knowledge.js": ("course-knowledge.js", "text/javascript; charset=utf-8"), "/course-knowledge.css": ("course-knowledge.css", "text/css; charset=utf-8"),
@@ -623,6 +636,10 @@ class Handler(BaseHTTPRequestHandler):
         user = self.personal_user()
         owner = "room:" + payload["room_id"] if payload.get("room_id") else user["id"] if user else None
         result["memory_used"] = [{"kind": item["kind"], "title": item["title"]} for item in payload.get("personal_memory", [])]
+        from .material_changes import compare_materials
+        history = self.store.history(payload["session_id"]) if payload.get("session_id") else None
+        result["material_changes"] = compare_materials(
+            history["attempts"][-1]["input"].get("configs", {}) if history else None, payload["configs"])
         saved = self.store.save(payload, result, owner=owner)
         self.server.rooms.record_diagnosis(payload, saved)
         if user:

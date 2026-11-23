@@ -81,6 +81,8 @@ class SessionRecoveryTests(unittest.TestCase):
         self.assertEqual(len(second["conversation"]), 2)
         self.assertEqual(second["conversation"][0], first["conversation"][0])
         self.assertEqual(second["investigation"]["experiment_goal"], GOAL)
+        self.assertEqual(second["investigation"]["experiment_state"]["goal"], GOAL)
+        self.assertEqual(second["investigation"]["experiment_state"]["turn_count"], 2)
         diff = second["interaction_checks"]["compare_materials"]
         self.assertTrue(diff["has_previous"])
         self.assertTrue(diff["changed"])

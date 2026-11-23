@@ -64,3 +64,13 @@ const changedHtml = renderToStaticMarkup(createElement(MaterialsView, {...materi
   location:{name:"R1.cfg", line:2, quote:"up up", text:"old snapshot"}}));
 assert.ok(!changedHtml.includes("<mark"), "a citation from an older snapshot must not highlight changed text");
 console.log("React conversation passed: messages, citations, pending replies, retry state, tool progress and editable waiting drafts");
+
+const changed = render([{attempt:2, user:"核对新输出", assistant:"接口已恢复，继续核对邻居", material_changes:{
+  has_previous:true, changed:true, items:[{material:"R1.log",kind:"updated",added:1,removed:1,
+    redacted_only:false,truncated:false,preview:[
+      {kind:"removed",line:2,text:"GE0/0/0 down"},
+      {kind:"added",line:2,text:"GE0/0/0 up <script>"}]}]}}]);
+assert.ok(changed.includes("1份材料有变化"));
+assert.ok(changed.includes("旧第2行：GE0/0/0 down"));
+assert.ok(changed.includes("新第2行：GE0/0/0 up &lt;script&gt;"));
+assert.ok(!changed.includes("<script>"));

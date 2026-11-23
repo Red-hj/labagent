@@ -14,6 +14,8 @@ export interface LabOptions {
   setCollecting?: (value: boolean) => void;
   addMaterials: (materials: Record<string, string>) => void;
   ask: (text: string, type: string) => void;
+  signedIn?: () => boolean;
+  signIn?: () => void;
 }
 export interface LabState {
   bridge: Bridge | null;
@@ -25,16 +27,17 @@ export interface LabState {
   message: string;
   error: boolean;
   checkReady: boolean;
+  signedIn: boolean | null;
 }
 const initial = (): LabState => ({bridge:null, code:null, tools:[], warnings:[], phase:"idle",
-  busy:false, message:"可先连接实验电脑，也可继续上传配置、截图或日志。", error:false, checkReady:false});
+  busy:false, message:"准备好本地连接程序后，生成连接码即可接入。", error:false, checkReady:false, signedIn:null});
 
 // The account/session owner calls reset; in-flight replies cannot add old materials.
 export function createLabConnection(options: LabOptions) {
-  let state = initial(), epoch = 0;
+  let state = {...initial(), signedIn:options.signedIn?.() ?? null}, epoch = 0, contextEpoch = 0;
   const listeners = new Set<() => void>();
   const update = (changes: Partial<LabState>) => {
-    state = {...state, ...changes, busy:options.busy()};
+    state = {...state, ...changes, busy:options.busy(), signedIn:options.signedIn?.() ?? null};
     for (const listener of listeners) listener();
   };
   function available() { return state.phase === "idle" && !options.busy(); }
@@ -79,31 +82,41 @@ export function createLabConnection(options: LabOptions) {
     } catch (error) { if (owner === epoch) failed(error); }
     finally { if (owner === epoch) update({phase:"idle"}); }
   }
-  async function collect(tool: LabTool, args: Record<string, string>) {
+  async function collect(tool: LabTool, args: Record<string, string>, verify = false) {
     if (!available()) return;
-    const owner = epoch;
+    const owner = epoch, context = contextEpoch;
+    let collected = false;
     update({phase:"collecting", error:false, message:"正在从已连接的实验设备读取输出…"});
     options.setCollecting?.(true);
     update({});
     try {
       const data = await options.api<{materials:Record<string,string>}>("/api/lab/collect", {
         tool:tool.function.name, ...(tool.bridge_id ? {bridge_id:tool.bridge_id} : {}), arguments:args});
-      if (owner !== epoch) return;
+      if (owner !== epoch || context !== contextEpoch) return;
       options.addMaterials(data.materials);
+      collected = true;
       update({checkReady:true, message:"设备输出已加入当前材料。点“核对这一步”继续，会话保留。"});
-    } catch (error) { if (owner === epoch) failed(error); }
+    } catch (error) { if (owner === epoch && context === contextEpoch) failed(error); }
     finally {
       options.setCollecting?.(false);
       update(owner === epoch ? {phase:"idle"} : {});
     }
+    if (collected && verify && owner === epoch && context === contextEpoch) check();
+  }
+  function check() {
+    if (!available() || !state.checkReady) return;
+    update({checkReady:false});
+    options.ask("请比较刚采集的输出与上一轮材料，核对当前这一步，说明观察到的变化和下一步操作。", "verify");
   }
   return {
     getSnapshot:() => state,
     subscribe:(listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     loadTools, pair, disconnect, collect,
-    check:() => { if (available() && state.checkReady) options.ask("请用我刚从实验电脑采集的输出核对当前这一步，说明观察到了什么，再引导我做下一小步。", "verify"); },
+    signIn:() => options.signIn?.(),
+    check,
     refreshBusy:() => { if (state.busy !== options.busy()) update({}); },
-    reset:() => { epoch++; state = initial(); update({}); }
+    resetContext:() => { contextEpoch++; update({checkReady:false}); },
+    reset:() => { epoch++; contextEpoch++; state = initial(); update({}); }
   };
 }
 export type LabController = ReturnType<typeof createLabConnection>;
