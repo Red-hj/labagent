@@ -17,7 +17,9 @@ from labagent.material_service import MaterialService
 from labagent.mcp_client import LabMCPTools, MCPError
 from labagent.server import create_server
 from labagent.store import Store
+from scripts.connect_lab import execute_job
 import test_lab_bridge as bridge_fixture
+from test_linux_retest import INSTRUCTIONS, criteria, material_payload
 from test_mcp_learning import ENV, fixture_spec, call, step
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -193,6 +195,119 @@ class CloudRelayFlowTests(unittest.TestCase):
         pair=self.server.lab_bridge.create(self.user["id"],"电脑")
         token=self.server.lab_bridge.claim(pair["code"],[TOOL])["token"]
         self.assertEqual(self.request("/api/lab/runtime/collect",{"tool":"lab_test_r1","arguments":ARGUMENTS},agent=True,token=token)[0],401)
+
+    def test_guided_goals_match_manual_upload_and_cloud_relay_for_the_same_frr_capture(self):
+        commands = {"R1": "ip route show table main", "R2": "ip route show table main",
+                    "PC1": "ping -n -c 5 -i 0.2 -W 1 -w 8 192.168.20.10",
+                    "PC2": "ping -n -c 5 -i 0.2 -W 1 -w 8 192.168.10.10"}
+        requirements = {"验证要求.txt": INSTRUCTIONS}
+        goals = criteria({"configs": requirements})
+        spec = fixture_spec()
+        spec["tools"] = {device.lower(): {"name": "device_exec", "device": device, "effect": "observe",
+                         "arguments": {"target": device}, "choices": {"command": [command]}}
+                         for device, command in commands.items()}
+
+        def complete(messages, *, tools, **options):
+            submitted = [item["tool_call_id"] for item in messages if item["role"] == "tool"]
+            if not submitted:
+                reads = call("read_source", {"source_id": "config:1", "start_line": 1, "end_line": 4})
+                available = {tool["function"]["name"] for tool in tools}
+                for device, command in commands.items():
+                    name = f"lab_test_{device.lower()}"
+                    if name in available:
+                        reads["tool_calls"].extend(call(name, {"command": command})["tool_calls"])
+                return reads
+            if "check_experiment_goals" not in submitted:
+                saved = json.loads(messages[1]["content"])["saved_goals"]
+                return call("check_experiment_goals", {} if saved else {"goals": goals})
+            assessment = json.loads(messages[-1]["content"])
+            passed = assessment["status"] == "passed"
+            return call("submit_learning_step", step(stage="completed" if passed else "observe",
+                current_step="核对实验要求", explanation="依据双向 Ping 和路由表逐项核对。", action="逐项对照当前设备输出。",
+                expected_observation="找到双向收发统计和两端的路由来源。", question="还有哪一项目标需要验证？"))
+
+        model = patch("labagent.investigation.chat_completion", side_effect=complete)
+        model.start()
+        self.addCleanup(model.stop)
+
+        def payload(phase, previous, *, relay):
+            request = material_payload(phase)
+            request["configs"] = requirements if relay else {**requirements, **request["configs"]}
+            if previous:
+                request.update(session_id=previous["session_id"],
+                               interaction={"type": "verify", "message": "请重新采集并核对四项目标。"})
+            return request
+
+        expected = {"fault": ["failed", "failed", "needs_evidence", "needs_evidence"], "repaired": ["passed"] * 4}
+        manual, cloud = {}, {}
+        for phase in expected:
+            status, result, _ = self.request("/api/diagnose", payload(phase, manual.get("fault"), relay=False))
+            self.assertEqual(status, 200, result)
+            self.assertFalse(result["collected_materials"])
+            manual[phase] = result
+
+        pair = self.server.lab_bridge.create(self.user["id"], "FRRouting 采集回放")
+        test = self
+
+        class Peer:
+            def __init__(self, token):
+                self.token = token
+
+            def post(self, path, value):
+                status, data, _ = test.request(path, value, agent=True, token=self.token)
+                test.assertEqual(status, 200, data)
+                return data
+
+        for phase in expected:
+            config = self.folder / f"{phase}-mcp.json"
+            config.write_text(json.dumps({"servers": {"test": {**spec, "args": [*spec["args"], phase]}}}), encoding="utf-8")
+            with LabMCPTools(config) as lab, ThreadPoolExecutor(1) as worker:
+                if phase == "fault":
+                    peer = Peer(self.server.lab_bridge.claim(pair["code"], lab.tools)["token"])
+                pending = worker.submit(self.request, "/api/diagnose", payload(phase, cloud.get("fault"), relay=True))
+                for device, command in commands.items():
+                    job = peer.post("/api/lab/agent/poll", {"wait": 5})["job"]
+                    self.assertIsNotNone(job, f"{phase}: missing observation for {device}")
+                    self.assertEqual(job["tool"], f"lab_test_{device.lower()}")
+                    self.assertEqual(job["arguments"], {"command": command})
+                    self.assertTrue(execute_job(lab, peer, job))
+                status, result, _ = pending.result(timeout=10)
+                self.assertEqual(status, 200, result)
+                self.assertEqual(len(result["collected_materials"]), 4)
+                observations = [item for item in result["execution"]["items"] if item["tool"].startswith("lab_test_")]
+                self.assertEqual([item["status"] for item in observations], ["completed"] * 4)
+                cloud[phase] = result
+
+        self.assertEqual(manual["fault"]["session_id"], manual["repaired"]["session_id"])
+        self.assertEqual(cloud["fault"]["session_id"], cloud["repaired"]["session_id"])
+        self.assertEqual(cloud["fault"]["collected_materials"].keys(), cloud["repaired"]["collected_materials"].keys())
+        store = self.server.RequestHandlerClass.keywords["store"]
+        for phase, statuses in expected.items():
+            with self.subTest(phase=phase):
+                quotes = []
+                for results in (manual, cloud):
+                    result = results[phase]
+                    passed = phase == "repaired"
+                    self.assertEqual(result["llm"]["status"], "ok", result["llm"])
+                    self.assertEqual(result["status"] == "verified_from_observations", passed)
+                    self.assertEqual(result["investigation"]["learning"]["stage"], "completed" if passed else "observe")
+                    checks = result["investigation"]["goal_assessment"]["checks"]
+                    self.assertEqual([row["status"] for row in checks], statuses)
+                    self.assertTrue(all(row["evidence"] for row in checks))
+                    attempts = store.history(result["session_id"])["attempts"]
+                    materials = attempts[int(passed)]["input"]["configs"]
+                    for row in checks:
+                        for ref in [row["instruction"], *row["evidence"]]:
+                            self.assertEqual(ref["quote"], materials[ref["device"]].splitlines()[ref["line"] - 1])
+                    quotes.append([[ref["quote"] for ref in row["evidence"]] for row in checks])
+                self.assertEqual(quotes[0], quotes[1])
+
+        session = cloud["repaired"]["session_id"]
+        status, report, _ = self.request(f"/api/sessions/{session}/report")
+        self.assertEqual(status, 200, report)
+        self.assertIn("实验目标逐项核对", report["markdown"])
+        self.assertIn("via 10.12.0.2 dev transit proto ospf", report["markdown"])
+        self.assertIn("5 packets transmitted, 5 received", report["markdown"])
 
     def test_other_account_and_forged_request_cannot_select_the_paired_computer(self):
         pair=self.server.lab_bridge.create(self.user["id"],"电脑")
