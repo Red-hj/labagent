@@ -66,9 +66,7 @@ ROUTE_TOOL = {"type": "function", "function": {
 
 def evidence_blocks(sources, *, include_history=False):
     blocks = []
-    # A terminal transcript pasted in the current message keeps its existing precedence.
-    for source_id in sorted(sources, key=lambda key: key == "message:current"):
-        source = sources[source_id]
+    for source_id, source in sources.items():
         if source["kind"] in {"user_question", "repair_run"}:
             continue
         if source["kind"] == "user_message" and source_id != "message:current" and not include_history:

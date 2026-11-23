@@ -12,8 +12,8 @@ from labagent.report import generate_report
 from labagent.runtime_parser import parse_linux_routes
 from labagent.store import Store
 from labagent.workflow import available, run_open_workflow
+from test_experiment_goals import call
 from test_investigation import ENV
-from test_mcp_learning import call, step
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURES = ROOT / "data/team_cases/lab_02/map_materials"
@@ -169,7 +169,11 @@ class LinuxRouteTests(unittest.TestCase):
                     goal["instruction"]["source_id"] = instruction["source_id"]
                 return call("check_experiment_goals", {} if manifest["saved_goals"] else {"goals": selected})
             assessment = json.loads(messages[-1]["content"])
-            return call("submit_learning_step", step(stage="completed" if assessment["status"] == "passed" else "observe"))
+            passed = assessment["status"] == "passed"
+            return call("submit_learning_step", {"stage": "completed" if passed else "observe",
+                "current_step": "核对本轮复测结果", "explanation": "按实验要求查看两项观测。",
+                "action": "查看 R1 路由表和 PC1 的 Ping。", "expected_observation": "核对路由协议与丢包情况。",
+                "question": "本轮两项结果是否都满足实验要求？", "evidence": []})
 
         base = ROOT / "runtime/tests"
         base.mkdir(parents=True, exist_ok=True)
