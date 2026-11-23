@@ -696,7 +696,6 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
                     if existing:
                         source_id = existing
                         seen.difference_update({ref for ref in seen if ref[0] == source_id})
-                        sources.pop(source_id)
                     text = safe_text(observed["text"])
                     lines = text.splitlines()
                     sources[source_id] = {"source_id": source_id, "device": material, "kind": "command_output",

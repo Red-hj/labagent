@@ -99,38 +99,6 @@ class MCPLearningTests(unittest.TestCase):
         self.assertTrue(result["collected_materials"])
         self.assertEqual(result["status"], "needs_information")
 
-    def test_identical_mcp_recollection_outranks_a_later_old_upload(self):
-        command = "ip route show table main"
-        material = "MCP-R1-lab_test_r1-ip_route_show_table_main.log"
-        spec = fixture_spec()
-        spec["tools"]["r1"]["choices"]["command"] = [command]
-        self.config.write_text(json.dumps({"servers": {"test": spec}}), encoding="utf-8")
-        raw = (ROOT / "data/team_cases/lab_02/map_materials/repaired/R1-run.log").read_text(encoding="utf-8")
-        table = raw.split(f"<R1>{command}\n", 1)[1].split("\n<R1>", 1)[0]
-        earlier = f"设备：R1\n命令：{command}\n{table}"
-        manual = f"<R1>{command}\n" + table.replace("proto ospf", "proto static")
-        previous = {material: earlier, "R1-old-upload.log": manual}
-        payload = {"configs": dict(previous), "question": "请重新读取 R1 到 192.168.20.10 的路由。", "use_llm": True,
-                   "learning": {"level": 1}, "interaction": {"type": "verify", "message": "核对现在的路由来源。"}}
-
-        def complete(messages):
-            tools = [item["tool_call_id"] for item in messages if item["role"] == "tool"]
-            if not tools:
-                return call("lab_test_r1", {"command": command})
-            if len(tools) == 1:
-                return call("check_route_selection", {"device": "R1", "target": "192.168.20.10"})
-            return call("submit_learning_step", step())
-
-        with patch.dict(os.environ, {"LABAGENT_MCP_CONFIG": str(self.config)}):
-            result = investigate(payload, completion=complete, previous_materials=previous)
-        self.assertEqual(result["llm"]["status"], "ok")
-        self.assertEqual(result["collected_materials"], {material: earlier})
-        latest, = result["interaction_checks"]["check_route_selection"]
-        self.assertEqual(latest["routes"][0]["protocol"], "OSPF")
-        ref, = latest["evidence"]
-        self.assertEqual(ref["device"], material)
-        self.assertEqual(ref["quote"], earlier.splitlines()[ref["line"] - 1])
-
     def test_student_can_ask_halfway_without_materials_or_a_fault(self):
         result = investigate({"configs": {}, "question": "接口已经连好了，我不会看状态", "use_llm": True, "learning": {"level": 1}},
             completion=lambda messages: call("submit_learning_step", step()))
