@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
@@ -87,6 +89,45 @@ class BEvaluationTests(unittest.TestCase):
         for case in inputs.values():
             self.assertEqual(set(case), b.REQUEST_FIELDS)
             self.assertNotIn('observations', case)
+
+    def test_independent_manifest_prepares_requests_and_scores_with_separate_labels(self):
+        runtime = ROOT / 'runtime'
+        runtime.mkdir(exist_ok=True)
+        with TemporaryDirectory(dir=runtime) as directory:
+            folder = Path(directory)
+            pack = folder / 'input-pack'
+            (pack / 'inputs').mkdir(parents=True)
+            case_path = pack / 'inputs/b001.json'
+            source = b.read(b.DATA / 'cases/02_static_ok.json')
+            payload = {**{key: source[key] for key in b.REQUEST_FIELDS if key != 'use_llm'}, 'use_llm': False}
+            b.write(case_path, payload)
+            b.write(pack / 'manifest.json', {
+                'version': 'separate-v1', 'origin': 'public configuration fixture',
+                'device_verified': 0, 'review_status': 'unittest',
+                'cases': [{'id': 'b001', 'file': 'inputs/b001.json', 'sha256': b.digest(case_path)}],
+            })
+            requests = folder / 'requests.jsonl'
+            b.prepare_model(requests, 'model-direct', benchmark_dir=pack)
+            request = json.loads(requests.read_text(encoding='utf-8'))
+            self.assertEqual(request['input'], payload)
+            self.assertEqual(request['case_id'], 'b001')
+            labels = folder / 'labels.json'
+            label = {'status': 'awaiting_verification', 'findings': [], 'unknowns': [],
+                     'family': 'linear', 'condition': 'healthy', 'case_type': 'normal'}
+            output = folder / 'report'
+            with self.assertRaisesRegex(ValueError, '--labels'):
+                b.benchmark(output, 'rules', benchmark_dir=pack)
+            b.write(labels, {'version': 'different', 'cases': {'b001': label}})
+            with self.assertRaisesRegex(ValueError, '标签版本'):
+                b.benchmark(output, 'rules', benchmark_dir=pack, labels_path=labels)
+            self.assertFalse(output.exists())
+            b.write(labels, {'version': 'separate-v1', 'cases': {'b001': label}})
+            b.benchmark(output, 'rules', benchmark_dir=pack, labels_path=labels)
+            report = b.read(output / 'evaluation.json')
+            self.assertEqual(report['candidate_count'], 1)
+            self.assertEqual(report['metrics']['strict_case_agreement'], b.score(1, 1))
+            self.assertEqual(report['manifest_sha256'], b.digest(pack / 'manifest.json'))
+            self.assertEqual(report['labels_sha256'], b.digest(labels))
 
     def test_strict_judgment_detects_wrong_side_missing_answer_and_extra_finding(self):
         expected = {'status': 'fault_found', 'findings': [{'code': 'AREA_POLICY_VIOLATION', 'link_id': 'L1', 'devices': ['R2']}], 'unknowns': []}

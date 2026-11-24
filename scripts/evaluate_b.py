@@ -70,14 +70,15 @@ def assess(answer, result):
             'submitted_status': submitted, 'state_match': expected['status'] == actual['status']}
 
 
-def load_candidate_inputs():
-    manifest = read(BENCHMARK / 'manifest.json')
+def load_candidate_inputs(benchmark_dir=BENCHMARK):
+    benchmark_dir = benchmark_dir.resolve()
+    manifest = read(benchmark_dir / 'manifest.json')
     inputs, hashes = {}, set()
     for row in manifest['cases']:
         case_id = row['id']
         if not isinstance(case_id, str) or not case_id.startswith('b') or not case_id[1:].isdigit():
             raise ValueError('非法候选案例编号')
-        path = BENCHMARK / 'inputs' / f'{case_id}.json'
+        path = benchmark_dir / 'inputs' / f'{case_id}.json'
         if row['file'] != f'inputs/{case_id}.json' or digest(path) != row['sha256']:
             raise ValueError(f'案例清单校验失败：{case_id}')
         if row['sha256'] in hashes or case_id in inputs:
@@ -88,8 +89,10 @@ def load_candidate_inputs():
             raise ValueError(f'输入包含额外字段或启用了模型：{case_id}')
         validate(item)
         inputs[case_id] = item
-    if len(inputs) != 60:
+    if benchmark_dir == BENCHMARK and len(inputs) != 60:
         raise ValueError('候选清单应包含固定的 60 例')
+    if not inputs:
+        raise ValueError('独立评测清单至少应包含一个候选案例')
     return manifest, inputs
 
 
@@ -118,8 +121,15 @@ def summarize_runtime(results):
             'timed_rows': len(times), 'calls_with_metadata': len(calls), 'usage': usage}
 
 
-def benchmark(output, mode, predictions=None):
-    manifest, inputs = load_candidate_inputs()
+def benchmark(output, mode, predictions=None, *, benchmark_dir=BENCHMARK, labels_path=None):
+    benchmark_dir = benchmark_dir.resolve()
+    original = benchmark_dir == BENCHMARK
+    if labels_path is None:
+        if not original:
+            raise ValueError('独立评测需要用 --labels 指定标签文件。')
+        labels_path = PRIVATE / 'diagnosis_labels.json'
+    manifest, inputs = load_candidate_inputs(benchmark_dir)
+    manifest_hash = digest(benchmark_dir / 'manifest.json')
     started = datetime.now(timezone.utc).isoformat()
     if mode == 'rules':
         results = {}
@@ -144,13 +154,11 @@ def benchmark(output, mode, predictions=None):
         metadata = predictions.with_suffix('.meta.json')
         if metadata.is_file():
             run = read(metadata)
-            if run.get('mode') != mode or run.get('manifest_sha256') != digest(BENCHMARK / 'manifest.json'):
+            if run.get('mode') != mode or run.get('manifest_sha256') != manifest_hash:
                 raise ValueError('模型运行记录与评测模式或输入清单不一致。')
             model_metadata.update(run)
-    output.mkdir(parents=True, exist_ok=False)
-    write(output / 'predictions.json', results)
     # Only the scoring stage loads the reference labels.
-    truth = read(PRIVATE / 'diagnosis_labels.json')
+    truth = read(labels_path.resolve())
     labels = truth['cases']
     if truth['version'] != manifest['version'] or set(labels) != set(inputs):
         raise ValueError('标签版本或编号与公开输入不一致')
@@ -176,18 +184,23 @@ def benchmark(output, mode, predictions=None):
         groups[row['family']].append(row)
     report = {'version': manifest['version'], 'started_at': started, 'mode': mode, 'origin': manifest['origin'],
               'candidate_count': len(rows), 'device_verified': manifest['device_verified'],
-              'label_review': manifest['review_status'], 'manifest_sha256': digest(BENCHMARK / 'manifest.json'),
-              'labels_sha256': digest(PRIVATE / 'diagnosis_labels.json'), 'engine_sha256': digest(ROOT / 'labagent/engine.py'),
+              'label_review': manifest['review_status'], 'manifest_sha256': manifest_hash,
+              'labels_sha256': digest(labels_path), 'engine_sha256': digest(ROOT / 'labagent/engine.py'),
               'external_prediction_source': model_metadata, 'metrics': metrics,
               'runtime': summarize_runtime(results), 'missing_responses': len(set(labels) - set(results)),
               'invalid_or_missing_predictions': sum(r['actual'] is None for r in rows),
               'by_family': {key: score(sum(row['strict_match'] for row in value), len(value)) for key, value in groups.items()},
               'records': rows}
+    output.mkdir(parents=True, exist_ok=False)
+    write(output / 'predictions.json', results)
     write(output / 'evaluation.json', report)
-    lines = ['# B 组 OSPF 合成候选评测', '', f'模式：{mode}；集合：{manifest["version"]}。', '',
-             '60 例由 6 个拓扑家族和 10 种条件组成，区别于原 16 例回归集。配置与标签为预先设计，尚无设备实测或独立人员复核。',
-             '这些结果只说明本地算法与该候选集预期的吻合程度；共享故障模板不能代表真实学生配置的独立泛化表现。', '',
-             '| 指标 | 结果 |', '| --- | --- |']
+    lines = ['# B 组 OSPF 诊断评测', '', f'模式：{mode}；集合：{manifest["version"]}。', '']
+    if original:
+        lines += ['60 例由 6 个拓扑家族和 10 种条件组成，区别于原 16 例回归集。配置与标签为预先设计，尚无设备实测或独立人员复核。',
+                  '这些结果衡量候选集匹配度。独立配置及实机复测应单独报告。']
+    else:
+        lines.append(f'案例数：{len(rows)}。来源：{manifest["origin"]}。标签复核：{manifest["review_status"]}。')
+    lines += ['', '| 指标 | 结果 |', '| --- | --- |']
     titles = {'state_agreement': '诊断状态吻合', 'strict_case_agreement': '严格匹配（状态、故障码、链路及设备）',
               'fault_location': '有故障例的严格定位', 'normal_false_alarm': '正常例误报', 'unknown_handling': '缺证据/超范围例正确处理'}
     lines += [f'| {title} | {metric_text(metrics[key])} |' for key, title in titles.items()]
@@ -306,8 +319,8 @@ def model_requests(inputs, mode, *, scope='b-ospf'):
         yield record
 
 
-def prepare_model(path, mode):
-    _, inputs = load_candidate_inputs()
+def prepare_model(path, mode, *, benchmark_dir=BENCHMARK):
+    _, inputs = load_candidate_inputs(benchmark_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('x', encoding='utf-8') as file:
         for record in model_requests(inputs, mode):
@@ -344,13 +357,14 @@ def predict(record, max_tokens, completion):
             'call': call, 'raw_response': raw}
 
 
-def run_model(output, mode, *, limit, max_tokens, execute, completion=model.chat_completion):
-    _, inputs = load_candidate_inputs()
+def run_model(output, mode, *, limit, max_tokens, execute, completion=model.chat_completion,
+              benchmark_dir=BENCHMARK):
+    _, inputs = load_candidate_inputs(benchmark_dir)
     records = list(model_requests(dict(list(inputs.items())[:limit]), mode))
     chars = sum(sum(len(msg['content']) for msg in make_messages(record)) for record in records)
     plan = {'mode': mode, 'max_calls': len(records), 'max_completion_tokens': len(records) * max_tokens,
             'input_characters': chars, 'max_tokens_per_call': max_tokens, 'temperature': 0.1,
-            'manifest_sha256': digest(BENCHMARK / 'manifest.json')}
+            'manifest_sha256': digest(benchmark_dir / 'manifest.json')}
     print(json.dumps(plan, ensure_ascii=False))
     if not execute:
         return
@@ -429,7 +443,7 @@ def comparison(reports):
             raise ValueError('两组模型的输入子集、模型或参数不同，不能直接对照。')
     fields = {'state_agreement': '状态吻合', 'strict_case_agreement': '严格匹配',
               'fault_location': '故障定位', 'normal_false_alarm': '正常误报', 'unknown_handling': '待确认处理'}
-    lines = ['# B 组离线评测对照', '', f'集合：`{reference[0]}`，共 {reference[3]} 个合成候选。', '',
+    lines = ['# B 组离线评测对照', '', f'集合：`{reference[0]}`，共 {reference[3]} 个候选案例。', '',
              '| 指标 | 本地规则 | 模型直接诊断 | 模型+检索资料 |', '| --- | --- | --- | --- |']
     for key, label in fields.items():
         cells = [metric_text(by_mode[mode]['metrics'][key]) if mode in by_mode else '待运行' for mode in modes]
@@ -454,6 +468,9 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--mode', choices=('rules', 'model-direct', 'model-knowledge'), default='rules')
     parser.add_argument('--predictions', type=Path)
+    parser.add_argument('--benchmark-dir', type=Path, default=BENCHMARK,
+                        help='benchmark / prepare-model / run-model: directory with manifest.json and inputs/')
+    parser.add_argument('--labels', type=Path, help='benchmark: reference labels JSON for an independent dataset')
     parser.add_argument('--report', type=Path, action='append', default=[], help='compare: path to evaluation.json; repeat per mode')
     parser.add_argument('--limit', type=int, default=2, help='run-model: number of candidate cases, from 1 to 60')
     parser.add_argument('--max-tokens', type=int, default=800, help='run-model: per-request completion budget')
@@ -480,7 +497,8 @@ def main():
                 load_model_settings(args.env_file)
             except (OSError, ValueError) as error:
                 parser.error(str(error))
-        run_model(args.output, args.mode, limit=args.limit, max_tokens=args.max_tokens, execute=args.execute)
+        run_model(args.output, args.mode, limit=args.limit, max_tokens=args.max_tokens,
+                  execute=args.execute, benchmark_dir=args.benchmark_dir)
         return 0
     if args.task == 'import-knowledge':
         scope, docs = install_knowledge()
@@ -491,7 +509,11 @@ def main():
     if args.task == 'labs':
         return 0 if labs(args.output) else 1
     if args.task == 'benchmark':
-        benchmark(args.output, args.mode, args.predictions)
+        try:
+            benchmark(args.output, args.mode, args.predictions,
+                      benchmark_dir=args.benchmark_dir, labels_path=args.labels)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
     elif args.task == 'knowledge':
         retrieval(args.output)
     elif args.task == 'compare':
@@ -505,7 +527,7 @@ def main():
     else:
         if args.mode == 'rules':
             parser.error('prepare-model 需要 --mode model-direct 或 model-knowledge')
-        prepare_model(args.output, args.mode)
+        prepare_model(args.output, args.mode, benchmark_dir=args.benchmark_dir)
     return 0
 
 
