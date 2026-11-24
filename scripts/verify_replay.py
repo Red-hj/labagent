@@ -3,6 +3,7 @@ import argparse
 import json
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -21,21 +22,70 @@ def command_key(event):
     return event['device'].casefold(), ' '.join(event['command'].casefold().split())
 
 
+def _pair_timed_events(labels, candidates, tolerance):
+    """Match repeated commands in order, maximizing hits and then minimizing time error."""
+    events = sorted((event for event in candidates if event['seconds'] is not None),
+                    key=lambda event: event['seconds'])
+    label_count, event_count = len(labels), len(events)
+    scores = [[(0, 0.0)] * (event_count + 1) for _ in range(label_count + 1)]
+    matched = [[False] * event_count for _ in labels]
+
+    # Each cell scores the best remaining assignment from these two positions.
+    for label_index in range(label_count - 1, -1, -1):
+        for event_index in range(event_count - 1, -1, -1):
+            best = max(scores[label_index + 1][event_index], scores[label_index][event_index + 1])
+            error = abs(labels[label_index]['seconds'] - events[event_index]['seconds'])
+            if error <= tolerance:
+                count, negative_error = scores[label_index + 1][event_index + 1]
+                score = count + 1, negative_error - error
+                if score >= best:
+                    best = score
+                    matched[label_index][event_index] = True
+            scores[label_index][event_index] = best
+
+    pairs = {}
+    label_index = event_index = 0
+    while label_index < label_count and event_index < event_count:
+        if matched[label_index][event_index]:
+            pairs[labels[label_index]['id']] = events[event_index]
+            label_index += 1
+            event_index += 1
+        elif scores[label_index][event_index] == scores[label_index + 1][event_index]:
+            label_index += 1
+        else:
+            event_index += 1
+    return pairs
+
+
 def score_events(history, annotations, *, tolerance=0.5):
     """Pair a clip's annotated commands with reconstructed events once each."""
     expected = annotations['events']
     if not expected or len({item['id'] for item in expected}) != len(expected):
         raise ValueError('标注需要至少一条操作及唯一编号')
     predictions = history['events']
-    used, pairs = set(), {}
+    labels_by_command, events_by_command = defaultdict(list), defaultdict(list)
     for label in sorted(expected, key=lambda item: item['seconds']):
-        candidates = [event for event in predictions
-                      if event['id'] not in used and command_key(event) == command_key(label)]
-        if candidates:
-            matched = min(candidates, key=lambda event: (abs(event['seconds'] - label['seconds'])
-                                                        if event['seconds'] is not None else float('inf')))
-            pairs[label['id']] = matched
-            used.add(matched['id'])
+        labels_by_command[command_key(label)].append(label)
+    for event in predictions:
+        events_by_command[command_key(event)].append(event)
+
+    used, pairs = set(), {}
+    for key, labels in labels_by_command.items():
+        candidates = events_by_command[key]
+        timed_pairs = _pair_timed_events(labels, candidates, tolerance)
+        pairs.update(timed_pairs)
+        used.update(event['id'] for event in timed_pairs.values())
+
+        # Keep time misses visible in the command, view and status scores.
+        for label in labels:
+            if label['id'] in pairs:
+                continue
+            remaining = [event for event in candidates if event['id'] not in used]
+            if remaining:
+                event = min(remaining, key=lambda item: (abs(item['seconds'] - label['seconds'])
+                                                         if item['seconds'] is not None else float('inf')))
+                pairs[label['id']] = event
+                used.add(event['id'])
 
     rows = []
     for label in expected:
