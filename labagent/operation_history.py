@@ -4,7 +4,8 @@ import re
 TIME = re.compile(r"^\s*\[?(\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,3})?)\]?\s*")
 VRP = re.compile(r"^\s*(?:<([^>]+)>|\[([^\]]+)\])\s*(.*)$")
 IOS = re.compile(r"^\s*([\w.-]+)(\([^)]*\))?[#>]\s*(.*)$")
-FRR_ROUTE_ROW = re.compile(r"^\s*[A-Z][A-Za-z]{0,2}[>*]+\s+(?:[\da-fA-F.:]+/\d+|default)\b")
+# Downscaled terminal video can turn the selected OSPF marker O>* into 0>*.
+FRR_ROUTE_ROW = re.compile(r"^\s*(?:[A-Z][A-Za-z]{0,2}[>*]+|0>\s*\*)\s+(?:[\da-fA-F.:]+/\d+|default)\b")
 ERROR = re.compile(r"^\s*(?:Error\s*:|%\s*(?:Invalid|Error|Incomplete|Ambiguous|Unknown command\b)|Unrecognized command|Wrong parameter|Too many parameters|Incomplete command|Ambiguous command|错误[：:]|无效命令)", re.I)
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07)")
 VIEW_LABELS = {"user": "用户视图", "system": "系统视图", "interface": "接口视图", "ospf": "OSPF进程视图", "ospf_area": "OSPF区域视图", "router": "路由协议视图", "other": "配置视图"}

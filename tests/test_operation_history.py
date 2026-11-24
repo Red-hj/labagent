@@ -75,13 +75,17 @@ class OperationHistoryTests(unittest.TestCase):
         self.assertEqual(summary["unmatched_detected_events"], 1)
 
     def test_selected_frr_routes_are_output_and_not_device_prompts(self):
-        text = "\n".join(("[00:02] R1# show ip route ospf", "O>* 192.168.20.0/24 [110/20] via 10.12.0.2",
-                          "C> 2001:db8::/64 is directly connected, eth0", "[00:02] R1#"))
-        history = inspect_history(sources(text))
-        self.assertEqual(history["devices"], ["R1"])
-        event, = history["events"]
-        self.assertEqual(event["status"], "returned")
-        self.assertTrue(any("192.168.20.0/24" in row["quote"] for row in event["response_evidence"]))
+        for marker in ("O>*", "0>*", "0> *"):
+            with self.subTest(marker=marker):
+                route = f"{marker} 192.168.20.0/24 [110/20] via 10.12.0.2"
+                text = "\n".join(("[00:02] R1# show ip route ospf", route,
+                                  "C> 2001:db8::/64 is directly connected, eth0", "[00:02] R1#"))
+                history = inspect_history(sources(text))
+                self.assertEqual(history["devices"], ["R1"])
+                event, = history["events"]
+                self.assertEqual(event["status"], "returned")
+                self.assertTrue(any(route == row["quote"] for row in event["response_evidence"]))
+        self.assertEqual(prompt_info("0> show ip route")[:2], ("0", "user"))
 
     def test_device_names_and_ios_views_remain_distinct(self):
         self.assertEqual(prompt_info("[Lab-Edge-7-ospf-10-area-0.0.0.1]network 10.0.0.0 0.0.0.255")[:2], ("Lab-Edge-7", "ospf_area"))
