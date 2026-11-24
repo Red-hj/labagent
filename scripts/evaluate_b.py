@@ -120,7 +120,8 @@ def metric_text(metric):
 
 def summarize_runtime(results):
     times = [row['elapsed_ms'] for row in results.values() if type(row.get('elapsed_ms')) in (int, float) and row['elapsed_ms'] >= 0]
-    calls = [row['result'].get('call') for row in results.values() if isinstance(row['result'].get('call'), dict)]
+    calls = [row['result'][key] for row in results.values() for key in ('call', 'additional_call')
+             if isinstance(row['result'].get(key), dict)]
     usage = {}
     for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
         values = [call.get('usage', {}).get(key) for call in calls if isinstance(call.get('usage'), dict)]
@@ -509,8 +510,11 @@ def comparison(reports):
         keys = ('base_inputs_sha256', 'provider', 'model', 'max_tokens_per_call', 'temperature')
         evidence_modes = [meta.get('link_evidence', 'parsed' if meta.get('parsed_links') else 'none')
                           for meta in both_models]
-        if len(set(evidence_modes)) != 1 or any(both_models[0].get(key) != both_models[1].get(key) for key in keys):
-            raise ValueError('两组模型的输入子集、模型、参数或链路证据选项不同，不能直接对照。')
+        review_modes = {(bool(meta.get('claim_review')), bool(meta.get('normalize_structure')))
+                        for meta in both_models}
+        if (len(set(evidence_modes)) != 1 or len(review_modes) != 1
+                or any(both_models[0].get(key) != both_models[1].get(key) for key in keys)):
+            raise ValueError('两组模型的输入子集、模型、参数或链路证据选项与复核设置不同，不能直接对照。')
     fields = {'state_agreement': '状态吻合', 'strict_case_agreement': '严格匹配',
               'fault_location': '故障定位', 'normal_false_alarm': '正常误报', 'unknown_handling': '待确认处理'}
     lines = ['# B 组离线评测对照', '', f'集合：`{reference[0]}`，共 {reference[3]} 个候选案例。', '',
