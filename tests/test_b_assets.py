@@ -58,10 +58,13 @@ class BEvaluationTests(unittest.TestCase):
         data = b.read(b.DATA / 'cases/15_multiarea.json')
         cases = {'case': {key: data[key] for key in ('configs', 'topology', 'requirements')}}
         base, = b.model_requests(cases, 'model-direct')
-        enriched, = b.model_requests(cases, 'model-direct', parsed_links=True)
+        enriched, = b.model_requests(cases, 'model-direct', link_evidence='parsed')
         evidence = json.loads(b.make_messages(enriched)[1]['content'])['parsed_links']
         self.assertEqual({key: enriched[key] for key in base}, base)
         self.assertNotIn('parsed_links', json.loads(b.make_messages(base)[1]['content']))
+        checked, = b.model_requests(cases, 'model-direct', link_evidence='checked')
+        self.assertEqual(b.make_messages(checked)[1], b.make_messages(enriched)[1])
+        self.assertEqual(checked['instruction'], base['instruction'] + b.LINK_EVIDENCE_CHECKS)
         self.assertEqual([link.get('expected_ospf_area') for link in evidence], [None, '0.0.0.1'])
         policy, = b.parsed_link_evidence(b.read(b.DATA / 'cases/12_policy.json'))
         self.assertEqual(policy['expected_ospf_area'], '0.0.0.0')
@@ -99,6 +102,14 @@ class BEvaluationTests(unittest.TestCase):
         self.assertIn('| 状态吻合 | 1/2（50.0%） | 1/2（50.0%） | 待运行 |', b.comparison([rule, model]))
         with self.assertRaisesRegex(ValueError, '标签版本'):
             b.comparison([rule, {**model, 'labels_sha256': 'other'}])
+        old_evidence = {'origin': 'configured_chat_completion', 'parsed_links': True}
+        saved_model = {**model, 'external_prediction_source': old_evidence}
+        knowledge_model = {**saved_model, 'mode': 'model-knowledge',
+                           'external_prediction_source': {**old_evidence, 'link_evidence': 'parsed'}}
+        self.assertIn('状态吻合', b.comparison([saved_model, knowledge_model]))
+        knowledge_model['external_prediction_source']['link_evidence'] = 'checked'
+        with self.assertRaisesRegex(ValueError, '链路证据选项'):
+            b.comparison([saved_model, knowledge_model])
 
     @unittest.skipUnless((b.PRIVATE / 'diagnosis_labels.json').is_file(), 'Private B benchmark not distributed')
     def test_benchmark_fixed_split_and_no_answer_fields(self):
