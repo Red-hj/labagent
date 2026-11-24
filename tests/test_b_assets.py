@@ -54,6 +54,30 @@ class BEvaluationTests(unittest.TestCase):
             self.assertEqual(a['input'], k['input'])
             self.assertNotIn('retrieval_query', b.make_messages(k)[1]['content'])
 
+    def test_parsed_link_evidence_uses_endpoint_configuration_and_preserves_the_base_request(self):
+        data = b.read(b.DATA / 'cases/15_multiarea.json')
+        cases = {'case': {key: data[key] for key in ('configs', 'topology', 'requirements')}}
+        base, = b.model_requests(cases, 'model-direct')
+        enriched, = b.model_requests(cases, 'model-direct', parsed_links=True)
+        evidence = json.loads(b.make_messages(enriched)[1]['content'])['parsed_links']
+        self.assertEqual({key: enriched[key] for key in base}, base)
+        self.assertNotIn('parsed_links', json.loads(b.make_messages(base)[1]['content']))
+        self.assertEqual([link.get('expected_ospf_area') for link in evidence], [None, '0.0.0.1'])
+        policy, = b.parsed_link_evidence(b.read(b.DATA / 'cases/12_policy.json'))
+        self.assertEqual(policy['expected_ospf_area'], '0.0.0.0')
+        self.assertEqual([end['ospf_bindings'][0]['area'] for end in evidence[1]['endpoints']],
+                         ['0.0.0.1', '0.0.0.1'])
+        for end in evidence[1]['endpoints']:
+            for row in end['config_lines'] + end['ospf_bindings'][0]['config_lines']:
+                self.assertEqual(data['configs'][row['device']].splitlines()[row['line'] - 1].strip(), row['text'])
+
+        unsupported = b.read(b.DATA / 'cases/11_unsupported.json')
+        unknown = b.parsed_link_evidence(unsupported)[0]['endpoints'][1]
+        self.assertEqual(len(unknown['unparsed_ospf_line_numbers']), 1)
+        self.assertNotIn('DEMO_ONLY', json.dumps(unknown))
+        missing = b.parsed_link_evidence(b.read(b.DATA / 'cases/10_missing.json'))[0]['endpoints'][1]
+        self.assertEqual(missing['config_coverage'], 'device_config_missing')
+
     def test_model_row_and_missing_usage(self):
         record = {'case_id': 'b001', 'instruction': 'JSON', 'input': {}}
         raw = '{"case_id":"b001","status":"fault_found","findings":[],"unknowns":[]}'
