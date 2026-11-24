@@ -151,6 +151,18 @@ class RecordingTests(unittest.TestCase):
         current = ["R1# exit", "R2# show ip ospf neighbor", "R2#"]
         self.assertEqual(changed_lines(previous, current), current[1:])
 
+    def test_command_completed_on_the_last_visible_prompt(self):
+        previous = ["R2# router ospf", "% Unknown command: router ospf", "R2# configure terminal",
+                    "R2(config)# router ospf", "R2(config-router)#"]
+        current = previous[:-1] + ["R2(config-router)# end", "R2#"]
+        self.assertEqual(changed_lines(previous, current), current[-2:])
+        self.assertEqual(changed_lines(current, current), [])
+
+    def test_scrolled_prompt_can_be_completed_with_a_repeated_command(self):
+        previous = ["Older output", "<R2> display ospf peer", "Peer output", "<R2>"]
+        current = previous[1:-1] + ["<R2> display ospf peer", "New peer output", "<R2>"]
+        self.assertEqual(changed_lines(previous, current), current[2:])
+
     def test_upload_is_project_local_and_persisted_status_can_be_reopened(self):
         folder = ROOT / "runtime/tests"; folder.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=folder) as temp, patch("labagent.recordings.available", return_value=True), patch.object(Recordings, "_process"):

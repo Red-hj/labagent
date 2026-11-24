@@ -102,9 +102,16 @@ def changed_lines(previous, current):
     """Only append newly visible terminal lines; preserve legitimate retries."""
     normalize = lambda line: "".join(line.lower().split())
     old, new = [normalize(line) for line in previous], [normalize(line) for line in current]
+    last_prompt = prompt_info(previous[-1]) if previous else None
     for size in range(min(len(old), len(new)), 0, -1):
         if old[-size:] == new[:size]:
             return current[size:]
+        # Typing into the last visible prompt replaces that row in place.
+        # Align it on the preceding unchanged rows before falling back to fuzzy matches.
+        if size >= 2 and last_prompt and not last_prompt[3].strip() and old[-size:-1] == new[:size - 1]:
+            completed = prompt_info(current[size - 1])
+            if completed and completed[3].strip() and completed[:3] == last_prompt[:3] and completed[4] == last_prompt[4]:
+                return current[size - 1:]
     if old == new:
         return []
     from difflib import SequenceMatcher
