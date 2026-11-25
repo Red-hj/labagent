@@ -1,6 +1,7 @@
 import {useLayoutEffect, useRef, useState} from "react";
 import {createRoot, type Root} from "react-dom/client";
 import {flushSync} from "react-dom";
+import {CopyButton} from "./formatted-text";
 
 export interface Material {
   name: string;
@@ -35,6 +36,9 @@ function MaterialView({material, busy, location, onRemove, onSave, onScreenshot}
     mark.current.scrollIntoView({block:"center", behavior:"instant"});
   }, [selected]);
   const lines = text.split(/\r?\n/);
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  const kind = screenshot ? "img" : ["cfg", "conf"].includes(ext) ? "cfg" : ext === "log" ? "log" : "txt";
+  const badge = screenshot ? "IMG" : kind === "cfg" ? "CFG" : kind === "log" ? "LOG" : "TXT";
   return <div className="material-item">
     {screenshot && <button type="button" className="screenshot-thumbnail" disabled={busy}
       aria-label={`查看截图 ${screenshot.name}`} onClick={() => onScreenshot(name)}>
@@ -42,14 +46,19 @@ function MaterialView({material, busy, location, onRemove, onSave, onScreenshot}
       <span>查看原图 · 引用可定位画面</span>
     </button>}
     <div className="material-row">
-      <span className="file-icon">{screenshot ? "IMG" : "TXT"}</span>
+      <span className="file-icon" data-kind={kind}>{badge}</span>
       <div className="file-info"><div className="file-name">{name}</div>
         <div className="file-size">{text.trimEnd().split(/\r?\n/).length} 行内容</div></div>
       <button type="button" className="remove-material" disabled={busy}
         aria-label={`移除 ${name}`} onClick={() => onRemove(name)}>移除</button>
     </div>
     <details ref={preview}>
-      <summary>{screenshot ? "查看识别文字 / 修正" : "查看内容"}</summary>
+      <summary>
+        <span>{screenshot ? "查看识别文字 / 修正" : "查看内容"}</span>
+      </summary>
+      <div className="material-preview-toolbar">
+        <CopyButton text={text} label="复制内容" copiedLabel="已复制"/>
+      </div>
       <pre>{selected ? <>{lines.slice(0, selected.line - 1).join("\n")}{selected.line > 1 ? "\n" : ""}
         <mark ref={mark} tabIndex={-1} aria-label={`${name} 第${selected.line}行：${selected.quote}`}>{selected.quote}</mark>
         {"\n" + lines.slice(selected.line).join("\n")}</> : text}</pre>

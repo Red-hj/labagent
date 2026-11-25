@@ -171,6 +171,8 @@ class WorkspaceArchive:
                             target.executemany("INSERT INTO rooms(id,data) VALUES (?,?)", source.execute("SELECT id,data FROM rooms"))
                             from .personal import restore_personal_tables
                             restore_personal_tables(source, target)
+                            from .tasks import restore_task_tables
+                            restore_task_tables(source, target)
                     except Exception:
                         for target, original in reversed(moved):
                             target.rename(original)
@@ -211,6 +213,8 @@ class WorkspaceArchive:
                     raise ValueError("备份缺少协作实验对应的诊断记录")
                 target.execute("INSERT INTO rooms VALUES (?,?)", (room_id, room_text))
             restore_personal_tables(source, target)
+            from .tasks import restore_task_tables
+            restore_task_tables(source, target)
         for path in (folder / "recordings").glob("*"):
             status = json.loads((path / "status.json").read_text(encoding="utf-8"))
             if not isinstance(status, dict):

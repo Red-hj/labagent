@@ -1,5 +1,6 @@
 """A bounded decision/tool loop shared by material and connected-lab tools."""
 from typing import TypedDict
+from .task_control import check_cancelled
 
 
 class ToolState(TypedDict, total=False):
@@ -16,15 +17,18 @@ def run_tool_workflow(decide, execute, *, review=None, limit=6):
     does not replay tool side effects when a session is resumed with new evidence.
     """
     def decision(state):
+        check_cancelled()
         stopped = decide(state["round"])
         return {"stopped": bool(stopped), "nodes": state["nodes"] + ["select_check"]}
 
     def tools(state):
+        check_cancelled()
         terminal = execute(state["round"])
         return {"terminal": bool(terminal), "round": state["round"] + 1,
                 "nodes": state["nodes"] + ["execute_check"]}
 
     def review_result(state):
+        check_cancelled()
         return {"terminal": bool(review()), "nodes": state["nodes"] + ["review_learning_step"]}
 
     initial = {"round": 0, "terminal": False, "stopped": False, "nodes": []}

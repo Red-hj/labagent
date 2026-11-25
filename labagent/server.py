@@ -33,6 +33,8 @@ from .operation_history import inspect_history
 from .rooms import Rooms, RoomConflict
 from .personal import Personal, SignInError, COOKIE, LIFETIME
 from .lab_bridge import LabBridge
+from .tasks import Tasks
+from .task_control import task_control, check_cancelled, DiagnosisCancelled
 
 ROOT = Path(__file__).resolve().parents[1]
 MEASURED_DEMOS = {
@@ -110,6 +112,15 @@ class Handler(BaseHTTPRequestHandler):
         user = self.personal_user(strict=False)
         return self.server.personal.owns(kind, resource_id, user["id"] if user else None, self.room_capability())
 
+    def accessible_task(self, task_id):
+        task = self.server.tasks.get(task_id)
+        user = self.personal_user(strict=False)
+        if task and ((task["owner"] and user and task["owner"] == user["id"]) or
+                     (task["room_id"] and task["room_id"] == self.room_capability()) or
+                     (not task["owner"] and not task["room_id"])):
+            return {key: value for key, value in task.items() if key != "owner"}
+        return None
+
     def safe_host(self):
         return self.headers.get("Host") in self.server.allowed_hosts
 
@@ -164,6 +175,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"app": "LabAgent", "version": __version__, "mode": "local_rules", "online": bool(self.server.public_url), "knowledge_method": "local_bm25_with_fault_tags", "workflow_backend": "langgraph" if available() else "local_rules", "diagnosis_backend": self.server.diagnosis_backend, "diagnosis_configured": self.server.cloud_configured if self.server.diagnosis_backend == "agentarts" else configured(), "llm_configured": configured(), "llm": public_config(), "replay_available": replay_available()})
         if not self.team_access():
             return
+        if match := re.fullmatch(r"/api/tasks/([a-f0-9]{32})", path):
+            task = self.accessible_task(match[1])
+            if task and parse_qs(urlparse(self.path).query).get("status_only") == ["1"]:
+                task.pop("input", None)
+            return self.reply(task or {"error": "任务不存在"}, 200 if task else 404)
         if path == "/api/lab/connector":
             from .connector_package import build_connector_package
             content = build_connector_package()
@@ -297,6 +313,7 @@ class Handler(BaseHTTPRequestHandler):
         assets = {"/": ("student.html", "text/html; charset=utf-8"), "/student.js": ("student.js", "text/javascript; charset=utf-8"), "/student.css": ("student.css", "text/css; charset=utf-8"),
                   "/react-conversation.js": ("react-conversation.js", "text/javascript; charset=utf-8"),
                   "/execution-state.js": ("execution-state.js", "text/javascript; charset=utf-8"),
+                  "/task-control.js": ("task-control.js", "text/javascript; charset=utf-8"),
                   "/react-conversation.js.LEGAL.txt": ("react-conversation.js.LEGAL.txt", "text/plain; charset=utf-8"),
                   "/learning.js": ("learning.js", "text/javascript; charset=utf-8"),
                   "/devices.js": ("devices.js", "text/javascript; charset=utf-8"),
@@ -364,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             # Outbound workstation traffic carries a narrowly scoped bridge token,
             # never the website's team password or a student's account cookie.
-            if urlparse(self.path).path in {"/api/lab/agent/claim", "/api/lab/agent/poll", "/api/lab/agent/result", "/api/lab/runtime/collect"}:
+            if urlparse(self.path).path in {"/api/lab/agent/claim", "/api/lab/agent/poll", "/api/lab/agent/result", "/api/lab/runtime/collect", "/api/tasks/runtime/status"}:
                 return self.bridge_agent_request()
             if urlparse(self.path).path in ("/api/workspace/backup", "/api/workspace/restore"):
                 return self.handle_POST()
@@ -392,6 +409,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(self.server.lab_bridge.claim(payload.get("code"), payload.get("tools")))
             auth = self.headers.get("Authorization", "")
             token = auth[7:] if auth.startswith("Bearer ") else ""
+            if path == "/api/tasks/runtime/status":
+                return self.reply(self.server.tasks.runtime_status(token))
             if path == "/api/lab/runtime/collect":
                 return self.reply(self.server.lab_bridge.runtime_collect(token, payload.get("tool"), payload.get("arguments", {})))
             if path.endswith("/poll"):
@@ -427,6 +446,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.reply({"error": "请使用 application/json"}, 415)
         path = urlparse(self.path).path
+        if match := re.fullmatch(r"/api/tasks/([a-f0-9]{32})/cancel", path):
+            if not self.accessible_task(match[1]):
+                return self.reply({"error": "任务不存在"}, 404)
+            # Consume the JSON body before keeping this HTTP connection alive.
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return self.reply({"error": "停止请求格式无效"}, 400)
+            if not 0 <= length <= 4096:
+                return self.reply({"error": "停止请求格式无效"}, 400)
+            self.rfile.read(length)
+            self.server.tasks.cancel(match[1])
+            return self.reply(self.accessible_task(match[1]))
         room_match = re.fullmatch(r"/api/rooms/([a-f0-9]{32})", path)
         if not room_match and path not in ("/api/lab/bridge", "/api/lab/bridge/disconnect", "/api/learning/unlock", "/api/lab/collect", "/api/account/register", "/api/account/login", "/api/account/logout", "/api/account/memory", "/api/memories", "/api/rooms", "/api/network/inspect", "/api/challenges/check", "/api/diagnose", "/api/diagnose/stream", "/api/fingerprint", "/api/export", "/api/knowledge/import", "/api/knowledge/search", "/api/operations/inspect", "/api/repair-labs/inspect"):
             return self.reply({"error": "未找到接口"}, 404)
@@ -590,6 +622,9 @@ class Handler(BaseHTTPRequestHandler):
                 payload["personal_memory"] = [] if shared_room else self.server.personal.context(user,
                     payload.get("question", "") + " " + payload.get("interaction", {}).get("message", ""))
             validate(payload)
+            task_id = payload.pop("request_id", None)
+            if task_id is not None and (not isinstance(task_id, str) or not re.fullmatch(r"[a-f0-9]{32}", task_id)):
+                raise ValueError("request_id格式错误")
             if path == "/api/fingerprint":
                 return self.reply({"config_fingerprint": fingerprint(payload)})
             if session:
@@ -598,11 +633,16 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("会话不存在，请开始新实验")
                 if history["attempts"][-1]["input"].get("diagnostic_mode", "ospf_rules") != payload.get("diagnostic_mode", "ospf_rules"):
                     raise ValueError("切换排查模式时请开始新实验")
+            if path == "/api/diagnose/stream" and task_id and self.server.tasks.get(task_id):
+                if self.accessible_task(task_id):
+                    return self.reply({"code": "task_exists", "error": "请求已存在，请恢复任务状态"}, 409)
+                return self.reply({"error": "任务标识已使用"}, 409)
             if not self.server.diagnosis_slots.acquire(blocking=False):
                 return self.reply({"error": "当前正在处理其他诊断，请稍后重试"}, 429)
             if path == "/api/diagnose/stream":
                 return self.stream_diagnosis(payload, session, room_id=shared_room,
-                    lab_owner=user["id"] if user and not shared_room and self.server.diagnosis_backend == "agentarts" else None)
+                    lab_owner=user["id"] if user and not shared_room and self.server.diagnosis_backend == "agentarts" else None,
+                    owner=user["id"] if user else None, task_id=task_id)
             try:
                 key = shared_room or session or "new"
                 with self.server.session_locks[hash(key) % len(self.server.session_locks)], progress_to(None, session_id=session):
@@ -731,20 +771,36 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def stream_diagnosis(self, payload, session, *, room_id=None, lab_owner=None):
+    def stream_diagnosis(self, payload, session, *, room_id=None, lab_owner=None, owner=None, task_id=None):
         events = Queue()
+        try:
+            task_id = self.server.tasks.create(payload, owner=owner, room=room_id, task_id=task_id)
+        except Exception:
+            self.server.diagnosis_slots.release()
+            raise
+
+        def publish(event):
+            self.server.tasks.record(task_id, event)
+            events.put(event)
 
         def process():
-            with progress_to(events.put, session_id=session) as progress:
+            with progress_to(publish, session_id=session, turn_id=task_id) as progress, task_control(lambda: self.server.tasks.cancelled(task_id)):
                 try:
                     with self.server.workspace.gate.activity():
                         emit_progress("received", "请求已收到，正在准备本轮诊断。", event="turn.started")
                         with self.server.session_locks[hash(room_id or payload.get("room_id") or session or "new") % len(self.server.session_locks)]:
-                            result = self.server.run_diagnosis(payload, **({"lab_owner": lab_owner} if lab_owner else {}))
+                            check_cancelled()
+                            kwargs = {"lab_owner": lab_owner} if lab_owner else {}
+                            if self.server.diagnosis_backend == "agentarts":
+                                kwargs["task_id"] = task_id
+                            result = self.server.run_diagnosis(payload, **kwargs)
+                            self.server.tasks.finalizing(task_id)
                             emit_progress("saving", "正在保存本轮结论与会话记录…")
                             saved = self.save_result(payload, result)
                         progress.session_id = saved["session_id"]
                         progress.send({"type": "result", "result": saved}, event="turn." + saved["execution"]["status"])
+                except DiagnosisCancelled as error:
+                    progress.send({"type": "cancelled", "message": str(error)}, event="turn.cancelled")
                 except (ValueError, KeyError, TypeError) as error:
                     progress.send({"type": "error", "message": str(error)}, event="turn.failed")
                 except Exception:
@@ -771,7 +827,7 @@ class Handler(BaseHTTPRequestHandler):
                     event = {"type": "heartbeat"}
                 self.wfile.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
                 self.wfile.flush()
-                if event["type"] in ("result", "error"):
+                if event["type"] in ("result", "error", "cancelled"):
                     return
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
@@ -833,12 +889,12 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
             except ValueError:
                 pass
 
-    def run_diagnosis(payload, *, lab_owner=None):
+    def run_diagnosis(payload, *, lab_owner=None, task_id=None):
         if payload.get("room_id"):
             payload.update(server.rooms.prepare_diagnosis(payload))
         if cloud_workflow and payload.get("diagnostic_mode") == "open_network":
-            with server.lab_bridge.runtime_connection(lab_owner if not payload.get("room_id") else None, server.public_url) as connection:
-                return cloud_workflow.run(payload, lab_connection=connection)
+            with server.lab_bridge.runtime_connection(lab_owner if not payload.get("room_id") else None, server.public_url) as connection, server.tasks.runtime_connection(task_id, server.public_url if task_id else None) as control:
+                return cloud_workflow.run(payload, lab_connection=connection, task_connection=control)
         if payload.get("session_id"):
             history = store.history(payload["session_id"])
             if history and history["attempts"][-1]["result"].get("agentarts"):
@@ -869,6 +925,7 @@ def create_server(port=8765, database=None, *, host="127.0.0.1", public_url=None
         except Exception:
             server.server_close()
             raise
+    server.tasks = Tasks(store)
     write_log("LabAgent " + __version__ + " started on " + host + ":" + str(server.server_port))
     server.daemon_threads = True
     return server

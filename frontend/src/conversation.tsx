@@ -1,6 +1,7 @@
 import {createRoot, type Root} from "react-dom/client";
 import {flushSync} from "react-dom";
 import {memo} from "react";
+import {CopyButton, extractCliCommand, FormattedContent, renderInline} from "./formatted-text";
 import {PendingTurn, ProgressList, type PendingRequest, type ProgressEntry} from "./request-view";
 export {mountComposer, configureComposer, getDraft, setDraft, Composer} from "./composer";
 export {PendingTurn, ProgressList} from "./request-view";
@@ -43,35 +44,51 @@ interface ConversationProps {
 function Evidence({turn, onMaterials}: {turn: Turn; onMaterials: OpenMaterials}) {
   if (!turn.attempt) return null;
   return <details className="chat-evidence">
-    <summary>本轮材料与依据{turn.material_changes?.changed && ` · ${turn.material_changes.items.length}份材料有变化`}</summary>
-    {turn.summary && turn.summary !== turn.assistant && <p>{turn.summary}</p>}
-    {turn.material_changes?.changed && (
-      <section aria-label="本轮材料变化">
-        <p>与上一轮提交的材料对照，继续结合实际输出核对实验目标。</p>
-        {turn.material_changes!.items.map(change => <div key={change.material}>
-          <p><strong>{change.material}</strong> · {change.kind === "added" ? "新增材料" : change.kind === "removed" ? "移除材料" : "材料已更新"} · 新增 {change.added} 行，移除 {change.removed} 行</p>
-          {change.redacted_only && <p>敏感行有更新，内容已省略。</p>}
-          {change.preview.length > 0 && <pre style={{whiteSpace:"pre-wrap", maxHeight:240, overflow:"auto"}}>{change.preview.map(row =>
-            `${row.kind === "added" ? "+" : "-"} ${row.kind === "added" ? "新" : "旧"}第${row.line}行：${row.text}`).join("\n")}</pre>}
-          {change.truncated && <p>仅展示部分变化，可查看本轮材料或上一轮材料的完整内容。</p>}
-        </div>)}
-      </section>
-    )}
-    <button type="button" className="text-button" onClick={() => onMaterials(turn)}>查看当时提交的材料</button>
-    {(turn.evidence || []).map((citation, index) => <div key={index}>
-      <button type="button" className="text-button" onClick={() => onMaterials(turn, citation)}>
-        {citation.device || "原文"} · 第 {citation.line} 行：{citation.quote}
-      </button>
-    </div>)}
+    <summary>
+      <span>本轮材料与依据{turn.material_changes?.changed && ` · ${turn.material_changes.items.length}份材料有变化`}</span>
+    </summary>
+    <div className="chat-evidence-body">
+      {turn.summary && turn.summary !== turn.assistant && <p className="evidence-summary">{turn.summary}</p>}
+      {turn.material_changes?.changed && (
+        <section className="diff-section" aria-label="本轮材料变化">
+          <p className="diff-note">与上一轮提交的材料对照，继续结合实际输出核对实验目标。</p>
+          {turn.material_changes!.items.map(change => <div key={change.material} className="diff-card">
+            <p className="diff-header">
+              <strong>{change.material}</strong>
+              <span className={"diff-badge is-" + change.kind}>{change.kind === "added" ? "新增材料" : change.kind === "removed" ? "移除材料" : "材料已更新"}</span>
+              <span className="diff-stats">新增 {change.added} 行，移除 {change.removed} 行</span>
+            </p>
+            {change.redacted_only && <p className="diff-redacted">敏感行有更新，内容已省略。</p>}
+            {change.preview.length > 0 && <pre className="diff-pre">{change.preview.map((row, rowIndex) =>
+              <span key={rowIndex} className={"diff-line is-" + row.kind}>
+                {`${row.kind === "added" ? "+" : "-"} ${row.kind === "added" ? "新" : "旧"}第${row.line}行：${row.text}`}
+              </span>)}</pre>}
+            {change.truncated && <p className="diff-truncated">仅展示部分变化，可查看本轮材料或上一轮材料的完整内容。</p>}
+          </div>)}
+        </section>
+      )}
+      <div className="evidence-actions">
+        <button type="button" className="evidence-open-btn" onClick={() => onMaterials(turn)}>查看当时提交的材料</button>
+      </div>
+      {(turn.evidence || []).length > 0 && <div className="citation-list">
+        {(turn.evidence || []).map((citation, index) => <button key={index} type="button" className="citation-chip" onClick={() => onMaterials(turn, citation)}>
+          <span className="citation-loc">{citation.device || "原文"} · 第 {citation.line} 行</span>
+          <span className="citation-sep">：</span>
+          <code className="citation-quote">{citation.quote}</code>
+        </button>)}
+      </div>}
+    </div>
   </details>;
 }
 
 function TurnView({turn, onMaterials}: {turn: Turn; onMaterials: OpenMaterials}) {
-  const failed = Boolean(turn.model_status && turn.model_status !== "ok");
+  const cancelled = turn.model_status === "cancelled";
+  const failed = Boolean(turn.model_status && !["ok", "cancelled"].includes(turn.model_status));
   const names = turn.material_names || [];
-  return <div className={"chat-turn" + (failed ? " chat-saved-error" : "")} data-request-text={failed ? turn.user : undefined}>
+  return <div className={"chat-turn" + (failed ? " chat-saved-error" : "") + (cancelled ? " chat-saved-cancelled" : "")} data-request-text={failed ? turn.user : undefined}>
     <div className="chat-message chat-user">
-      <p className="chat-label">{turn.actor || "你"}
+      <p className="chat-label">
+        <span className="chat-actor-badge">{turn.actor || "你"}</span>
         {turn.created_at && <time className="chat-time" dateTime={turn.created_at}>
           {new Date(turn.created_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"})}
         </time>}
@@ -80,9 +97,24 @@ function TurnView({turn, onMaterials}: {turn: Turn; onMaterials: OpenMaterials})
       {names.length > 0 && <div className="chat-materials">材料：{names.slice(0, 2).join("、")}{names.length > 2 ? ` 等 ${names.length} 份` : ""}</div>}
     </div>
     <div className="chat-message chat-assistant">
-      <p className="chat-label">LabAgent</p>
-      <div className={"chat-body" + (failed ? " pending-text" : "")}>{turn.assistant}</div>
-      {Boolean(turn.steps?.length) && <ol className="chat-steps">{turn.steps!.map((step, index) => <li key={index}>{step}</li>)}</ol>}
+      <div className="chat-assistant-head">
+        <p className="chat-label">
+          <span className="chat-brand-dot" aria-hidden="true">L</span>
+          <span>LabAgent</span>
+          {cancelled && <span className="chat-status-badge is-cancelled">已停止</span>}
+          {failed && <span className="chat-status-badge is-failed">未完成</span>}
+        </p>
+      </div>
+      {failed ? <div className="chat-body pending-text">{turn.assistant}</div> : <FormattedContent text={turn.assistant}/>}
+      {Boolean(turn.steps?.length) && <ol className="chat-steps">
+        {turn.steps!.map((step, index) => {
+          const cmd = extractCliCommand(step);
+          return <li key={index} className="chat-step-item">
+            <span className="chat-step-text">{renderInline(step, `step-${index}`)}</span>
+            {cmd && <CopyButton text={cmd} label="复制" copiedLabel="已复制" className="copy-btn step-copy-btn"/>}
+          </li>;
+        })}
+      </ol>}
       <Evidence turn={turn} onMaterials={onMaterials}/>
     </div>
   </div>;
@@ -140,6 +172,14 @@ export function updatePending(container: HTMLElement, changes: Partial<PendingRe
 
 export function failPending(container: HTMLElement, error: string, onRetry: () => void) {
   updatePending(container, {error, onRetry});
+}
+
+export function stopPending(container: HTMLElement, message: string) {
+  const state = mounted.get(container);
+  if (!state?.pending) return;
+  state.turns = [...state.turns, {user:state.pending.text, assistant:message, model_status:"cancelled"}];
+  state.pending = null;
+  paint(state);
 }
 
 export function renderProgress(container: HTMLElement, entries: ProgressEntry[]) {
