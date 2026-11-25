@@ -450,7 +450,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self.accessible_task(match[1]):
                 return self.reply({"error": "任务不存在"}, 404)
             # Consume the JSON body before keeping this HTTP connection alive.
-            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return self.reply({"error": "停止请求格式无效"}, 400)
             if not 0 <= length <= 4096:
                 return self.reply({"error": "停止请求格式无效"}, 400)
             self.rfile.read(length)

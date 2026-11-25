@@ -14,7 +14,7 @@
       sequence:Number.isInteger(event.sequence) ? event.sequence : state.sequence, status:"running"};
     if (event.item?.id) {
       const item = event.item, previous = state.items[item.id];
-      if (previous && ["completed", "failed"].includes(previous.status)) return state;
+      if (previous && ["completed", "failed", "cancelled"].includes(previous.status)) return state;
       next.items = {...state.items, [item.id]:{...item}};
     }
     if (event.type === "progress" && typeof event.message === "string") {

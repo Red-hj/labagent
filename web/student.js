@@ -116,6 +116,7 @@ function syncContinuation() {
 }
 function setBusy(value) {
   busy = value || materialLoading;
+  if (typeof document !== "undefined") document.body?.classList?.toggle("is-busy", busy);
   window.LabDevices?.refreshBusy();
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "load-demo"]) $(id).disabled = busy;
   for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = busy || workspaceTransfer;
@@ -156,7 +157,7 @@ function materialChanged(detail) {
 function renderMaterials() {
   syncWorkspaceLayout();
   $("material-source").hidden = evidenceKind !== "demo";
-  $("material-count").textContent = materials.size ? "已添加 " + materials.size + " 份材料" : "尚未添加材料";
+  $("material-count").textContent = materials.size ? "已添加 " + materials.size + " 份" : "";
   window.LabConversation.renderMaterials($("material-list"), {
     materials:[...materials].map(([name, text]) => {
       const screenshot = [...screenshots.values()].find(item => item.material_name === name);
@@ -703,11 +704,98 @@ function showResult(result) {
     }
     $("references").append(reference);
   }
+  updateSessionOverview(result, analysis, requests);
+}
+
+function updateSessionOverview(result, analysis, requests) {
+  const bar = $("session-overview");
+  if (!bar) return;
+  const checks = analysis.goal_assessment?.checks || [];
+  const passedCount = checks.filter(check => check.status === "passed").length;
+  const ok = result.llm?.status === "ok";
+  const cancelled = result.llm?.status === "cancelled";
+  const stageLabel = cancelled ? "已停止" : !ok ? "未完成" :
+    ["verified_from_observations", "resolved_by_user_report"].includes(result.status) ? "排查已达标" :
+    result.status === "comparison_complete" ? "对照完成" :
+    analysis.outcome === "ready_for_retest" ? "待修改与复测" : "持续排查中";
+  const stageKind = cancelled ? "cancelled" : !ok ? "error" :
+    ["verified_from_observations", "resolved_by_user_report", "comparison_complete"].includes(result.status) ? "passed" : "active";
+
+  bar.replaceChildren();
+  const stageChip = element("span", stageLabel, "overview-chip is-" + stageKind);
+  bar.append(stageChip);
+
+  if (checks.length) {
+    const goalsBtn = element("button", `实验目标 ${passedCount}/${checks.length}`, "overview-pill" + (passedCount === checks.length ? " is-passed" : ""));
+    goalsBtn.type = "button";
+    goalsBtn.addEventListener("click", () => {
+      $("analysis-details").open = true;
+      $("goals-section").scrollIntoView({behavior:"smooth", block:"nearest"});
+    });
+    bar.append(goalsBtn);
+  }
+
+  if (requests.length) {
+    const reqBtn = element("button", `待补 ${requests.length} 项材料`, "overview-pill is-warn");
+    reqBtn.type = "button";
+    reqBtn.addEventListener("click", () => {
+      $("analysis-details").open = true;
+      $("requests-section").scrollIntoView({behavior:"smooth", block:"nearest"});
+    });
+    bar.append(reqBtn);
+  }
+
+  if (analysis.steps?.length) {
+    const stepBtn = element("button", `${analysis.steps.length} 步建议操作`, "overview-pill");
+    stepBtn.type = "button";
+    stepBtn.addEventListener("click", () => {
+      $("analysis-details").open = true;
+      $("steps-section").scrollIntoView({behavior:"smooth", block:"nearest"});
+    });
+    bar.append(stepBtn);
+  }
+
+  const detailToggle = element("button", $("analysis-details").open ? "收起详情" : "展开目标与证据", "text-button overview-detail-toggle");
+  detailToggle.type = "button";
+  detailToggle.addEventListener("click", () => {
+    const details = $("analysis-details");
+    details.open = !details.open;
+    detailToggle.textContent = details.open ? "收起详情" : "展开目标与证据";
+  });
+  bar.append(detailToggle);
+  bar.hidden = false;
+}
+
+function resolvePastedMaterialName(rawName, text) {
+  const trimmed = (rawName || "").trim();
+  if (trimmed) {
+    const safe = trimmed.replace(/[\\/:*?"<>|]/g, "-").slice(0, 80);
+    const finalName = /\.[a-z0-9]{1,8}$/i.test(safe) ? safe : safe + ".txt";
+    if (!materials.has(finalName)) return finalName;
+    const dot = finalName.lastIndexOf(".");
+    const base = finalName.slice(0, dot), ext = finalName.slice(dot);
+    let idx = 2;
+    while (materials.has(`${base}-${idx}${ext}`)) idx++;
+    return `${base}-${idx}${ext}`;
+  }
+  const match = text.match(/^\s*(?:<([A-Za-z0-9_-]{1,24})>|\[([A-Za-z0-9_-]{1,24})(?:-[^\]]+)?\]|([A-Za-z0-9_-]{1,24})[>#])/m);
+  const device = match && (match[1] || match[2] || match[3]);
+  let candidate;
+  do {
+    candidate = device ? `${device}-输出${++pasteNumber}.log` : `粘贴材料${++pasteNumber}.txt`;
+  } while (materials.has(candidate));
+  return candidate;
 }
 
 window.LabConversation.mountComposer($("conversation-composer"), text => performInteraction("ask", text));
 
 $("load-demo").addEventListener("click", () => loadDemo());
+for (const button of document.querySelectorAll("[data-demo-preset]")) button.addEventListener("click", () => {
+  if (busy) return;
+  $("demo-case").value = button.dataset.demoPreset;
+  setBusy(false);
+  loadDemo();
+});
 $("load-demo-repair").addEventListener("click", () => loadDemo(true));
 $("load-demo-final").addEventListener("click", () => loadDemo(true, true));
 $("replay-recording").addEventListener("change", renderRecordingChoices);
@@ -753,8 +841,8 @@ $("add-pasted").addEventListener("click", () => {
   const text = $("pasted-material").value;
   if (!text.trim()) return message("请先粘贴材料内容。", true);
   if (materials.size >= 20 || text.length > 200000) return message("请保留与本次问题相关的材料，每份200 KB以内，最多20份。", true);
-  let name; do { name = "粘贴材料" + (++pasteNumber) + ".txt"; } while (materials.has(name));
-  materials.set(name, text); evidenceKind = demoActive && !measuredDemos.has($("demo-case").value) ? "demo" : "user_submitted"; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false"); renderMaterials(); materialChanged(); previewOperations();
+  const name = resolvePastedMaterialName($("pasted-name")?.value, text);
+  materials.set(name, text); evidenceKind = demoActive && !measuredDemos.has($("demo-case").value) ? "demo" : "user_submitted"; $("pasted-material").value = ""; if ($("pasted-name")) $("pasted-name").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false"); renderMaterials(); materialChanged(); previewOperations();
 });
 $("analyze").addEventListener("click", async () => {
   if (busy) return;
@@ -799,7 +887,8 @@ $("new-diagnosis").addEventListener("click", () => {
   recordings.clear(); screenshots.clear(); renderRecordingChoices(); renderOperationHistory({}); renderRepairComparisons([]);
   $("demo-case").value = "network_access";
   $("demo-status").textContent = "先带入故障材料，再点击“开始诊断”。";
-  $("problem").value = ""; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false");
+  $("problem").value = ""; $("pasted-material").value = ""; if ($("pasted-name")) $("pasted-name").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false");
+  if ($("session-overview")) { $("session-overview").hidden = true; $("session-overview").replaceChildren(); }
   window.LabConversation.setDraft($("conversation-composer"), ""); window.LabConversation.clear($("conversation"));
   $("analysis-result").hidden = true; $("empty-result").hidden = false; $("save-report").hidden = true;
   $("empty-result").querySelector("h3").textContent = "准备好材料，就可以开始。";
@@ -843,13 +932,17 @@ async function restoreTask() {
   catch (error) { message("任务状态暂未恢复：" + error.message, true); return false; }
   if (!task) return false;
   const requestedSession = new URLSearchParams(location.search).get("session");
-  if (requestedSession && task.input.session_id && requestedSession !== task.input.session_id) return false;
+  const taskSession = task.session_id || task.input?.session_id || null;
+  if (requestedSession && requestedSession !== taskSession) return false;
   if (task.input.room_id && task.input.room_id !== roomHeaders()["X-LabAgent-Room"]) return false;
-  materials.clear();
+  materials.clear(); recordings.clear(); screenshots.clear();
   for (const [name, text] of Object.entries(task.input.configs || {})) materials.set(name, text);
   $("problem").value = task.input.question === defaultQuestion ? "" : task.input.question || "";
   knowledgeScope = task.input.knowledge_scope || "default"; evidenceKind = task.input.evidence_kind || "user_submitted";
-  renderMaterials();
+  for (const id of task.input.recordings || []) {
+    try { const media = await api("/api/recordings/" + id); (media.kind === "image" ? screenshots : recordings).set(id, media); } catch {}
+  }
+  renderRecordingChoices(); renderMaterials(); void previewOperations();
   const type = task.input.interaction?.type || "analyze", text = task.input.interaction?.message || task.input.question || "继续处理实验材料";
   const request = beginRequest(type, text); request.taskId = task.id;
   try {
@@ -1051,6 +1144,25 @@ $("workspace-file").addEventListener("change", event => {
   const file = event.target.files[0];
   if (file) transferWorkspace("/api/workspace/restore", file);
 });
+function initThemeToggle() {
+  const button = $("theme-toggle");
+  if (!button) return;
+  let theme = "light";
+  try {
+    const saved = localStorage.getItem("labagent-theme");
+    if (saved === "dark" || saved === "light") theme = saved;
+  } catch {}
+  const applyTheme = next => {
+    theme = next;
+    document.documentElement.dataset.theme = theme;
+    button.setAttribute("aria-pressed", String(theme === "dark"));
+    button.title = theme === "dark" ? "切换为浅色主题" : "切换为深色主题";
+    try { localStorage.setItem("labagent-theme", theme); } catch {}
+  };
+  applyTheme(theme);
+  button.addEventListener("click", () => applyTheme(theme === "dark" ? "light" : "dark"));
+}
+initThemeToggle();
 window.LabHistory.init({api,element,message,busy:() => busy,showScreenshot,mediaUrl,
   newConversation:() => $("new-diagnosis").click(), showDiagnosis:() => window.LabWorkspace.showDiagnosis()});
 window.LabKnowledge.init({api,element,message,busy:() => busy,scope:() => knowledgeScope,setScope:scope => {

@@ -766,6 +766,9 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
             return outcome
         return {"status": "step_limit", "message": "达到六轮排查上限，请缩小问题或补充材料后继续。", "tool_workflow": workflow, **info()}
     except DiagnosisCancelled as error:
+        if pending_item is not None:
+            pending_item.publish("cancelled", "tool_cancelled", "已停止本轮提示核对。", "item.completed")
+            trace[-1].update(status="cancelled", arguments=None, result={"status": "cancelled"})
         return {"status": "cancelled", "message": str(error), **info()}
     except ModelError as error:
         if error.call is not None:
@@ -835,7 +838,7 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
                 knowledge[document.get("chunk_id", document.get("id"))] = document
             warnings.extend(item["result"].get("warnings", []))
     requests = [f"{item['device']}：{item['information']}（{item['why']}）" for item in analysis.get("pending_requests", [])]
-    if not requests and model.get("status") != "ok" and analysis.get("outcome") not in RESOLVED_OUTCOMES:
+    if not requests and model.get("status") not in ("ok", "cancelled") and analysis.get("outcome") not in RESOLVED_OUTCOMES:
         requests = ["请启用可用模型或补充当前材料后继续开放排查。"]
     if model.get("status") == "ok":
         model["text"] = analysis["summary"]
