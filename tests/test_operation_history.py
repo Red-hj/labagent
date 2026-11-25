@@ -74,14 +74,37 @@ class OperationHistoryTests(unittest.TestCase):
         self.assertEqual(summary["retry_matches"], {"matched": 1, "total": 1})
         self.assertEqual(summary["unmatched_detected_events"], 1)
 
-    def test_selected_frr_routes_are_output_and_not_device_prompts(self):
-        text = "\n".join(("[00:02] R1# show ip route ospf", "O>* 192.168.20.0/24 [110/20] via 10.12.0.2",
-                          "C> 2001:db8::/64 is directly connected, eth0", "[00:02] R1#"))
+    def test_replay_scores_a_quick_retry_in_command_order(self):
+        text = "\n".join(("[00:00.500] R2# router ospf", "[00:00.500] % Unknown command: router ospf",
+                          "[00:01.000] R2# configure terminal", "[00:01.000] R2(config)# router ospf",
+                          "[00:01.000] R2(config-router)#"))
         history = inspect_history(sources(text))
-        self.assertEqual(history["devices"], ["R1"])
-        event, = history["events"]
-        self.assertEqual(event["status"], "returned")
-        self.assertTrue(any("192.168.20.0/24" in row["quote"] for row in event["response_evidence"]))
+        annotations = {"events": [
+            {"id": "error", "device": "R2", "view": "user", "command": "router ospf", "seconds": 1.0,
+             "status": "error", "retry_to": "retry"},
+            {"id": "retry", "device": "R2", "view": "system", "command": "router ospf", "seconds": 1.5,
+             "status": "returned"},
+        ]}
+        scores = score_events(history, annotations)
+        self.assertEqual([row["observed_seconds"] for row in scores["rows"]], [0.5, 1.0])
+        self.assertEqual(scores["summary"]["commands"], {"matched": 2, "total": 2})
+        self.assertEqual(scores["summary"]["in_time"], {"matched": 2, "total": 2})
+        self.assertEqual(scores["summary"]["view_matches"], {"matched": 2, "total": 2})
+        self.assertEqual(scores["summary"]["status_matches"], {"matched": 2, "total": 2})
+        self.assertEqual(scores["summary"]["retry_matches"], {"matched": 1, "total": 1})
+
+    def test_selected_frr_routes_are_output_and_not_device_prompts(self):
+        for marker in ("O>*", "0>*", "0> *"):
+            with self.subTest(marker=marker):
+                route = f"{marker} 192.168.20.0/24 [110/20] via 10.12.0.2"
+                text = "\n".join(("[00:02] R1# show ip route ospf", route,
+                                  "C> 2001:db8::/64 is directly connected, eth0", "[00:02] R1#"))
+                history = inspect_history(sources(text))
+                self.assertEqual(history["devices"], ["R1"])
+                event, = history["events"]
+                self.assertEqual(event["status"], "returned")
+                self.assertTrue(any(route == row["quote"] for row in event["response_evidence"]))
+        self.assertEqual(prompt_info("0> show ip route")[:2], ("0", "user"))
 
     def test_device_names_and_ios_views_remain_distinct(self):
         self.assertEqual(prompt_info("[Lab-Edge-7-ospf-10-area-0.0.0.1]network 10.0.0.0 0.0.0.255")[:2], ("Lab-Edge-7", "ospf_area"))
