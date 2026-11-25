@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
@@ -52,6 +54,33 @@ class BEvaluationTests(unittest.TestCase):
             self.assertEqual(a['input'], k['input'])
             self.assertNotIn('retrieval_query', b.make_messages(k)[1]['content'])
 
+    def test_parsed_link_evidence_uses_endpoint_configuration_and_preserves_the_base_request(self):
+        data = b.read(b.DATA / 'cases/15_multiarea.json')
+        cases = {'case': {key: data[key] for key in ('configs', 'topology', 'requirements')}}
+        base, = b.model_requests(cases, 'model-direct')
+        enriched, = b.model_requests(cases, 'model-direct', link_evidence='parsed')
+        evidence = json.loads(b.make_messages(enriched)[1]['content'])['parsed_links']
+        self.assertEqual({key: enriched[key] for key in base}, base)
+        self.assertNotIn('parsed_links', json.loads(b.make_messages(base)[1]['content']))
+        checked, = b.model_requests(cases, 'model-direct', link_evidence='checked')
+        self.assertEqual(b.make_messages(checked)[1], b.make_messages(enriched)[1])
+        self.assertEqual(checked['instruction'], base['instruction'] + b.LINK_EVIDENCE_CHECKS)
+        self.assertEqual([link.get('expected_ospf_area') for link in evidence], [None, '0.0.0.1'])
+        policy, = b.parsed_link_evidence(b.read(b.DATA / 'cases/12_policy.json'))
+        self.assertEqual(policy['expected_ospf_area'], '0.0.0.0')
+        self.assertEqual([end['ospf_bindings'][0]['area'] for end in evidence[1]['endpoints']],
+                         ['0.0.0.1', '0.0.0.1'])
+        for end in evidence[1]['endpoints']:
+            for row in end['config_lines'] + end['ospf_bindings'][0]['config_lines']:
+                self.assertEqual(data['configs'][row['device']].splitlines()[row['line'] - 1].strip(), row['text'])
+
+        unsupported = b.read(b.DATA / 'cases/11_unsupported.json')
+        unknown = b.parsed_link_evidence(unsupported)[0]['endpoints'][1]
+        self.assertEqual(len(unknown['unparsed_ospf_line_numbers']), 1)
+        self.assertNotIn('DEMO_ONLY', json.dumps(unknown))
+        missing = b.parsed_link_evidence(b.read(b.DATA / 'cases/10_missing.json'))[0]['endpoints'][1]
+        self.assertEqual(missing['config_coverage'], 'device_config_missing')
+
     def test_model_row_and_missing_usage(self):
         record = {'case_id': 'b001', 'instruction': 'JSON', 'input': {}}
         raw = '{"case_id":"b001","status":"fault_found","findings":[],"unknowns":[]}'
@@ -73,6 +102,14 @@ class BEvaluationTests(unittest.TestCase):
         self.assertIn('| 状态吻合 | 1/2（50.0%） | 1/2（50.0%） | 待运行 |', b.comparison([rule, model]))
         with self.assertRaisesRegex(ValueError, '标签版本'):
             b.comparison([rule, {**model, 'labels_sha256': 'other'}])
+        old_evidence = {'origin': 'configured_chat_completion', 'parsed_links': True}
+        saved_model = {**model, 'external_prediction_source': old_evidence}
+        knowledge_model = {**saved_model, 'mode': 'model-knowledge',
+                           'external_prediction_source': {**old_evidence, 'link_evidence': 'parsed'}}
+        self.assertIn('状态吻合', b.comparison([saved_model, knowledge_model]))
+        knowledge_model['external_prediction_source']['link_evidence'] = 'checked'
+        with self.assertRaisesRegex(ValueError, '链路证据选项'):
+            b.comparison([saved_model, knowledge_model])
 
     @unittest.skipUnless((b.PRIVATE / 'diagnosis_labels.json').is_file(), 'Private B benchmark not distributed')
     def test_benchmark_fixed_split_and_no_answer_fields(self):
@@ -87,6 +124,45 @@ class BEvaluationTests(unittest.TestCase):
         for case in inputs.values():
             self.assertEqual(set(case), b.REQUEST_FIELDS)
             self.assertNotIn('observations', case)
+
+    def test_independent_manifest_prepares_requests_and_scores_with_separate_labels(self):
+        runtime = ROOT / 'runtime'
+        runtime.mkdir(exist_ok=True)
+        with TemporaryDirectory(dir=runtime) as directory:
+            folder = Path(directory)
+            pack = folder / 'input-pack'
+            (pack / 'inputs').mkdir(parents=True)
+            case_path = pack / 'inputs/b001.json'
+            source = b.read(b.DATA / 'cases/02_static_ok.json')
+            payload = {**{key: source[key] for key in b.REQUEST_FIELDS if key != 'use_llm'}, 'use_llm': False}
+            b.write(case_path, payload)
+            b.write(pack / 'manifest.json', {
+                'version': 'separate-v1', 'origin': 'public configuration fixture',
+                'device_verified': 0, 'review_status': 'unittest',
+                'cases': [{'id': 'b001', 'file': 'inputs/b001.json', 'sha256': b.digest(case_path)}],
+            })
+            requests = folder / 'requests.jsonl'
+            b.prepare_model(requests, 'model-direct', benchmark_dir=pack)
+            request = json.loads(requests.read_text(encoding='utf-8'))
+            self.assertEqual(request['input'], payload)
+            self.assertEqual(request['case_id'], 'b001')
+            labels = folder / 'labels.json'
+            label = {'status': 'awaiting_verification', 'findings': [], 'unknowns': [],
+                     'family': 'linear', 'condition': 'healthy', 'case_type': 'normal'}
+            output = folder / 'report'
+            with self.assertRaisesRegex(ValueError, '--labels'):
+                b.benchmark(output, 'rules', benchmark_dir=pack)
+            b.write(labels, {'version': 'different', 'cases': {'b001': label}})
+            with self.assertRaisesRegex(ValueError, '标签版本'):
+                b.benchmark(output, 'rules', benchmark_dir=pack, labels_path=labels)
+            self.assertFalse(output.exists())
+            b.write(labels, {'version': 'separate-v1', 'cases': {'b001': label}})
+            b.benchmark(output, 'rules', benchmark_dir=pack, labels_path=labels)
+            report = b.read(output / 'evaluation.json')
+            self.assertEqual(report['candidate_count'], 1)
+            self.assertEqual(report['metrics']['strict_case_agreement'], b.score(1, 1))
+            self.assertEqual(report['manifest_sha256'], b.digest(pack / 'manifest.json'))
+            self.assertEqual(report['labels_sha256'], b.digest(labels))
 
     def test_strict_judgment_detects_wrong_side_missing_answer_and_extra_finding(self):
         expected = {'status': 'fault_found', 'findings': [{'code': 'AREA_POLICY_VIOLATION', 'link_id': 'L1', 'devices': ['R2']}], 'unknowns': []}
