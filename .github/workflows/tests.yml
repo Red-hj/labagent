@@ -48,3 +48,4 @@ jobs:
           node tests/test_learning.js
           node tests/test_devices.js
           node tests/test_execution_state.js
+          node tests/test_task_control.js

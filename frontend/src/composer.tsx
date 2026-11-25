@@ -25,7 +25,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerOptions>(function Com
     if (text) options.onSubmit(text); else input.current?.focus();
   }}>
     <label htmlFor="followup-message" className="sr-only">继续追问</label>
-    <textarea id="followup-message" ref={input} rows={2} aria-describedby="followup-shortcuts"
+    <textarea id="followup-message" ref={input} rows={Math.min(6, Math.max(2, draft.split("\n").length))} aria-describedby="followup-shortcuts"
       value={draft} disabled={options.disabled} placeholder={options.placeholder}
       onChange={event => setDraft(event.target.value)} onKeyDown={event => {
         if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -33,7 +33,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerOptions>(function Com
         if (options.canSend && !event.repeat) event.currentTarget.form?.requestSubmit();
       }}/>
     <div className="composer-footer">
-      <span id="followup-shortcuts">Enter 发送 · Shift+Enter 换行</span>
+      <span id="followup-shortcuts">Enter 发送 · Shift+Enter 换行 · Ctrl+V 粘贴截图</span>
       <button id="send-followup" className="send-button" type="submit" disabled={!options.canSend}>
         {options.sending ? "等待回复" : "发送 ↗"}
       </button>

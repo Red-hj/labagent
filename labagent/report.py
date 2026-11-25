@@ -107,7 +107,7 @@ def generate_open_report(history):
     result, payload = latest["result"], latest["input"]
     analysis = result.get("investigation", {})
     conclusion = STATUS_LABELS.get(result["status"], "继续排查")
-    if result.get("llm", {}).get("status") != "ok" and result["status"] not in RESOLVED_STATUSES:
+    if result.get("llm", {}).get("status") not in ("ok", "cancelled") and result["status"] not in RESOLVED_STATUSES:
         conclusion = "本轮分析未完成，材料已保存"
     goal = analysis.get("experiment_goal") or experiment_goal(attempts[0]["input"])
     rows = ["# 网络实验诊断过程报告", "", f"会话编号：{history['session_id']}", f"当前结论：{conclusion}",

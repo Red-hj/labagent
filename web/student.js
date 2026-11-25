@@ -101,29 +101,7 @@ function receiveProgress(event, request = activeRequest) {
 async function diagnose(input) {
   const request = activeRequest;
   await window.LabWorkspace.prepareDiagnosis(input);
-  const response = await fetch("/api/diagnose/stream", {method:"POST", credentials:"same-origin", signal:AbortSignal.timeout(330000), headers:{"Content-Type":"application/json", ...roomHeaders()}, body:JSON.stringify(input)});
-  if (!response.ok) {
-    const data = (response.headers.get("Content-Type") || "").includes("application/json") ? await response.json() : {};
-    throw new Error(data.error || "本次诊断未能开始，请稍后重试。");
-  }
-  const reader = response.body.getReader(), decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      const {done, value} = await reader.read();
-      buffer += decoder.decode(value, {stream:!done});
-      let newline;
-      while ((newline = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
-        if (!line.trim()) continue;
-        const event = JSON.parse(line);
-        if (!receiveProgress(event, request)) continue;
-        if (event.type === "result") return event.result;
-        if (event.type === "error") throw new Error(event.message);
-      }
-      if (done) throw new Error("连接已中断，未收到完整诊断结果。可以重新提交。");
-    }
-  } finally { reader.releaseLock(); }
+  return window.LabTasks.run(input, request);
 }
 function syncWorkspaceLayout() {
   const hasOutput = materials.size || sessionId || busy || sessionProblem || !$("request-status").hidden || !$("process-section").hidden || !$("repair-section").hidden;
@@ -138,6 +116,7 @@ function syncContinuation() {
 }
 function setBusy(value) {
   busy = value || materialLoading;
+  if (typeof document !== "undefined") document.body?.classList?.toggle("is-busy", busy);
   window.LabDevices?.refreshBusy();
   for (const id of ["choose-files", "material-files", "paste-toggle", "add-pasted", "pasted-material", "problem", "new-diagnosis", "save-report", "load-demo"]) $(id).disabled = busy;
   for (const id of ["download-workspace", "restore-workspace", "workspace-file"]) $(id).disabled = busy || workspaceTransfer;
@@ -178,7 +157,7 @@ function materialChanged(detail) {
 function renderMaterials() {
   syncWorkspaceLayout();
   $("material-source").hidden = evidenceKind !== "demo";
-  $("material-count").textContent = materials.size ? "已添加 " + materials.size + " 份材料" : "尚未添加材料";
+  $("material-count").textContent = materials.size ? "已添加 " + materials.size + " 份" : "";
   window.LabConversation.renderMaterials($("material-list"), {
     materials:[...materials].map(([name, text]) => {
       const screenshot = [...screenshots.values()].find(item => item.material_name === name);
@@ -527,6 +506,10 @@ function finishRequest(state, text) {
   clearInterval(requestTimer); requestTimer = null;
   $("request-status").hidden = true; setBusy(false);
   $("processing-progress").open = false;
+  if (state === "cancelled") {
+    window.LabConversation.stopPending($("conversation"), text);
+    message(text);
+  }
   if (state === "error" && activeRequest) {
     window.LabConversation.removeLastFailure($("conversation"), activeRequest.text);
     if (!$("conversation").querySelector(".chat-transient")) pendingTurn(activeRequest.text);
@@ -552,12 +535,13 @@ async function performInteraction(type, text) {
     const result = await diagnose(input);
     if (activeRequest !== request) return;
     showResult(result);
-    if (result.llm?.status === "ok") {
+    if (result.llm?.status === "cancelled") finishRequest("cancelled", result.llm.message);
+    else if (result.llm?.status === "ok") {
       finishRequest("success", {ask:"回复已生成，已显示在对话末尾。", repair:"修改步骤已生成。", update:"补充材料已处理，诊断已更新。", verify:"本轮复测核对完成，结果已更新。"}[type]);
     } else finishRequest("error", (result.llm?.message || "本次请求未完成。") + " 输入已保留，可以再次提交。");
   } catch (error) {
     if (request && activeRequest !== request) return;
-    if (activeRequest) finishRequest("error", diagnosisFailure(error) + " 输入已保留。");
+    if (activeRequest) finishRequest(error.code === "task_stopped" ? "cancelled" : "error", diagnosisFailure(error) + " 输入已保留。");
     else message(error.message, true);
   } finally {
     if (request && activeRequest === request) { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
@@ -660,6 +644,7 @@ function showResult(result) {
   const ok = result.llm?.status === "ok";
   const intent = result.conversation?.at(-1)?.intent;
   $("result-state").textContent = ok ? (result.status === "verified_from_observations" && intent !== "ask" ? "本轮测试通过 · 排查完成" : {ask:"本次回复", repair:"修改步骤", verify:"本轮材料核对", update:"补充材料后的进展"}[intent] || "本次排查发现") : "本次分析尚未完成";
+  if (result.llm?.status === "cancelled") $("result-state").textContent = "本轮已停止 · 材料与记录已保留";
   if (ok && result.status === "comparison_complete") $("result-state").textContent = "候选修复对照完成";
   if (result.status === "comparison_complete") $("diagnosis-progress").hidden = true;
   else $("diagnosis-progress").hidden = false;
@@ -719,11 +704,98 @@ function showResult(result) {
     }
     $("references").append(reference);
   }
+  updateSessionOverview(result, analysis, requests);
+}
+
+function updateSessionOverview(result, analysis, requests) {
+  const bar = $("session-overview");
+  if (!bar) return;
+  const checks = analysis.goal_assessment?.checks || [];
+  const passedCount = checks.filter(check => check.status === "passed").length;
+  const ok = result.llm?.status === "ok";
+  const cancelled = result.llm?.status === "cancelled";
+  const stageLabel = cancelled ? "已停止" : !ok ? "未完成" :
+    ["verified_from_observations", "resolved_by_user_report"].includes(result.status) ? "排查已达标" :
+    result.status === "comparison_complete" ? "对照完成" :
+    analysis.outcome === "ready_for_retest" ? "待修改与复测" : "持续排查中";
+  const stageKind = cancelled ? "cancelled" : !ok ? "error" :
+    ["verified_from_observations", "resolved_by_user_report", "comparison_complete"].includes(result.status) ? "passed" : "active";
+
+  bar.replaceChildren();
+  const stageChip = element("span", stageLabel, "overview-chip is-" + stageKind);
+  bar.append(stageChip);
+
+  if (checks.length) {
+    const goalsBtn = element("button", `实验目标 ${passedCount}/${checks.length}`, "overview-pill" + (passedCount === checks.length ? " is-passed" : ""));
+    goalsBtn.type = "button";
+    goalsBtn.addEventListener("click", () => {
+      $("analysis-details").open = true;
+      $("goals-section").scrollIntoView({behavior:"smooth", block:"nearest"});
+    });
+    bar.append(goalsBtn);
+  }
+
+  if (requests.length) {
+    const reqBtn = element("button", `待补 ${requests.length} 项材料`, "overview-pill is-warn");
+    reqBtn.type = "button";
+    reqBtn.addEventListener("click", () => {
+      $("analysis-details").open = true;
+      $("requests-section").scrollIntoView({behavior:"smooth", block:"nearest"});
+    });
+    bar.append(reqBtn);
+  }
+
+  if (analysis.steps?.length) {
+    const stepBtn = element("button", `${analysis.steps.length} 步建议操作`, "overview-pill");
+    stepBtn.type = "button";
+    stepBtn.addEventListener("click", () => {
+      $("analysis-details").open = true;
+      $("steps-section").scrollIntoView({behavior:"smooth", block:"nearest"});
+    });
+    bar.append(stepBtn);
+  }
+
+  const detailToggle = element("button", $("analysis-details").open ? "收起详情" : "展开目标与证据", "text-button overview-detail-toggle");
+  detailToggle.type = "button";
+  detailToggle.addEventListener("click", () => {
+    const details = $("analysis-details");
+    details.open = !details.open;
+    detailToggle.textContent = details.open ? "收起详情" : "展开目标与证据";
+  });
+  bar.append(detailToggle);
+  bar.hidden = false;
+}
+
+function resolvePastedMaterialName(rawName, text) {
+  const trimmed = (rawName || "").trim();
+  if (trimmed) {
+    const safe = trimmed.replace(/[\\/:*?"<>|]/g, "-").slice(0, 80);
+    const finalName = /\.[a-z0-9]{1,8}$/i.test(safe) ? safe : safe + ".txt";
+    if (!materials.has(finalName)) return finalName;
+    const dot = finalName.lastIndexOf(".");
+    const base = finalName.slice(0, dot), ext = finalName.slice(dot);
+    let idx = 2;
+    while (materials.has(`${base}-${idx}${ext}`)) idx++;
+    return `${base}-${idx}${ext}`;
+  }
+  const match = text.match(/^\s*(?:<([A-Za-z0-9_-]{1,24})>|\[([A-Za-z0-9_-]{1,24})(?:-[^\]]+)?\]|([A-Za-z0-9_-]{1,24})[>#])/m);
+  const device = match && (match[1] || match[2] || match[3]);
+  let candidate;
+  do {
+    candidate = device ? `${device}-输出${++pasteNumber}.log` : `粘贴材料${++pasteNumber}.txt`;
+  } while (materials.has(candidate));
+  return candidate;
 }
 
 window.LabConversation.mountComposer($("conversation-composer"), text => performInteraction("ask", text));
 
 $("load-demo").addEventListener("click", () => loadDemo());
+for (const button of document.querySelectorAll("[data-demo-preset]")) button.addEventListener("click", () => {
+  if (busy) return;
+  $("demo-case").value = button.dataset.demoPreset;
+  setBusy(false);
+  loadDemo();
+});
 $("load-demo-repair").addEventListener("click", () => loadDemo(true));
 $("load-demo-final").addEventListener("click", () => loadDemo(true, true));
 $("replay-recording").addEventListener("change", renderRecordingChoices);
@@ -769,8 +841,8 @@ $("add-pasted").addEventListener("click", () => {
   const text = $("pasted-material").value;
   if (!text.trim()) return message("请先粘贴材料内容。", true);
   if (materials.size >= 20 || text.length > 200000) return message("请保留与本次问题相关的材料，每份200 KB以内，最多20份。", true);
-  let name; do { name = "粘贴材料" + (++pasteNumber) + ".txt"; } while (materials.has(name));
-  materials.set(name, text); evidenceKind = demoActive && !measuredDemos.has($("demo-case").value) ? "demo" : "user_submitted"; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false"); renderMaterials(); materialChanged(); previewOperations();
+  const name = resolvePastedMaterialName($("pasted-name")?.value, text);
+  materials.set(name, text); evidenceKind = demoActive && !measuredDemos.has($("demo-case").value) ? "demo" : "user_submitted"; $("pasted-material").value = ""; if ($("pasted-name")) $("pasted-name").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false"); renderMaterials(); materialChanged(); previewOperations();
 });
 $("analyze").addEventListener("click", async () => {
   if (busy) return;
@@ -780,10 +852,10 @@ $("analyze").addEventListener("click", async () => {
     const result = await diagnose(input);
     if (activeRequest !== request) return;
     showResult(result);
-    finishRequest(result.llm?.status === "ok" ? "success" : "error", result.llm?.status === "ok" ? "诊断完成，结果已显示并保存。" : (result.llm?.message || "本次诊断未完成。") + " 材料已保留，可以再次提交。");
+    finishRequest(result.llm?.status === "cancelled" ? "cancelled" : result.llm?.status === "ok" ? "success" : "error", result.llm?.status === "ok" ? "诊断完成，结果已显示并保存。" : (result.llm?.message || "本次诊断未完成。") + " 材料已保留，可以再次提交。");
   } catch (error) {
     if (request && activeRequest !== request) return;
-    if (activeRequest) finishRequest("error", diagnosisFailure(error) + " 材料已保留。");
+    if (activeRequest) finishRequest(error.code === "task_stopped" ? "cancelled" : "error", diagnosisFailure(error) + " 材料已保留。");
     else message(error.message, true);
   } finally {
     if (request && activeRequest === request) { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
@@ -815,7 +887,8 @@ $("new-diagnosis").addEventListener("click", () => {
   recordings.clear(); screenshots.clear(); renderRecordingChoices(); renderOperationHistory({}); renderRepairComparisons([]);
   $("demo-case").value = "network_access";
   $("demo-status").textContent = "先带入故障材料，再点击“开始诊断”。";
-  $("problem").value = ""; $("pasted-material").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false");
+  $("problem").value = ""; $("pasted-material").value = ""; if ($("pasted-name")) $("pasted-name").value = ""; $("paste-panel").hidden = true; $("paste-toggle").setAttribute("aria-expanded", "false");
+  if ($("session-overview")) { $("session-overview").hidden = true; $("session-overview").replaceChildren(); }
   window.LabConversation.setDraft($("conversation-composer"), ""); window.LabConversation.clear($("conversation"));
   $("analysis-result").hidden = true; $("empty-result").hidden = false; $("save-report").hidden = true;
   $("empty-result").querySelector("h3").textContent = "准备好材料，就可以开始。";
@@ -853,6 +926,38 @@ async function connectService() {
     }
   } finally { clearTimeout(wakeup); }
 }
+async function restoreTask() {
+  let task;
+  try { task = await window.LabTasks.restore(); }
+  catch (error) { message("任务状态暂未恢复：" + error.message, true); return false; }
+  if (!task) return false;
+  const requestedSession = new URLSearchParams(location.search).get("session");
+  const taskSession = task.session_id || task.input?.session_id || null;
+  if (requestedSession && requestedSession !== taskSession) return false;
+  if (task.input.room_id && task.input.room_id !== roomHeaders()["X-LabAgent-Room"]) return false;
+  materials.clear(); recordings.clear(); screenshots.clear();
+  for (const [name, text] of Object.entries(task.input.configs || {})) materials.set(name, text);
+  $("problem").value = task.input.question === defaultQuestion ? "" : task.input.question || "";
+  knowledgeScope = task.input.knowledge_scope || "default"; evidenceKind = task.input.evidence_kind || "user_submitted";
+  for (const id of task.input.recordings || []) {
+    try { const media = await api("/api/recordings/" + id); (media.kind === "image" ? screenshots : recordings).set(id, media); } catch {}
+  }
+  renderRecordingChoices(); renderMaterials(); void previewOperations();
+  const type = task.input.interaction?.type || "analyze", text = task.input.interaction?.message || task.input.question || "继续处理实验材料";
+  const request = beginRequest(type, text); request.taskId = task.id;
+  try {
+    const result = await window.LabTasks.watch(task.id, request, task);
+    if (activeRequest !== request) return true;
+    showResult(result);
+    finishRequest(result.llm?.status === "cancelled" ? "cancelled" : result.llm?.status === "ok" ? "success" : "error",
+      result.llm?.message || "已恢复本轮结果，未重新发起检查。");
+  } catch (error) {
+    if (activeRequest === request) finishRequest(error.code === "task_stopped" ? "cancelled" : "error", error.message);
+  } finally {
+    if (activeRequest === request) { clearInterval(requestTimer); requestTimer = null; activeRequest = null; setBusy(false); }
+  }
+  return true;
+}
 async function start() {
   const assistantOptions = {api, busy:() => busy || materialLoading,
     setCollecting:value => { materialLoading = value; setBusy(value); },
@@ -882,7 +987,7 @@ async function start() {
     document.querySelector("footer span:last-child").textContent = "测试过程保存在当前在线服务";
   }
   window.LabHistory.refresh();
-  if (await window.LabWorkspace.start()) return;
+  if (await window.LabWorkspace.start()) { await restoreTask(); return; }
   const savedSession = new URLSearchParams(window.location.search).get("session");
   if (savedSession && /^[a-f0-9]{32}$/.test(savedSession)) {
     let saved;
@@ -919,6 +1024,7 @@ async function start() {
     message(legacySession ? "已打开早期规则诊断记录。可查看对话与报告，点击“新对话”开始新的排查。" : "已恢复完整对话，可以继续交流或补充材料。");
     if (matchMedia("(max-width:1100px)").matches) $("dialogue-section").scrollIntoView({block:"start"});
   }
+  if (await restoreTask()) return;
   const pendingRecording = new URLSearchParams(window.location.search).get("recording");
   if (pendingRecording && /^[a-f0-9]{32}$/.test(pendingRecording)) {
     setBusy(true);
@@ -1038,6 +1144,25 @@ $("workspace-file").addEventListener("change", event => {
   const file = event.target.files[0];
   if (file) transferWorkspace("/api/workspace/restore", file);
 });
+function initThemeToggle() {
+  const button = $("theme-toggle");
+  if (!button) return;
+  let theme = "light";
+  try {
+    const saved = localStorage.getItem("labagent-theme");
+    if (saved === "dark" || saved === "light") theme = saved;
+  } catch {}
+  const applyTheme = next => {
+    theme = next;
+    document.documentElement.dataset.theme = theme;
+    button.setAttribute("aria-pressed", String(theme === "dark"));
+    button.title = theme === "dark" ? "切换为浅色主题" : "切换为深色主题";
+    try { localStorage.setItem("labagent-theme", theme); } catch {}
+  };
+  applyTheme(theme);
+  button.addEventListener("click", () => applyTheme(theme === "dark" ? "light" : "dark"));
+}
+initThemeToggle();
 window.LabHistory.init({api,element,message,busy:() => busy,showScreenshot,mediaUrl,
   newConversation:() => $("new-diagnosis").click(), showDiagnosis:() => window.LabWorkspace.showDiagnosis()});
 window.LabKnowledge.init({api,element,message,busy:() => busy,scope:() => knowledgeScope,setScope:scope => {
@@ -1047,4 +1172,6 @@ window.LabKnowledge.init({api,element,message,busy:() => busy,scope:() => knowle
 window.LabPersonal.init({api,element,message,identityChanged:() => window.LabDevices?.reset(),afterSignIn:() => window.LabDevices?.afterSignIn(),busy:() => busy || workspaceTransfer,
   newConversation:() => $("new-diagnosis").click(), refreshHistory:() => window.LabHistory.refresh(),
   question:() => $("problem").value, shared:() => Boolean(roomHeaders()["X-LabAgent-Room"])});
+window.LabTasks.init({api, headers:roomHeaders, progress:receiveProgress,
+  waiting:text => window.LabConversation.updatePending($("conversation"), {message:text, delivered:true})});
 start().catch(error => { serviceState = "unavailable"; modelReady = false; setBusy(false); message("暂时无法连接服务：" + error.message, true); });

@@ -74,3 +74,13 @@ assert.ok(changed.includes("1份材料有变化"));
 assert.ok(changed.includes("旧第2行：GE0/0/0 down"));
 assert.ok(changed.includes("新第2行：GE0/0/0 up &lt;script&gt;"));
 assert.ok(!changed.includes("<script>"));
+
+const rich = render([{attempt:3, user:"怎么看邻居？", assistant:"请检查接口和邻居状态：\n```bash\ndisplay ospf peer\n<script>alert(1)</script>\n```\n然后执行：\n<R1> display ip interface brief\n- 确认 `GigabitEthernet0/0/0` 为 **up**", steps:["在 R1 执行 `display ospf peer brief`"]}]);
+assert.ok(rich.includes("code-card"));
+assert.ok(rich.includes("cli-snippet"));
+assert.ok(rich.includes("copy-btn"));
+assert.ok(rich.includes("复制命令"));
+assert.ok(rich.includes("inline-code"));
+assert.ok(rich.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
+assert.ok(!rich.includes("<script>alert(1)</script>"));
+assert.ok(!rich.includes("style=\""));

@@ -23,7 +23,7 @@ export function PendingTurn({request}: {request: PendingRequest | null}) {
   const delivery = failed ? (request.delivered ? "回复未完成" : "发送未完成") : (request.delivered ? "已发送" : "发送中…");
   return <div className="chat-turn chat-transient">
     <div className="chat-message chat-user">
-      <p className="chat-label">你<time className="chat-time" dateTime={new Date(request.started).toISOString()}>
+      <p className="chat-label"><span className="chat-actor-badge">你</span><time className="chat-time" dateTime={new Date(request.started).toISOString()}>
         {new Date(request.started).toLocaleTimeString("zh-CN", {hour:"2-digit", minute:"2-digit"})}
       </time></p>
       <div className="chat-body">{request.text}</div>
@@ -31,7 +31,7 @@ export function PendingTurn({request}: {request: PendingRequest | null}) {
     </div>
     <span className={"chat-delivery " + (failed ? "failed" : request.delivered ? "delivered" : "sending")}>{delivery}</span>
     <div className={"chat-message chat-assistant " + (failed ? "chat-failed" : "chat-pending")}>
-      <p className="chat-label">LabAgent</p>
+      <p className="chat-label"><span className="chat-brand-dot" aria-hidden="true">L</span><span>LabAgent</span></p>
       {failed ? <>
         <p className="chat-error-text">{request.error}</p>
         <button type="button" className="text-button chat-retry" onClick={request.onRetry}>重新发送</button>

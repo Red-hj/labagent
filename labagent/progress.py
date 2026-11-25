@@ -9,9 +9,9 @@ _sink = ContextVar("labagent_progress", default=None)
 
 class ProgressStream:
     """One request's public events; arguments and observations stay in results."""
-    def __init__(self, callback, session_id=None):
+    def __init__(self, callback, session_id=None, turn_id=None):
         self.callback, self.session_id = callback, session_id
-        self.turn_id = uuid.uuid4().hex
+        self.turn_id = turn_id or uuid.uuid4().hex
         self.sequence = 0
         self.items = {}
         self.lock = threading.Lock()
@@ -29,13 +29,13 @@ class ProgressStream:
 
     def summary(self, result):
         failed = result.get("mode") == "open_network" and result.get("llm", {}).get("status") != "ok"
-        return {"turn_id": self.turn_id, "status": "failed" if failed else "completed",
+        return {"turn_id": self.turn_id, "status": "cancelled" if result.get("llm", {}).get("status") == "cancelled" else "failed" if failed else "completed",
                 "items": [dict(item) for item in self.items.values()]}
 
 
 @contextmanager
-def progress_to(callback, *, session_id=None):
-    stream = ProgressStream(callback, session_id)
+def progress_to(callback, *, session_id=None, turn_id=None):
+    stream = ProgressStream(callback, session_id, turn_id)
     token = _sink.set(stream)
     try:
         yield stream

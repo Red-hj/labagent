@@ -77,7 +77,7 @@ class LearningApiTests(unittest.TestCase):
     def test_learning_script_is_served_by_asset_allowlist(self):
         # Read the actual route response without assuming static files are generic.
         for path, marker in (("/learning.js", b"window.LabLearning"), ("/devices.js", b"window.LabDevices"),
-                             ("/devices.css", b".connection-dialog")):
+                             ("/devices.css", b".connection-dialog"), ("/task-control.js", b"LabTasks")):
             with self.subTest(path=path):
                 raw = f"GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{self.server.server_port}\r\n\r\n".encode()
                 sock = RequestSocket(raw)
