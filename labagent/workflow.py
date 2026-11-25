@@ -160,7 +160,7 @@ def _run_open_workflow(payload, database=None, completion=None, *, previous_atte
         conversation = list(state.get("conversation", []))
         payload = state["payload"]
         result = investigate(payload, previous, completion, conversation=conversation, previous_materials=state.get("last_materials"), lab_tools=lab_tools)
-        if result["llm"]["status"] == "ok":
+        if result["llm"]["status"] == "ok" or result["status"] == "comparison_complete":
             interaction = payload.get("interaction", {})
             conversation.append({"intent": interaction.get("type", "analyze"), "user": interaction.get("message") or payload["question"],
                                  "assistant": result["investigation"].get("reply") or result["investigation"]["summary"], "created_at": result["created_at"]})

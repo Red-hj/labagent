@@ -123,7 +123,7 @@ def generate_open_report(history):
         if comparison.get("error"):
             continue
         rows += ["", "## 候选修复的运行对照", "", clean(comparison["title"]),
-                 "", "运行环境：" + clean(comparison["environment"].get("image", "FRRouting")),
+                 "", "运行环境：" + clean(comparison["environment"].get("image") or comparison["environment"].get("engine", "FRRouting")),
                  "运行记录：" + clean(comparison["environment"].get("action_url", comparison["run_id"])),
                  "", "| 方案 | 满足目标 | 各项目标的实际结果 |", "| --- | --- | --- |"]
         for phase in comparison["phases"]:

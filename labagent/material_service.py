@@ -140,7 +140,8 @@ class MaterialService:
                 result = self.store.save(payload, run_open_workflow(payload, self.workflow_database, self.completion,
                                                                    previous_attempt=previous, lab_tools=lab_tools))
             model = result["llm"]
-            return {"status": "success" if model["status"] == "ok" else model["status"],
+            answered = model["status"] == "ok" or result["status"] == "comparison_complete"
+            return {"status": "success" if answered else model["status"],
                     "session_id": result["session_id"],
                     "session_recovered": restored is not None,
                     "personal_memory_applied": True,

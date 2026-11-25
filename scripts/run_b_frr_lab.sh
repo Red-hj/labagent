@@ -2,8 +2,8 @@
 # Reproduce LabAgent OSPF faults in isolated Linux/FRRouting namespaces.
 set -eu
 umask 022
-case_id=${1:?usage: run_b_frr_lab.sh lab_02|lab_03|lab_02_backup OUTPUT_DIRECTORY}
-case "$case_id" in lab_02|lab_03|lab_02_backup) ;; *) echo 'Choose lab_02, lab_03 or lab_02_backup.' >&2; exit 2;; esac
+case_id=${1:?usage: run_b_frr_lab.sh lab_02|lab_03|lab_02_backup|lab_02_partial OUTPUT_DIRECTORY}
+case "$case_id" in lab_02|lab_03|lab_02_backup|lab_02_partial) ;; *) echo 'Choose lab_02, lab_03, lab_02_backup or lab_02_partial.' >&2; exit 2;; esac
 out=${2:?supply an absolute output directory}
 case "$out" in /*) ;; *) echo 'Use an absolute output directory.' >&2; exit 2;; esac
 [ "$(id -u)" = 0 ] || { echo 'Run as root in a Linux FRRouting lab.' >&2; exit 2; }
@@ -167,11 +167,19 @@ capture baseline
 case "$case_id" in
     lab_02|lab_02_backup) change_area 0.0.0.0 0.0.0.1 ;;
     lab_03) ip -n "$r2" link set dev transit down ;;
+    lab_02_partial)
+        change_area 0.0.0.0 0.0.0.1
+        ip -n "$r2" link set dev transit down ;;
 esac > "$out/inject.txt" 2>&1
 if [ "$case_id" = lab_02_backup ]; then wait_state up 'proto static'; else wait_state down; fi
 capture fault
+if [ "$case_id" = lab_02_partial ]; then
+    ip -n "$r2" link set dev transit up > "$out/partial-repair.txt" 2>&1
+    wait_state down
+    capture partial
+fi
 case "$case_id" in
-    lab_02|lab_02_backup) change_area 0.0.0.1 0.0.0.0 ;;
+    lab_02|lab_02_backup|lab_02_partial) change_area 0.0.0.1 0.0.0.0 ;;
     lab_03) ip -n "$r2" link set dev transit up ;;
 esac > "$out/repair.txt" 2>&1
 wait_state up "$primary_route"
