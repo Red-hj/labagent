@@ -214,11 +214,11 @@ def check_holdout(folder, fingerprints, signature_groups):
     return len(candidates)
 
 
-def write_validation_benchmark(output, examples, metadata):
-    version = VERSION + '-validation'
+def write_config_benchmark(output, examples, metadata, *, split='validation'):
+    version = VERSION + '-' + split
     pack = output / 'inputs-pack'
     (pack / 'inputs').mkdir(parents=True)
-    by_case = {row['case_id']: row for row in metadata if row['split'] == 'validation'}
+    by_case = {row['case_id']: row for row in metadata if row['split'] == split}
     cases, labels = [], {}
     for index, example in enumerate(examples, 1):
         source, answer = (json.loads(message['content']) for message in example['messages'][1:])
@@ -246,9 +246,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path, help='项目 runtime 内的新目录')
     parser.add_argument('--format', choices=('sft', 'benchmark'), default='sft',
-                        help='benchmark: export the validation topology as separate inputs and labels')
+                        help='benchmark: export one topology split as separate inputs and labels')
+    parser.add_argument('--benchmark-split', choices=('train', 'validation'),
+                        help='seed split to export in benchmark format, default validation')
     parser.add_argument('--holdout-inputs', type=Path, help='可选的独立诊断评测输入目录，仅检查配置及拓扑重复')
     args = parser.parse_args()
+    if args.benchmark_split and args.format != 'benchmark':
+        parser.error('--benchmark-split 适用于 --format benchmark')
     try:
         root = (ROOT / 'runtime').resolve()
         output = args.output.resolve()
@@ -258,8 +262,9 @@ def main():
         held_out = check_holdout(args.holdout_inputs, fingerprints, set.union(*splits.values())) if args.holdout_inputs else None
         output.mkdir(parents=True, exist_ok=False)
         if args.format == 'benchmark':
-            count = write_validation_benchmark(output, batches['validation'], metadata)
-            print(f'导出 {count} 例验证配置及独立标签到 {output}。')
+            split = args.benchmark_split or 'validation'
+            count = write_config_benchmark(output, batches[split], metadata, split=split)
+            print(f'导出 {count} 例配置及独立标签到 {output}。')
             return
         for split, rows in batches.items():
             with (output / f'{split}.jsonl').open('x', encoding='utf-8', newline='\n') as file:

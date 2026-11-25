@@ -88,6 +88,65 @@ class LinkReviewTests(unittest.TestCase):
         self.assertEqual(original['findings'][0]['devices'], ['R2'])
         self.assertEqual(review.claim_issues(mismatch, corrected), [])
 
+    def test_fault_screen_retracts_unconfirmed_shutdown_and_preserves_confirmed_shutdown(self):
+        request = example_request()
+        screened, changes = review.screen_fault_claims(request, shutdown_prediction())
+        self.assertEqual(screened['status'], 'awaiting_verification')
+        self.assertEqual(screened['findings'], [])
+        self.assertEqual(changes[0]['decision'], 'await_interface_state')
+        self.assertTrue(changes[0]['config_lines'])
+
+        confirmed = example_request('05_shutdown')
+        original = shutdown_prediction()
+        original['findings'][0]['link_id'] = 'r1-r2'
+        self.assertEqual(review.screen_fault_claims(confirmed, original), (original, []))
+
+    def test_fault_screen_reports_missing_ipv4_only_when_the_interface_lacks_an_address(self):
+        request = example_request('06_not_enabled')
+        original = {**normal_prediction(), 'status': 'fault_found',
+                    'findings': [{'code': 'OSPF_NOT_ENABLED', 'link_id': 'r1-r2', 'devices': ['R2']}]}
+        self.assertEqual(review.screen_fault_claims(request, original), (original, []))
+
+        right = request['parsed_links'][0]['endpoints'][1]
+        ip_line, = [entry['line'] for entry in right['config_lines'] if entry['text'].startswith('ip address')]
+        source = request['input']['configs']
+        lines = source['R2'].splitlines()
+        lines[ip_line - 1] = ''
+        inputs = {**request['input'], 'configs': {**source, 'R2': '\n'.join(lines)}}
+        incomplete = {**request, 'input': inputs, 'parsed_links': evaluator.parsed_link_evidence(inputs)}
+        screened, changes = review.screen_fault_claims(incomplete, original)
+        self.assertEqual(screened['status'], 'needs_information')
+        self.assertEqual(screened['findings'], [])
+        self.assertEqual(screened['unknowns'], [{'code': 'MISSING_IP', 'link_id': 'r1-r2', 'devices': ['R2']}])
+        self.assertEqual(changes[0]['decision'], 'await_primary_ipv4')
+        self.assertEqual(review.claim_issues(incomplete, screened), [])
+        subnet = {**original, 'findings': [
+            {'code': 'SUBNET_MISMATCH', 'link_id': 'r1-r2', 'devices': ['R2']}, *original['findings'],
+        ]}
+        screened, changes = review.screen_fault_claims(incomplete, subnet)
+        self.assertEqual(len(changes), 2)
+        self.assertEqual(len(screened['unknowns']), 1)
+        self.assertEqual(review.claim_issues(incomplete, screened), [])
+
+    def test_area_screen_keeps_mismatches_and_drops_only_proven_policy_contradiction(self):
+        policy = example_request('12_policy')
+        both = {**normal_prediction(), 'status': 'fault_found',
+                'findings': [{'code': 'AREA_POLICY_VIOLATION', 'link_id': 'r1-r2', 'devices': ['R1','R2']}]}
+        split = review.normalize_prediction(policy, both)
+        self.assertEqual([row['devices'] for row in split['findings']], [['R1'], ['R2']])
+        self.assertEqual(review.screen_fault_claims(policy, split), (split, []))
+
+        mismatch = example_request('01_area_mismatch')
+        first, second = split['findings']
+        screened, changes = review.screen_fault_claims(mismatch, split)
+        self.assertEqual(screened['findings'], [second])
+        self.assertEqual(changes[0]['claim'], first)
+        self.assertEqual(changes[0]['decision'], 'area_matches_requirement')
+
+        inputs = {**mismatch['input'], 'requirements': {}}
+        unspecified = {**mismatch, 'parsed_links': evaluator.parsed_link_evidence(inputs)}
+        self.assertEqual(review.screen_fault_claims(unspecified, split), (split, []))
+
     def test_persistent_evidence_conflict_keeps_the_initial_prediction(self):
         request = example_request()
         bad = shutdown_prediction()

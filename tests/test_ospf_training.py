@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from scripts.evaluate_b import load_candidate_inputs, read
-from scripts.prepare_ospf_training import ROOT, build_dataset, topology_signature, write_validation_benchmark
+from scripts.prepare_ospf_training import ROOT, build_dataset, topology_signature, write_config_benchmark
 
 
 class OspfTrainingTests(unittest.TestCase):
@@ -30,7 +30,7 @@ class OspfTrainingTests(unittest.TestCase):
         runtime.mkdir(exist_ok=True)
         with TemporaryDirectory(dir=runtime) as directory:
             output = Path(directory)
-            count = write_validation_benchmark(output, self.batches['validation'], self.metadata)
+            count = write_config_benchmark(output, self.batches['validation'], self.metadata)
             manifest, inputs = load_candidate_inputs(output / 'inputs-pack')
             labels = read(output / 'labels.json')
             self.assertEqual(count, 10)
@@ -38,6 +38,19 @@ class OspfTrainingTests(unittest.TestCase):
             self.assertEqual(manifest['version'], labels['version'])
             self.assertEqual({row['family'] for row in labels['cases'].values()}, {'ladder'})
             self.assertEqual({topology_signature(row) for row in inputs.values()}, {(2, 2, 2, 2, 3, 3)})
+
+    def test_benchmark_can_export_three_topologies_as_one_split(self):
+        runtime = ROOT / 'runtime'
+        runtime.mkdir(exist_ok=True)
+        with TemporaryDirectory(dir=runtime) as directory:
+            output = Path(directory)
+            count = write_config_benchmark(output, self.batches['train'], self.metadata, split='train')
+            manifest, inputs = load_candidate_inputs(output / 'inputs-pack')
+            labels = read(output / 'labels.json')
+            self.assertEqual(count, 30)
+            self.assertEqual(set(inputs), set(labels['cases']))
+            self.assertTrue(manifest['version'].endswith('-train'))
+            self.assertEqual({row['family'] for row in labels['cases'].values()}, {'chain', 'branch', 'ring'})
 
     def test_chat_targets_retain_exact_source_lines(self):
         for rows in self.batches.values():

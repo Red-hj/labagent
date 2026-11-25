@@ -510,8 +510,8 @@ def comparison(reports):
         keys = ('base_inputs_sha256', 'provider', 'model', 'max_tokens_per_call', 'temperature')
         evidence_modes = [meta.get('link_evidence', 'parsed' if meta.get('parsed_links') else 'none')
                           for meta in both_models]
-        review_modes = {(bool(meta.get('claim_review')), bool(meta.get('normalize_structure')))
-                        for meta in both_models}
+        review_flags = ('claim_review', 'normalize_structure', 'check_fault_evidence', 'local_only')
+        review_modes = {tuple(bool(meta.get(flag)) for flag in review_flags) for meta in both_models}
         if (len(set(evidence_modes)) != 1 or len(review_modes) != 1
                 or any(both_models[0].get(key) != both_models[1].get(key) for key in keys)):
             raise ValueError('两组模型的输入子集、模型、参数或链路证据选项与复核设置不同，不能直接对照。')
