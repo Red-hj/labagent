@@ -101,6 +101,7 @@ def phase(folder, case_id):
             'routes': {prefix: [{key: row[key] for key in ('protocol', 'selected', 'installed') if key in row}
                                 for row in rows] for prefix, rows in routes.items()},
             'route_output': text(folder, f'{router}-all-routes.txt' if backup else f'{router}-ospf-routes.txt'),
+            'kernel_route_output': (folder / f'{router}-kernel-routes.txt').read_text(encoding='utf-8'),
         }
     for device, key, target, _ in PINGS:
         output = text(folder, f'{key}.txt')

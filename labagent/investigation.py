@@ -790,8 +790,13 @@ def _repair_comparison_reply(comparisons):
         for phase in comparison["phases"]:
             text = f'「{safe_line(str(phase["title"]))}」通过 {phase["passed_count"]}/{phase["total"]} 项。'
             if 0 < phase["passed_count"] < phase["total"]:
-                passed = "、".join(safe_line(str(check["title"])) for check in phase["checks"] if check["passed"])
-                text += f"通过项目为 {passed}。"
+                if phase["passed_count"] <= phase["total"] - phase["passed_count"]:
+                    passed = "、".join(safe_line(str(check["title"])) for check in phase["checks"] if check["passed"])
+                    text += f"通过项目为 {passed}。"
+                else:
+                    pending = "、".join(f'{safe_line(str(check["title"]))}（{safe_line(check["detail"]).rstrip("。")}）'
+                                       for check in phase["checks"] if not check["passed"])
+                    text += f"待达标项目为 {pending}。"
             stages.append(text)
         recommended = next((phase for phase in comparison["phases"] if phase["id"] == comparison["recommended"]), None)
         conclusion = (f'「{safe_line(str(recommended["title"]))}」满足全部实验目标。'

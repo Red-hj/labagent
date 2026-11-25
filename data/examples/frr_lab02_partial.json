@@ -107,6 +107,7 @@
             ]
           },
           "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   192.168.10.0/24 [110/10] is directly connected, lan, weight 1, 00:00:09\n",
+          "kernel_route_output": "10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.1 linkdown \n192.168.10.0/24 dev lan proto kernel scope link src 192.168.10.1 \n",
           "pings": {
             "R1-direct-ping": "PING 10.12.0.2 (10.12.0.2) 56(84) bytes of data.\nFrom 10.12.0.1 icmp_seq=1 Destination Host Unreachable\nFrom 10.12.0.1 icmp_seq=2 Destination Host Unreachable\nFrom 10.12.0.1 icmp_seq=3 Destination Host Unreachable\nFrom 10.12.0.1 icmp_seq=4 Destination Host Unreachable\nFrom 10.12.0.1 icmp_seq=5 Destination Host Unreachable\nFrom 10.12.0.1 icmp_seq=6 Destination Host Unreachable\nFrom 10.12.0.1 icmp_seq=7 Destination Host Unreachable\nFrom 10.12.0.1 icmp_seq=8 Destination Host Unreachable\nFrom 10.12.0.1 icmp_seq=9 Destination Host Unreachable\nFrom 10.12.0.1 icmp_seq=10 Destination Host Unreachable\n\n--- 10.12.0.2 ping statistics ---\n10 packets transmitted, 0 received, +10 errors, 100% packet loss, time 3041ms\npipe 10\n"
           }
@@ -138,7 +139,8 @@
               }
             ]
           },
-          "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   192.168.20.0/24 [110/10] is directly connected, lan, weight 1, 00:00:09\n"
+          "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   192.168.20.0/24 [110/10] is directly connected, lan, weight 1, 00:00:09\n",
+          "kernel_route_output": "192.168.20.0/24 dev lan proto kernel scope link src 192.168.20.1 \n"
         },
         "PC1": {
           "config": "",
@@ -205,6 +207,7 @@
             ]
           },
           "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   10.12.0.0/24 [110/10] is directly connected, transit, weight 1, 00:00:00\nO   192.168.10.0/24 [110/10] is directly connected, lan, weight 1, 00:00:13\n",
+          "kernel_route_output": "10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.1 \n192.168.10.0/24 dev lan proto kernel scope link src 192.168.10.1 \n",
           "pings": {
             "R1-direct-ping": "PING 10.12.0.2 (10.12.0.2) 56(84) bytes of data.\n64 bytes from 10.12.0.2: icmp_seq=1 ttl=64 time=0.102 ms\n64 bytes from 10.12.0.2: icmp_seq=2 ttl=64 time=0.047 ms\n64 bytes from 10.12.0.2: icmp_seq=3 ttl=64 time=0.034 ms\n64 bytes from 10.12.0.2: icmp_seq=4 ttl=64 time=0.044 ms\n64 bytes from 10.12.0.2: icmp_seq=5 ttl=64 time=0.058 ms\n\n--- 10.12.0.2 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 813ms\nrtt min/avg/max/mdev = 0.034/0.057/0.102/0.023 ms\n"
           }
@@ -253,7 +256,8 @@
               }
             ]
           },
-          "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   10.12.0.0/24 [110/10] is directly connected, transit, weight 1, 00:00:00\nO   192.168.20.0/24 [110/10] is directly connected, lan, weight 1, 00:00:13\n"
+          "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   10.12.0.0/24 [110/10] is directly connected, transit, weight 1, 00:00:00\nO   192.168.20.0/24 [110/10] is directly connected, lan, weight 1, 00:00:13\n",
+          "kernel_route_output": "10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.2 \n192.168.20.0/24 dev lan proto kernel scope link src 192.168.20.1 \n"
         },
         "PC1": {
           "config": "",
@@ -349,6 +353,7 @@
             ]
           },
           "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   10.12.0.0/24 [110/10] is directly connected, transit, weight 1, 00:00:07\nO   192.168.10.0/24 [110/10] is directly connected, lan, weight 1, 00:00:20\nO>* 192.168.20.0/24 [110/20] via 10.12.0.2, transit, weight 1, 00:00:00\n",
+          "kernel_route_output": "10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.1 \n192.168.10.0/24 dev lan proto kernel scope link src 192.168.10.1 \n192.168.20.0/24 nhid 17 via 10.12.0.2 dev transit proto ospf metric 20 \n",
           "pings": {
             "R1-direct-ping": "PING 10.12.0.2 (10.12.0.2) 56(84) bytes of data.\n64 bytes from 10.12.0.2: icmp_seq=1 ttl=64 time=0.043 ms\n64 bytes from 10.12.0.2: icmp_seq=2 ttl=64 time=0.043 ms\n64 bytes from 10.12.0.2: icmp_seq=3 ttl=64 time=0.042 ms\n64 bytes from 10.12.0.2: icmp_seq=4 ttl=64 time=0.039 ms\n64 bytes from 10.12.0.2: icmp_seq=5 ttl=64 time=0.037 ms\n\n--- 10.12.0.2 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 807ms\nrtt min/avg/max/mdev = 0.037/0.040/0.043/0.002 ms\n"
           }
@@ -422,7 +427,8 @@
               }
             ]
           },
-          "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   10.12.0.0/24 [110/10] is directly connected, transit, weight 1, 00:00:06\nO>* 192.168.10.0/24 [110/20] via 10.12.0.1, transit, weight 1, 00:00:00\nO   192.168.20.0/24 [110/10] is directly connected, lan, weight 1, 00:00:20\n"
+          "route_output": "Codes: K - kernel route, C - connected, L - local, S - static,\n       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n       f - OpenFabric, t - Table-Direct,\n       > - selected route, * - FIB route, q - queued, r - rejected, b - backup\n       t - trapped, o - offload failure\n\nO   10.12.0.0/24 [110/10] is directly connected, transit, weight 1, 00:00:06\nO>* 192.168.10.0/24 [110/20] via 10.12.0.1, transit, weight 1, 00:00:00\nO   192.168.20.0/24 [110/10] is directly connected, lan, weight 1, 00:00:20\n",
+          "kernel_route_output": "10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.2 \n192.168.10.0/24 nhid 19 via 10.12.0.1 dev transit proto ospf metric 20 \n192.168.20.0/24 dev lan proto kernel scope link src 192.168.20.1 \n"
         },
         "PC1": {
           "config": "",
