@@ -74,6 +74,25 @@ class OperationHistoryTests(unittest.TestCase):
         self.assertEqual(summary["retry_matches"], {"matched": 1, "total": 1})
         self.assertEqual(summary["unmatched_detected_events"], 1)
 
+    def test_log_comparison_pairs_retries_without_video_time(self):
+        raw = "\n".join(("R2# router ospf", "% Unknown command: router ospf",
+                         "R2# configure terminal", "R2(config)# router ospf", "R2(config-router)#"))
+        annotations = {"events": [
+            {"id": "a", "device": "R2", "view": "user", "command": "router ospf", "seconds": 2,
+             "status": "error", "retry_to": "b"},
+            {"id": "b", "device": "R2", "view": "system", "command": "router ospf", "seconds": 6,
+             "status": "returned"},
+        ]}
+        result = score_events(inspect_history(sources(raw)), annotations, tolerance=None)
+        self.assertEqual(result["summary"], {
+            "commands": {"matched": 2, "total": 2}, "unmatched_detected_events": 1,
+            "view_matches": {"matched": 2, "total": 2}, "status_matches": {"matched": 2, "total": 2},
+            "retry_matches": {"matched": 1, "total": 1},
+        })
+        self.assertNotIn("tolerance_seconds", result)
+        self.assertNotIn("observed_seconds", result["rows"][0])
+        self.assertNotIn("in_time", result["rows"][0])
+
     def test_replay_scores_a_quick_retry_in_command_order(self):
         text = "\n".join(("[00:00.500] R2# router ospf", "[00:00.500] % Unknown command: router ospf",
                           "[00:01.000] R2# configure terminal", "[00:01.000] R2(config)# router ospf",

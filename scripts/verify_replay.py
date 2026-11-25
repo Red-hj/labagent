@@ -58,7 +58,7 @@ def _pair_timed_events(labels, candidates, tolerance):
 
 
 def score_events(history, annotations, *, tolerance=0.5):
-    """Pair a clip's annotated commands with reconstructed events once each."""
+    """Match annotated commands once each. Use tolerance=None for log order."""
     expected = annotations['events']
     if not expected or len({item['id'] for item in expected}) != len(expected):
         raise ValueError('标注需要至少一条操作及唯一编号')
@@ -72,6 +72,9 @@ def score_events(history, annotations, *, tolerance=0.5):
     used, pairs = set(), {}
     for key, labels in labels_by_command.items():
         candidates = events_by_command[key]
+        if tolerance is None:
+            pairs.update((label['id'], event) for label, event in zip(labels, candidates))
+            continue
         timed_pairs = _pair_timed_events(labels, candidates, tolerance)
         pairs.update(timed_pairs)
         used.update(event['id'] for event in timed_pairs.values())
@@ -90,23 +93,30 @@ def score_events(history, annotations, *, tolerance=0.5):
     rows = []
     for label in expected:
         event = pairs.get(label['id'])
-        seconds = event['seconds'] if event else None
-        error = abs(seconds - label['seconds']) if seconds is not None else None
         retry = pairs.get(label.get('retry_to'))
-        rows.append({'label': label['id'], 'event': event['id'] if event else None,
-                     'expected_seconds': label['seconds'], 'observed_seconds': seconds,
-                     'view_matches': bool(event and event['view'] == label['view']),
-                     'status_matches': bool(event and event['status'] == label['status']),
-                     'in_time': error is not None and error <= tolerance,
-                     'retry_matches': None if not label.get('retry_to') else
-                                      bool(event and retry and event.get('retry_event_id') == retry['id'])})
+        row = {'label': label['id'], 'event': event['id'] if event else None,
+               'view_matches': bool(event and event['view'] == label['view']),
+               'status_matches': bool(event and event['status'] == label['status']),
+               'retry_matches': None if not label.get('retry_to') else
+                                bool(event and retry and event.get('retry_event_id') == retry['id'])}
+        if tolerance is not None:
+            seconds = event['seconds'] if event else None
+            row.update(expected_seconds=label['seconds'], observed_seconds=seconds,
+                       in_time=seconds is not None and abs(seconds - label['seconds']) <= tolerance)
+        rows.append(row)
 
     summary = {'commands': {'matched': len(pairs), 'total': len(rows)},
-               'unmatched_detected_events': len(predictions) - len(used)}
-    for field in ('view_matches', 'status_matches', 'in_time', 'retry_matches'):
+               'unmatched_detected_events': len(predictions) - len(pairs)}
+    fields = ('view_matches', 'status_matches', 'retry_matches')
+    if tolerance is not None:
+        fields += ('in_time',)
+    for field in fields:
         values = [row[field] for row in rows if row[field] is not None]
         summary[field] = {'matched': sum(values), 'total': len(values)}
-    return {'tolerance_seconds': tolerance, 'summary': summary, 'rows': rows}
+    result = {'summary': summary, 'rows': rows}
+    if tolerance is not None:
+        result['tolerance_seconds'] = tolerance
+    return result
 
 
 def main():
@@ -114,8 +124,11 @@ def main():
     parser.add_argument("--live-model", action="store_true")
     parser.add_argument("--video", type=Path, help="待验证的终端录屏，默认使用项目合成示例")
     parser.add_argument("--annotations", type=Path, help="包含 events 的独立标注 JSON")
+    parser.add_argument("--terminal-log", type=Path, help="同一片段的原始终端日志，按命令顺序对照标注")
     parser.add_argument("--output", type=Path, help="项目 runtime/ 内尚未使用的结果目录")
     args = parser.parse_args()
+    if args.terminal_log is not None and (args.video is None or args.annotations is None):
+        parser.error("--terminal-log 需要同时指定 --video 和 --annotations")
     if args.live_model:
         load_env(ROOT / ".env")
     folder = (args.output or ROOT / "runtime/replay-verification" / time.strftime("%Y%m%d-%H%M%S")).resolve()
@@ -124,6 +137,11 @@ def main():
         parser.error("请选择 runtime/ 内尚未使用的输出目录")
     video = args.video or ROOT / "data/examples/实验操作回放.webm"
     annotations = json.loads(args.annotations.read_text(encoding="utf-8-sig")) if args.annotations else None
+    log_scores = None
+    if args.terminal_log is not None:
+        raw = args.terminal_log.read_text(encoding="utf-8-sig")
+        log_sources, _ = source_bundle({"configs": {args.terminal_log.name: raw}})
+        log_scores = score_events(inspect_history(log_sources), annotations, tolerance=None)
     service = Recordings(folder / "recordings")
     with video.open("rb") as stream:
         job = service.upload(stream, video.stat().st_size, video.name)
@@ -153,6 +171,9 @@ def main():
         scores = score_events(operations, annotations)
         (folder / "scores.json").write_text(json.dumps(scores, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(scores["summary"], ensure_ascii=False), flush=True)
+    if log_scores is not None:
+        (folder / "terminal-log-scores.json").write_text(json.dumps(log_scores, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps({"terminal_log": log_scores["summary"]}, ensure_ascii=False), flush=True)
     if args.live_model:
         app = MaterialService(folder / "sessions.sqlite3")
         response = app.invoke({"materials": materials, "question": "回溯录屏中的操作，解释关键错误步骤及怎样继续。",
