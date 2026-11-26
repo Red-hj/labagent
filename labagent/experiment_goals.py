@@ -8,13 +8,15 @@ from pathlib import Path
 import re
 
 from .connectivity import parse_ping_records
-from .runtime_parser import (FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW, parse_frr_routes,
-                             parse_linux_routes, parse_routes, select_route_records)
+from .runtime_parser import (FRR_NEIGHBOR_HEADER, FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
+                             OSPF_NEIGHBOR_STATES,
+                             parse_frr_neighbors, parse_frr_routes, parse_linux_routes, parse_neighbors,
+                             parse_routes, select_route_records)
 from .operation_history import TIME, prompt_info
 from .parser import area_id, interface_id, ospf_bindings, parse_config
 
 
-KINDS = ("reachability", "route_protocol", "config_contains", "config_absent", "ospf_interface_area")
+KINDS = ("reachability", "route_protocol", "config_contains", "config_absent", "ospf_interface_area", "ospf_neighbor")
 LABELS = {"passed": "已满足", "failed": "未满足", "needs_evidence": "待补充输出"}
 SECTION_NUMBER = r"(?:(?:[一二三四五六七八九十百]+[、．.]|\d+[、．.]\s+)\s*)?"
 DEVICE_SECTION = re.compile(r"^\s*" + SECTION_NUMBER + r"([A-Za-z][A-Za-z0-9_.-]*)\s*(?:的)?(?:相关|当前|最新)?\s*"
@@ -33,6 +35,16 @@ VRP_TABLE_COUNTS = re.compile(r"\s*Destinations\s*:\s*(\d{1,10})\s+Routes\s*:\s*
 ROUTE_EXCERPT = re.compile(r"节选|摘录|片段|截断|未显示|\b(?:excerpt|truncated|partial)\b|^\s*(?:\.{3,}|…+)|----\s*More\s*----", re.I | re.M)
 
 
+OSPF_NEIGHBOR_COMMAND = re.compile(r"(?:show ip ospf neighbor|display ospf(?:\s+\d+)? peer)", re.I)
+
+
+def neighbor_instruction_supports_goal(instruction, device, router_id, expected):
+    if not re.search(r"邻居|邻接|\b(?:neighbou?r|peer|adjacency)\b", instruction, re.I):
+        return False
+    return all(re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(value.strip()) + r"(?![A-Za-z0-9_.-])", instruction, re.I)
+               for value in (device, router_id, expected))
+
+
 def area_instruction_supports_goal(instruction, device, interface, expected):
     compact = re.sub(r"(?i)GigabitEthernet(?=\d)", "GE", re.sub(r"(?i)(GigabitEthernet|GE)\s+(?=\d)", r"\1", instruction))
     def names(value):
@@ -49,10 +61,12 @@ GOAL_TOOL = {"type": "function", "function": {
     "description": "从实验说明建立有原文依据的实验目标，并用实际材料检查。首次传goals；后续传空对象沿用全部目标。返回Ping、VRP/FRRouting/Linux路由来源、配置命令的检查状态。实验要求与恢复连通性分别核对。",
     "parameters": {"type": "object", "properties": {"goals": {"type": "array", "maxItems": 8, "items": {
         "type": "object", "properties": {
-            "id": {"type": "string"}, "title": {"type": "string"}, "kind": {"type": "string", "enum": list(KINDS)},
+            "id": {"type": "string"}, "title": {"type": "string"},
+            "kind": {"type": "string", "enum": list(KINDS),
+                     "description": "ospf_neighbor 核对运行邻居状态。device 为本机，target 为对端 Router ID，expected 为要求的状态，如 Full。"},
             "device": {"type": "string", "description": "从原文提取设备名；reachability可为空，其他类型必填。"},
-            "target": {"type": "string", "description": "reachability填目的IP；route_protocol填目的IP或网段；config类型填命令前缀；ospf_interface_area填接口名，每台设备一项。"},
-            "expected": {"type": "string", "description": "route_protocol填协议，如OSPF；ospf_interface_area填区域号，如0；其他类型填空字符串。"},
+            "target": {"type": "string", "description": "reachability填目的IP；route_protocol填目的IP或网段；config类型填命令前缀，ospf_interface_area填接口名，ospf_neighbor填对端Router ID。"},
+            "expected": {"type": "string", "description": "route_protocol填协议，ospf_interface_area填区域号，ospf_neighbor填目标状态。其他类型填空字符串。"},
             "instruction": {"type": "object", "properties": {"source_id": {"type": "string"}, "line": {"type": "integer"}, "quote": {"type": "string"}},
                             "required": ["source_id", "line", "quote"], "additionalProperties": False}},
         "required": ["id", "title", "kind", "device", "target", "expected", "instruction"], "additionalProperties": False}}},
@@ -181,6 +195,8 @@ def check_goals(criteria, sources, *, include_history=False):
             status, detail, evidence = _route(goal, matching)
         elif goal["kind"] == "ospf_interface_area":
             status, detail, evidence = _ospf_interface_area(goal, matching)
+        elif goal["kind"] == "ospf_neighbor":
+            status, detail, evidence = _ospf_neighbor(goal, matching)
         else:
             status, detail, evidence = _config(goal, matching)
         checks.append({"id": goal["id"], "title": goal["title"], "kind": goal["kind"],
@@ -261,7 +277,10 @@ def check_route_selection(device, target, blocks):
                         if (match := VRP_TABLE_SCOPE.fullmatch(line))]
         if vrp and public_table and (len(public_table) != 1 or public_table[0][1] not in {"public", "_public_"}):
             continue  # A named VPN table cannot establish the public forwarding choice.
-        linux = not frr and not vrp and (linux_command or not command and any(LINUX_ROUTE_ROW.fullmatch(line) for line in block["lines"]))
+        # A promptless FRRouting neighbor table also starts its data rows with IPs.
+        linux = not frr and not vrp and (linux_command or not command
+                and not any(FRR_NEIGHBOR_HEADER.fullmatch(line) for line in block["lines"])
+                and any(LINUX_ROUTE_ROW.fullmatch(line) for line in block["lines"]))
         if frr:
             header = next(i for i, line in enumerate(block["lines"], 1) if FRR_ROUTE_LEGEND.search(line))
         elif vrp:
@@ -498,6 +517,33 @@ def _ospf_interface_area(goal, blocks):
     return ("passed" if actual == expected else "failed"), f"{device} 的 {target} 为 OSPF Area {actual}；实验要求 Area {expected}。", refs
 
 
+def _ospf_neighbor(goal, blocks):
+    device, router_id, expected = goal["device"], goal["target"], goal["expected"].strip()
+    missing = f"补充 {device} 的 OSPF 邻居输出以核对 Router ID {router_id} 的状态。"
+    for block in reversed(blocks):
+        text = "\n".join(block["lines"])
+        peers = parse_frr_neighbors(text)
+        if peers is None:
+            peers = parse_neighbors(text)
+            if not peers and not OSPF_NEIGHBOR_COMMAND.fullmatch(" ".join(block["command"].split())):
+                continue
+        # Use the latest recognized output for this device. An older Full row
+        # cannot substitute for a target missing from the new capture.
+        matches = [peer for peer in peers if peer["router_id"] == router_id]
+        states = {peer["state"].casefold(): peer["state"] for peer in matches}
+        if not states:
+            break
+        evidence = [citation(block, number) for number in sorted({
+            peer[key] for peer in matches for key in ("line", "peer_line")
+        })]
+        if len(states) != 1 or not states.keys() <= OSPF_NEIGHBOR_STATES:
+            return "needs_evidence", f"{device} 的 Router ID {router_id} 状态不明确。{missing}", evidence
+        actual = next(iter(states.values()))
+        status = "passed" if actual.casefold() == expected.casefold() else "failed"
+        return status, f"{device} 的 OSPF 邻居 {router_id} 为 {actual}，要求为 {expected}。", evidence
+    return "needs_evidence", missing, []
+
+
 def goal_request(goal):
     if goal["kind"] == "reachability":
         information = f"ping {goal['target']} 的完整收发统计"
@@ -505,6 +551,8 @@ def goal_request(goal):
         information = f"display ip routing-table {goal['target'].split('/')[0]}"
     elif goal["kind"] == "ospf_interface_area":
         information = f"{goal['target']} 接口配置与 OSPF 区域设置"
+    elif goal["kind"] == "ospf_neighbor":
+        information = "OSPF 邻居表（FRRouting 用 show ip ospf neighbor，VRP 用 display ospf peer）"
     else:
         information = "display current-configuration"
     return {"device": goal["device"] or "源设备", "information": information,
@@ -524,7 +572,11 @@ def validate_goal_fields(goal):
         if goal["kind"] == "reachability" and "/" in goal["target"]:
             raise ValueError("Ping目标须为单个地址")
     if goal["kind"] != "reachability" and not goal["device"].strip():
-        raise ValueError("路由和配置目标须指定设备")
+        raise ValueError("该实验目标须指定设备")
+    if goal["kind"] == "ospf_neighbor":
+        ipaddress.IPv4Address(goal["target"])
+        if goal["expected"].strip().casefold() not in OSPF_NEIGHBOR_STATES:
+            raise ValueError("请填写有效的 OSPF 邻居目标状态，例如 Full")
     if goal["kind"] == "route_protocol" and not goal["expected"].strip():
         raise ValueError("请填写实验要求的路由协议")
     if goal["kind"] == "ospf_interface_area":

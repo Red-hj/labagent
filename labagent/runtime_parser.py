@@ -17,9 +17,29 @@ LINUX_ROUTE_ROW = re.compile(r"\s*(default|\d+(?:\.\d+){3}(?:/\d+)?)\s+(.+)")
 LINUX_PROTOCOLS = dict(kernel="Direct", static="Static", boot="Boot", ospf="OSPF", bgp="BGP", rip="RIP", isis="ISIS", dhcp="DHCP")
 
 
+OSPF_NEIGHBOR_STATES = frozenset(("down", "attempt", "init", "2-way", "exstart", "exchange", "loading", "full"))
+FRR_NEIGHBOR_HEADER = re.compile(r"\s*Neighbor\s+ID\s+Pri\s+State\s+.*\bAddress\s+Interface\b.*", re.I)
+FRR_NEIGHBOR_ROW = re.compile(r"\s*(\d+(?:\.\d+){3})\s+\d+\s+([\w-]+)(?:/\S+)?"
+                             r"\s+(?:\S+\s+){1,2}\d+(?:\.\d+){3}\s+\S+(?:\s+.*)?", re.I)
+
+
+def parse_frr_neighbors(text):
+    """Return rows for the last recognized FRRouting neighbor table, even if empty."""
+    lines = text.splitlines()
+    header = next((index for index in range(len(lines) - 1, -1, -1)
+                   if FRR_NEIGHBOR_HEADER.fullmatch(lines[index])), None)
+    if header is None:
+        return None
+    rows = []
+    for number, line in enumerate(lines[header + 1:], header + 2):
+        if match := FRR_NEIGHBOR_ROW.fullmatch(line):
+            rows.append({"router_id": match[1], "state": match[2], "line": number, "peer_line": number})
+    return rows
+
+
 def parse_neighbors(text):
     records = []
-    local_ip = peer = None
+    local_ip = peer = router_id = None
     peer_line = None
     for number, line in enumerate(text.splitlines(), 1):
         match = re.search(r"Area\s+[\d.]+\s+interface\s+([\d.]+)", line, re.I)
@@ -28,11 +48,12 @@ def parse_neighbors(text):
             peer = None
         match = re.search(r"Router ID:\s*([\d.]+)\s+Address:\s*([\d.]+)", line, re.I)
         if match:
-            peer = match[2]
+            router_id, peer = match[1], match[2]
             peer_line = number
-        match = re.search(r"\bState:\s*(\w+)", line, re.I)
+        match = re.search(r"\bState:\s*([\w-]+)", line, re.I)
         if match and local_ip and peer:
-            records.append({"local_ip": local_ip, "peer_ip": peer, "state": match[1], "line": number, "peer_line": peer_line})
+            records.append({"local_ip": local_ip, "peer_ip": peer, "router_id": router_id,
+                            "state": match[1], "line": number, "peer_line": peer_line})
             peer = None
     return records
 

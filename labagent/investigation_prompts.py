@@ -32,7 +32,9 @@ COMMON = (
     "广播或NBMA网络上两个DROther之间正常停在2-Way，不应一律判故障或要求改成点到点。"
     "判断是否应到Full需结合接口网络类型以及本地和邻居的DR/BDR角色；缺这些输出先说明条件。"
     "点到点链路及涉及DR/BDR的邻居应建立邻接，持续停在2-Way时再结合后续协商、事件和实际输出排查，"
-    "不能仅凭2-Way断言区域失配或Hello不通。",
+    "不能仅凭2-Way断言区域失配或Hello不通。"
+    "实验原文明确要求某个 OSPF 邻居达到指定状态时，用check_experiment_goals的ospf_neighbor核对。"
+    "device填本机设备，target填对端Router ID，expected填目标状态（如Full）。",
     "read_source的configuration_coverage说明配置覆盖范围，range_complete只表示读完所求行。"
     "partial_or_unconfirmed或未读全时，未见命令不代表缺失。已有失败现象不用重复采集，修改后再取新输出复测。",
     "查询当前路由、来源协议或下一跳时，用check_route_selection按设备和实际目标核对。"
