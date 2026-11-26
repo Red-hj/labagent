@@ -155,6 +155,26 @@ class OperationHistoryTests(unittest.TestCase):
             self.assertIn("接口视图", report)
             self.assertEqual(restored["attempts"][0]["result"]["operation_history"]["error_count"], 1)
 
+    def test_report_distinguishes_recordings_with_the_same_timestamp(self):
+        materials = {
+            "启动 | A-录屏识别.log": "录屏识别\n[00:02.500] R1# show ip ospf neighbor\n[00:02.500] R1#",
+            "重试 | B-录屏识别.log": ("[00:02.500] R2# router ospf\n[00:02.501] % Unknown command: router ospf\n"
+                                    "[00:04.500] R2# configure terminal\n"
+                                    "[00:06.500] R2(config)# router ospf\n[00:06.500] R2(config-router)#"),
+            "复测.log": "PC1# ping 192.168.20.10\nPC1#",
+        }
+        payload = {"diagnostic_mode": "open_network", "configs": materials, "question": "排查操作", "use_llm": False}
+        result = investigate(payload)
+        report = generate_report({"session_id": "test", "attempts": [
+            {"created_at": "2026-11-26T08:00:00+08:00", "input": payload, "result": result}],
+                                  "learning_record": {"config_revisions": 0}})
+        self.assertIn(r"| 00:02.5 | R1 / 用户视图 | show ip ospf neighbor | 终端已返回 | 启动 \| A-录屏识别.log 第2行 |", report)
+        self.assertIn(r"| 00:02.5 | R2 / 用户视图 | router ospf | 报错后已重新输入 | 重试 \| B-录屏识别.log 第1行 |", report)
+        self.assertIn("| 无时间戳 | PC1 / 用户视图 | ping 192.168.20.10 | 终端已返回 | 复测.log 第1行 |", report)
+        self.assertIn("关键操作：00:02.5 · R2 · 用户视图\n\n重试 " + r"\| B-录屏识别.log 第1行", report)
+        self.assertIn(r"重试位置：00:06.5 · 重试 \| B-录屏识别.log 第4行", report)
+        self.assertIn(r"- 重试 \| B-录屏识别.log 第2行：[00:02.501] % Unknown command: router ospf", report)
+
     def test_plain_logs_keep_line_locations_without_fabricating_video_time(self):
         result = inspect_history(sources("[R2]network 10.2.2.2 0.0.0.0\nError: Unrecognized command"))
         self.assertIsNone(result["events"][0]["seconds"])

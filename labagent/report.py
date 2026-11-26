@@ -2,12 +2,17 @@
 from datetime import datetime, timezone, timedelta
 from .session_state import STATUS_LABELS, RESOLVED_STATUSES, experiment_goal
 from .experiment_goals import LABELS
+from .operation_history import time_label
 
 STATUS = {"fault_found": "发现问题，等待修正", "needs_information": "证据不足，等待补充", "awaiting_verification": "配置检查通过，等待运行复测", "verified_from_observations": "用户提交的运行观测通过"}
 
 
 def clean(value):
     return str(value).replace("\r", " ").replace("\n", " ").replace("|", "\\|")
+
+
+def _operation_location(event):
+    return f"{clean(event['material'])} 第{event['line']}行"
 
 
 def generate_report(history):
@@ -137,15 +142,19 @@ def generate_open_report(history):
                 rows += ["", clean(phase["title"]) + " · " + clean(change["device"]), "", "```diff", change["diff"], "```"]
     operations = result.get("operation_history", {})
     if operations.get("events"):
-        focus = next((event for event in operations["events"] if event["id"] == operations.get("focus_id")), None)
+        by_id = {event["id"]: event for event in operations["events"]}
+        focus = by_id.get(operations.get("focus_id") or operations.get("first_issue_id"))
         rows += ["", "## 实验过程回溯", "", f"识别{operations['event_count']}步操作、{operations['error_count']}处报错。"]
         if focus:
-            rows += ["", f"关键操作：{clean(focus['time_label'])} · {clean(focus['device'])} · {clean(focus['view_label'])}",
-                     "", clean(focus["command"]), "", clean(focus["explanation"])]
-        rows += ["", "| 时间 | 设备与视图 | 操作 | 终端结果 |", "| --- | --- | --- | --- |"]
+            rows += ["", f"关键操作：{time_label(focus['seconds'], precise=True)} · {clean(focus['device'])} · {clean(focus['view_label'])}",
+                     "", _operation_location(focus), "", clean(focus["command"]), "", clean(focus["explanation"])]
+            if retry := by_id.get(focus.get("retry_event_id")):
+                rows += ["", f"重试位置：{time_label(retry['seconds'], precise=True)} · {_operation_location(retry)}"]
+        rows += ["", "| 时间 | 设备与视图 | 操作 | 终端结果 | 材料与原文行 |", "| --- | --- | --- | --- | --- |"]
         for event in operations["events"]:
             state = "报错后已重新输入" if event["recovered"] else {"issued": "命令已输入", "returned": "终端已返回", "error": "命令报错"}[event["status"]]
-            rows.append(f"| {clean(event['time_label'])} | {clean(event['device'])} / {clean(event['view_label'])} | {clean(event['command'])} | {state} |")
+            stamp = time_label(event["seconds"], precise=True)
+            rows.append(f"| {stamp} | {clean(event['device'])} / {clean(event['view_label'])} | {clean(event['command'])} | {state} | {_operation_location(event)} |")
         for event in operations["events"]:
             if event["status"] == "error":
                 rows.append("")
