@@ -1,0 +1,156 @@
+{
+  "room": "35816df408fb479398903006edd60dfb",
+  "session": "2039f068d5fb4e71aaa24b809f000689",
+  "attempts": 2,
+  "first_status": "needs_information",
+  "final_status": "verified_from_observations",
+  "checks": [
+    {
+      "id": "G1",
+      "title": "PC1必须Ping通192.168.20.10。",
+      "kind": "reachability",
+      "device": "PC1",
+      "target": "192.168.20.10",
+      "expected": "",
+      "status": "passed",
+      "detail": "到192.168.20.10的Ping全部通过。",
+      "evidence": [
+        {
+          "source_id": "config:1",
+          "device": "PC1-run.log",
+          "line": 8,
+          "quote": "PING 192.168.20.10 (192.168.20.10) 56(84) bytes of data."
+        },
+        {
+          "source_id": "config:1",
+          "device": "PC1-run.log",
+          "line": 15,
+          "quote": "--- 192.168.20.10 ping statistics ---"
+        },
+        {
+          "source_id": "config:1",
+          "device": "PC1-run.log",
+          "line": 16,
+          "quote": "5 packets transmitted, 5 received, 0% packet loss, time 802ms"
+        }
+      ],
+      "instruction": {
+        "source_id": "config:6",
+        "line": 1,
+        "quote": "PC1必须Ping通192.168.20.10。",
+        "device": "验证要求.txt"
+      },
+      "request": {
+        "device": "PC1",
+        "information": "ping 192.168.20.10 的完整收发统计",
+        "why": "核对实验要求：PC1必须Ping通192.168.20.10。"
+      }
+    },
+    {
+      "id": "G2",
+      "title": "PC2必须Ping通192.168.10.10。",
+      "kind": "reachability",
+      "device": "PC2",
+      "target": "192.168.10.10",
+      "expected": "",
+      "status": "passed",
+      "detail": "到192.168.10.10的Ping全部通过。",
+      "evidence": [
+        {
+          "source_id": "config:2",
+          "device": "PC2-run.log",
+          "line": 8,
+          "quote": "PING 192.168.10.10 (192.168.10.10) 56(84) bytes of data."
+        },
+        {
+          "source_id": "config:2",
+          "device": "PC2-run.log",
+          "line": 15,
+          "quote": "--- 192.168.10.10 ping statistics ---"
+        },
+        {
+          "source_id": "config:2",
+          "device": "PC2-run.log",
+          "line": 16,
+          "quote": "5 packets transmitted, 5 received, 0% packet loss, time 806ms"
+        }
+      ],
+      "instruction": {
+        "source_id": "config:6",
+        "line": 2,
+        "quote": "PC2必须Ping通192.168.10.10。",
+        "device": "验证要求.txt"
+      },
+      "request": {
+        "device": "PC2",
+        "information": "ping 192.168.10.10 的完整收发统计",
+        "why": "核对实验要求：PC2必须Ping通192.168.10.10。"
+      }
+    },
+    {
+      "id": "G3",
+      "title": "R1到192.168.20.0/24必须使用OSPF路由。",
+      "kind": "route_protocol",
+      "device": "R1",
+      "target": "192.168.20.0/24",
+      "expected": "OSPF",
+      "status": "passed",
+      "detail": "R1 到 192.168.20.0/24 的路由表匹配项为 192.168.20.0/24 OSPF 经 10.12.0.2，出接口 transit。 实验要求OSPF。",
+      "evidence": [
+        {
+          "source_id": "config:3",
+          "device": "R1-run.log",
+          "line": 8,
+          "quote": "192.168.20.0/24 nhid 11 via 10.12.0.2 dev transit proto ospf metric 20"
+        }
+      ],
+      "instruction": {
+        "source_id": "config:6",
+        "line": 3,
+        "quote": "R1到192.168.20.0/24必须使用OSPF路由。",
+        "device": "验证要求.txt"
+      },
+      "request": {
+        "device": "R1",
+        "information": "display ip routing-table 192.168.20.0",
+        "why": "核对实验要求：R1到192.168.20.0/24必须使用OSPF路由。"
+      }
+    },
+    {
+      "id": "G4",
+      "title": "R2到192.168.10.0/24必须使用OSPF路由。",
+      "kind": "route_protocol",
+      "device": "R2",
+      "target": "192.168.10.0/24",
+      "expected": "OSPF",
+      "status": "passed",
+      "detail": "R2 到 192.168.10.0/24 的路由表匹配项为 192.168.10.0/24 OSPF 经 10.12.0.1，出接口 transit。 实验要求OSPF。",
+      "evidence": [
+        {
+          "source_id": "config:4",
+          "device": "R2-run.log",
+          "line": 7,
+          "quote": "192.168.10.0/24 nhid 12 via 10.12.0.1 dev transit proto ospf metric 20"
+        }
+      ],
+      "instruction": {
+        "source_id": "config:6",
+        "line": 4,
+        "quote": "R2到192.168.10.0/24必须使用OSPF路由。",
+        "device": "验证要求.txt"
+      },
+      "request": {
+        "device": "R2",
+        "information": "display ip routing-table 192.168.10.0",
+        "why": "核对实验要求：R2到192.168.10.0/24必须使用OSPF路由。"
+      }
+    }
+  ],
+  "map": [
+    "failed",
+    "passed"
+  ],
+  "material_count": 6,
+  "task_assignee": "验收成员乙",
+  "task_completed": true
+}
