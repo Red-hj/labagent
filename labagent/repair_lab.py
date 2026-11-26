@@ -5,6 +5,7 @@ import json
 import re
 
 from .connectivity import parse_ping_records
+from .runtime_parser import parse_linux_routes, select_route_records
 
 RUN_KIND = "labagent_repair_run"
 REPAIR_TOOL = {"type":"function", "function": {"name":"compare_repair_candidates",
@@ -29,6 +30,39 @@ def interface_admin_up(output, name):
     return "UP" in matches[0].split(",")
 
 
+def _route_protocol(goal, observed):
+    target = goal["target"]
+    expected = goal["expected"].lower()
+    has_linux_table = "kernel_route_output" in observed
+    network = ipaddress.ip_network(target, strict=False) if "/" in target and has_linux_table else None
+    routes = observed["routes"].get(str(network), []) if network is not None else route_to(observed["routes"], target)
+    installed = [row for row in routes if row.get("selected") and row.get("installed")]
+    protocols = {str(row.get("protocol", "")).lower() for row in installed}
+    passed = protocols == {expected}
+    source = "、".join(sorted(protocols)) or "目标路由尚未安装"
+    evidence = observed.get("route_output") or json.dumps(routes, ensure_ascii=False)
+    if not has_linux_table:
+        return passed, "实际路由来源：" + source, evidence
+
+    raw = observed["kernel_route_output"]
+    if not isinstance(raw, str):
+        raise ValueError("Linux 主路由表需要命令原文")
+    try:
+        kernel_rows = parse_linux_routes(raw)
+    except ValueError:
+        kernel_rows = None
+    lookup = network if network is not None else ipaddress.IPv4Address(target)
+    chosen = select_route_records(kernel_rows, lookup, lowest_metric=True)
+    kernel_protocols = {row["protocol"].lower() for row in chosen}
+    if kernel_rows is None:
+        kernel = "输出无法核验"
+    else:
+        kernel = "、".join(sorted(kernel_protocols)) or "目标路由未匹配"
+    detail = f"FRRouting 路由来源：{source}。Linux 主路由表：{kernel}。"
+    evidence = f"FRRouting\n{evidence.strip()}\n\nLinux 主路由表\n{raw.strip()}"
+    return passed and kernel_protocols == {expected}, detail, evidence
+
+
 def evaluate_phase(goals, phase):
     checks = []
     observations = phase["observations"]
@@ -43,12 +77,7 @@ def evaluate_phase(goals, phase):
             detail = f"{goal['device']} → {goal['target']}：" + (f"{records[-1]['sent']}发{records[-1]['received']}收" if records else failure)
             evidence = output
         elif kind == "route_protocol":
-            routes = route_to(observed["routes"], goal["target"])
-            installed = [row for row in routes if row.get("selected") and row.get("installed")]
-            protocols = sorted({str(row.get("protocol", "")).lower() for row in installed})
-            passed = bool(protocols) and all(protocol == goal["expected"].lower() for protocol in protocols)
-            detail = "实际路由来源：" + ("、".join(protocols) or "目标路由尚未安装")
-            evidence = observed.get("route_output") or json.dumps(routes, ensure_ascii=False)
+            passed, detail, evidence = _route_protocol(goal, observed)
         elif kind == "ospf_neighbor":
             neighbors = observed["neighbors"]["neighbors"]
             rows = neighbors.get(goal["target"], [])

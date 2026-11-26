@@ -86,6 +86,108 @@ class RepairLabTests(unittest.TestCase):
             self.assertIn("static", checks[f"route_{router}"]["detail"])
             self.assertIn("S>*", checks[f"route_{router}"]["evidence"])
 
+    def test_measured_partial_repair_stays_incomplete_until_full_retest_is_uploaded(self):
+        root = Path(__file__).resolve().parents[1]
+        path = root / 'data/examples/frr_lab02_partial.json'
+        run = json.loads(path.read_text(encoding='utf-8'))
+        result = compare_run(run)
+        fault, partial, restored = result['phases']
+        self.assertEqual([phase['passed_count'] for phase in (fault, partial, restored)], [0, 2, 8])
+        self.assertEqual({row['id'] for row in partial['checks'] if row['passed']}, {'R1-direct-ping', 'R2_transit_admin'})
+        self.assertEqual(partial['status'], 'incomplete')
+        self.assertEqual(result['recommended'], 'restore')
+        self.assertIn('ip link set dev transit up', restored['commands']['R2'])
+
+        temp_root = root / 'runtime/tests'
+        temp_root.mkdir(parents=True, exist_ok=True)
+        model_settings = {"LABAGENT_LLM_URL": "https://model.invalid", "LABAGENT_LLM_MODEL": "test",
+                          "LABAGENT_LLM_KEY": "test-value"}
+        with tempfile.TemporaryDirectory(dir=temp_root) as folder, patch.dict(os.environ, model_settings):
+            service = MaterialService(Path(folder) / 'partial-repair.sqlite3',
+                                      lambda messages, **kwargs: {"content": "未经工具验算的回复"})
+            name = 'FRR-分步修复.json'
+            first = service.invoke({
+                'materials': {name: json.dumps({**run, 'phases': run['phases'][:2]}, ensure_ascii=False)},
+                'question': '核对只启用接口后的目标。',
+            })
+            self.assertEqual(first['status'], 'success')
+            self.assertEqual(first['result']['llm']['status'], 'no_evidence')
+            self.assertIn('2/8', first['reply'])
+            self.assertIn('尚未满足全部实验目标', first['reply'])
+            self.assertIsNone(first['result']['repair_comparisons'][0]['recommended'])
+            second = service.invoke({
+                'session_id': first['session_id'], 'materials': {name: path.read_text(encoding='utf-8')},
+                'action': 'verify', 'message': '已补采完整修复结果，请核对。',
+            })
+            self.assertEqual(second['session_id'], first['session_id'])
+            self.assertEqual(second['status'], 'success')
+            self.assertEqual(second['result']['llm']['status'], 'no_evidence')
+            self.assertEqual(second['result']['status'], 'comparison_complete')
+            self.assertIn('8/8', second['reply'])
+            self.assertEqual(second['result']['repair_comparisons'][0]['recommended'], 'restore')
+            if second['result']['workflow']['backend'] == 'langgraph':
+                self.assertEqual(len(second['result']['conversation']), 2)
+            report = generate_report(service.store.history(first['session_id']))
+            self.assertIn('2/8', report)
+            self.assertIn('8/8', report)
+            self.assertIn('FRRouting 10.2.2', report)
+
+            updated = deepcopy(run)
+            updated['phases'][-1]['observations']['R1']['kernel_route_output'] += (
+                '\n192.168.20.0/24 via 10.12.0.2 dev transit proto static metric 10\n'
+            )
+            third = service.invoke({
+                'session_id': first['session_id'], 'materials': {name: json.dumps(updated, ensure_ascii=False)},
+                'action': 'verify', 'message': '本轮补交的 R1 主路由表显示静态路由，请重新核对。',
+            })
+            self.assertEqual(third['session_id'], first['session_id'])
+            self.assertIn('7/8', third['reply'])
+            self.assertIn('Linux 主路由表：static', third['reply'])
+            self.assertIn('尚未满足全部实验目标', third['reply'])
+            self.assertIsNone(third['result']['repair_comparisons'][0]['recommended'])
+            latest_report = generate_report(service.store.history(first['session_id']))
+            self.assertIn('Linux 主路由表：static', latest_report)
+            self.assertNotIn('满足全部实验目标的方案：', latest_report)
+
+    def test_route_goal_checks_kernel_prefix_metric_and_complete_output(self):
+        path = Path(__file__).resolve().parents[1] / 'data/examples/frr_lab02_partial.json'
+        run = json.loads(path.read_text(encoding='utf-8'))
+        router = run['phases'][-1]['observations']['R1']
+        original = router['kernel_route_output']
+        prefix = '192.168.20.0/24'
+        local = '\n'.join(line for line in original.splitlines() if not line.startswith(prefix))
+        route = next(line for line in original.splitlines() if line.startswith(prefix))
+        cases = {
+            'missing': (local, '目标路由未匹配'),
+            'narrower subnet': (local + '\n' + route.replace('/24', '/25', 1), '目标路由未匹配'),
+            'preferred static route': (original + '\n192.168.20.0/24 via 10.12.0.2 dev transit proto static metric 10', 'static'),
+            'malformed table': (original + '\nRTNETLINK answers: Permission denied', '输出无法核验'),
+            'unknown protocol': (original.replace('proto ospf', 'proto 188'), '188'),
+        }
+        for label, (linux_output, expected) in cases.items():
+            with self.subTest(label=label):
+                router['kernel_route_output'] = linux_output
+                result = compare_run(run)
+                self.assertEqual([phase['passed_count'] for phase in result['phases']], [0, 2, 7])
+                self.assertIsNone(result['recommended'])
+                check = next(row for row in result['phases'][-1]['checks'] if row['id'] == 'route_R1')
+                self.assertIn('FRRouting 路由来源：ospf', check['detail'])
+                self.assertIn('Linux 主路由表：' + expected, check['detail'])
+                self.assertIn(linux_output.strip(), check['evidence'])
+
+        router['kernel_route_output'] = original
+        router['routes'][prefix][0]['protocol'] = 'static'
+        result = compare_run(run)
+        self.assertEqual(result['phases'][-1]['passed_count'], 7)
+        self.assertIsNone(result['recommended'])
+
+    def test_mixed_materials_keep_the_open_diagnosis_response(self):
+        payload = {'configs': {'实测.json': json.dumps(recording()), '拓扑说明.txt': 'PC1 接 R1。'},
+                   'question': '检查拓扑和实验记录。', 'use_llm': False}
+        result = investigate(payload)
+        self.assertTrue(result['repair_comparisons'])
+        self.assertNotEqual(result['status'], 'comparison_complete')
+
     def test_changed_devices_addresses_and_fault_location_reuse_the_evaluator(self):
         path=Path(__file__).resolve().parents[1]/"data/examples/frr_repair_variant.json"
         record=json.loads(path.read_text(encoding="utf-8"));result=compare_run(record)

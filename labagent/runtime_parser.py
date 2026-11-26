@@ -134,6 +134,23 @@ def parse_linux_routes(text):
     return records
 
 
+def select_route_records(rows, target, *, lowest_metric=False):
+    """Use an exact destination for a network and longest match for a host."""
+    matches = []
+    for row in rows or []:
+        prefix = ipaddress.IPv4Network(row["network"])
+        if (prefix == target if isinstance(target, ipaddress.IPv4Network) else target in prefix):
+            matches.append((prefix.prefixlen, row))
+    if not matches:
+        return []
+    longest = max(length for length, _ in matches)
+    chosen = [row for length, row in matches if length == longest]
+    if lowest_metric:
+        metric = min(row["metric"] for row in chosen)
+        chosen = [row for row in chosen if row["metric"] == metric]
+    return chosen
+
+
 def normalize_outputs(payload):
     """Only use outputs explicitly tied to this configuration fingerprint."""
     prepared = deepcopy(payload)

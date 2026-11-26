@@ -783,11 +783,35 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
         return {"status": "unavailable", "error_code": "invalid_response", "message": "开放排查未完成，材料和已有工具记录已保留。", **info()}
 
 
+def _repair_comparison_reply(comparisons):
+    sections = []
+    for comparison in comparisons:
+        stages = []
+        for phase in comparison["phases"]:
+            text = f'「{safe_line(str(phase["title"]))}」通过 {phase["passed_count"]}/{phase["total"]} 项。'
+            if 0 < phase["passed_count"] < phase["total"]:
+                if phase["passed_count"] <= phase["total"] - phase["passed_count"]:
+                    passed = "、".join(safe_line(str(check["title"])) for check in phase["checks"] if check["passed"])
+                    text += f"通过项目为 {passed}。"
+                else:
+                    pending = "、".join(f'{safe_line(str(check["title"]))}（{safe_line(check["detail"]).rstrip("。")}）'
+                                       for check in phase["checks"] if not check["passed"])
+                    text += f"待达标项目为 {pending}。"
+            stages.append(text)
+        recommended = next((phase for phase in comparison["phases"] if phase["id"] == comparison["recommended"]), None)
+        conclusion = (f'「{safe_line(str(recommended["title"]))}」满足全部实验目标。'
+                      if recommended else "本次提交的阶段尚未满足全部实验目标。")
+        sections.append("".join(stages) + conclusion)
+    return "\n\n".join(sections)
+
+
 def investigate(payload, previous=None, completion=None, *, conversation=None, previous_materials=None, goal_checks=True, lab_tools=None):
     from .engine import fingerprint
     validate_open(payload)
     sources, warnings = source_bundle(payload, conversation, previous_materials=previous_materials)
     comparisons = discover_runs(sources)
+    valid_run_comparison = (bool(comparisons) and all(not item.get("error") for item in comparisons)
+                            and all(source["kind"] in {"repair_run", "user_question", "user_message"} for source in sources.values()))
     operations = inspect_history(sources)
     if operations["event_count"]:
         emit_progress("timeline", f"已还原{operations['event_count']}步终端操作，正在核对关键时间点。")
@@ -795,6 +819,12 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
     model = run_investigator(payload, sources, previous, completion, conversation=conversation,
                              previous_materials=previous_materials, goal_checks=goal_checks, lab_tools=lab_tools)
     analysis = model.pop("investigation", {})
+    comparison_reply = (valid_run_comparison and not payload.get("learning")
+                        and model.get("status") not in {"ok", "cancelled"})
+    if comparison_reply:
+        reply = _repair_comparison_reply(comparisons)
+        analysis = {"summary": reply, "reply": reply, "hypotheses": [], "evidence_requests": [],
+                    "outcome": "investigating"}
     if model.get("status") == "cancelled":
         analysis = {"summary": "已停止本轮检查。", "reply": model["message"], "hypotheses": [],
                     "evidence_requests": [], "outcome": "investigating"}
@@ -818,14 +848,14 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
                                if tool["tool"] == "check_submitted_pings" and tool["status"] == "ok" for row in tool["result"]["pings"])
         goal_pending = analysis.get("goal_assessment", {}).get("checks", [])
         goal_failure = any(item["status"] == "failed" for item in goal_pending)
-        if not payload.get("learning") and previous_closed and same_materials and not current_failure and not goal_failure and analysis.get("outcome") not in RESOLVED_OUTCOMES and analysis.get("outcome") != "goals_pending":
+        if not comparison_reply and not payload.get("learning") and previous_closed and same_materials and not current_failure and not goal_failure and analysis.get("outcome") not in RESOLVED_OUTCOMES and analysis.get("outcome") != "goals_pending":
             analysis["outcome"] = previous["outcome"]
             analysis["verification"] = previous["verification"]
         closed = analysis.get("outcome") in RESOLVED_OUTCOMES
         if closed:
             analysis["hypotheses"], analysis["evidence_requests"] = [], []
         pending = analysis.get("evidence_requests", [])
-        if not closed and not pending and payload.get("interaction", {}).get("type") in ("ask", "repair"):
+        if not comparison_reply and not closed and not pending and payload.get("interaction", {}).get("type") in ("ask", "repair"):
             pending = (previous or {}).get("pending_requests", (previous or {}).get("evidence_requests", []))
         analysis["pending_requests"] = pending
         analysis["experiment_goal"] = ((previous or {}).get("experiment_goal") or
@@ -845,13 +875,14 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
                 knowledge[document.get("chunk_id", document.get("id"))] = document
             warnings.extend(item["result"].get("warnings", []))
     requests = [f"{item['device']}：{item['information']}（{item['why']}）" for item in analysis.get("pending_requests", [])]
-    if not requests and model.get("status") not in ("ok", "cancelled") and analysis.get("outcome") not in RESOLVED_OUTCOMES:
+    if (not requests and not comparison_reply and model.get("status") not in ("ok", "cancelled")
+            and analysis.get("outcome") not in RESOLVED_OUTCOMES):
         requests = ["请启用可用模型或补充当前材料后继续开放排查。"]
     if model.get("status") == "ok":
         model["text"] = analysis["summary"]
     if analysis or (previous or {}).get("experiment_state"):
         analysis["experiment_state"] = summarize_experiment(previous, payload, sources, analysis, previous_materials,
-                                                           succeeded=model.get("status") == "ok")
+                                                           succeeded=model.get("status") == "ok" or bool(comparison_reply))
     interaction_checks = {item["tool"]: item["result"] for item in model["tool_trace"] if item["status"] == "ok" and item["tool"] in ("compare_materials", "check_submitted_pings")}
     route_lookups = {(item["result"]["device"].casefold(), item["result"]["target"]): item["result"] for item in model["tool_trace"]
                      if item["status"] == "ok" and item["tool"] == "check_route_selection"}
@@ -865,8 +896,7 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
         interaction_checks.pop("check_submitted_pings", None)
         interaction_checks["user_report"] = analysis["verification"]
     status = "cancelled" if model.get("status") == "cancelled" else "verified_from_observations" if passed else "resolved_by_user_report" if reported else "goals_pending" if analysis.get("outcome") == "goals_pending" else "needs_information"
-    only_runs = comparisons and all(source["kind"] in {"repair_run", "user_question", "user_message"} for source in sources.values())
-    if only_runs and all(not item.get("error") for item in comparisons) and model.get("status") == "ok" and not requests:
+    if valid_run_comparison and (comparison_reply or model.get("status") == "ok" and not requests):
         status = "comparison_complete"
     return {"schema_version": "1.0", "mode": "open_network", "experiment": "开放网络排查", "created_at": datetime.now(timezone.utc).isoformat(),
             "collected_materials": {source["device"]: source["text"] for source in sources.values() if source.get("collected")},

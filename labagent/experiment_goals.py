@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 
 from .connectivity import parse_ping_records
-from .runtime_parser import FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW, parse_frr_routes, parse_linux_routes, parse_routes
+from .runtime_parser import (FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW, parse_frr_routes,
+                             parse_linux_routes, parse_routes, select_route_records)
 from .operation_history import TIME, prompt_info
 from .parser import area_id, interface_id, ospf_bindings, parse_config
 
@@ -286,12 +287,8 @@ def check_route_selection(device, target, blocks):
         complete = (command == "display ip routing-table" and len(public_table) == 1 and len(counts) == 1
                     and all_rows is not None and not ROUTE_EXCERPT.search(text) and not ROUTE_EXCERPT.search(block["material"])
                     and counts[0][1:] == (len({row["network"] for row in all_rows}), len(all_rows)))
-        matches = []
-        for row in rows or []:
-            prefix = ipaddress.IPv4Network(row["network"])
-            if (network == prefix if network else address in prefix):
-                matches.append((prefix.prefixlen, row))
-        if not matches:
+        chosen = select_route_records(rows, network if network is not None else address, lowest_metric=linux)
+        if not chosen:
             result["evidence"] = [citation(block, header)]
             if complete:
                 subject = f"没有匹配精确网段 {target} 的已安装路由" if network else f"没有可用于转发到 {target} 的已安装路由，包括默认路由"
@@ -299,11 +296,6 @@ def check_route_selection(device, target, blocks):
                         "evidence": [citation(block, i) for i in sorted({1, header, public_table[0][0], counts[0][0]})],
                         "detail": f"{device} 当前完整公用 IPv4 路由表中，{subject}。"}
             break
-        longest = max(length for length, _ in matches)
-        chosen = [row for length, row in matches if length == longest]
-        if linux:
-            metric = min(row["metric"] for row in chosen)
-            chosen = [row for row in chosen if row["metric"] == metric]
         routes = [{key: row[key] for key in ("network", "protocol", "next_hop", "interface")} for row in chosen]
         summary = "、".join(dict.fromkeys(f"{route['network']} {route['protocol'].upper()}"
                            + (f" 经 {route['next_hop']}" if route["next_hop"] else "")
