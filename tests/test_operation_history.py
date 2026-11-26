@@ -130,6 +130,23 @@ class OperationHistoryTests(unittest.TestCase):
             for citation in event["evidence"] + event["response_evidence"]:
                 self.assertEqual(current[citation["source_id"]]["lines"][citation["line"] - 1], citation["quote"])
 
+    def test_history_tool_preserves_a_retry_when_later_operations_fill_the_summary(self):
+        logs = {
+            "重试录像.log": ("[00:02.500] R2# router ospf\n% Unknown command: router ospf\n"
+                            "[00:06.500] R2(config)# router ospf\nR2(config-router)#"),
+            "后续录像.log": "\n".join(f"R1# show ip route {index}" for index in range(15)),
+        }
+        payload = {"configs": logs, "question": "回溯报错与后续重试"}
+        current, _ = source_bundle(payload)
+        summary, _ = execute_tool("inspect_operation_timeline", {}, payload, current, set())
+        error, retry, *recent = summary["events"]
+        self.assertEqual(error["retry_event_id"], retry["id"])
+        self.assertEqual((error["seconds"], retry["seconds"]), (2.5, 6.5))
+        self.assertEqual(retry["evidence"][0]["quote"], "[00:06.500] R2(config)# router ospf")
+        self.assertEqual(retry["status"], "returned")
+        self.assertEqual([event["command"] for event in recent], [f"show ip route {i}" for i in range(4, 15)])
+        self.assertEqual(len({event["id"] for event in summary["events"]}), 13)
+
     def test_history_tool_registers_evidence_and_focus_requires_a_real_event(self):
         payload = {"configs": {"操作.log": example()}, "question": "排查操作"}
         current, _ = source_bundle(payload); seen, context = set(), {}

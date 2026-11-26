@@ -147,9 +147,13 @@ HISTORY_TOOL = {"type": "function", "function": {"name": "inspect_operation_time
 
 
 def model_history(history):
-    important = [event for event in history["events"] if event["status"] == "error"]
-    ids = {event["id"] for event in important}
-    selected = important[:8] + [event for event in history["events"] if event["id"] not in ids][-12:]
+    events = history["events"]
+    errors = [event for event in events if event["status"] == "error"][:8]
+    retry_ids = {event["retry_event_id"] for event in errors if event.get("retry_event_id")}
+    retries = [event for event in events if event["id"] in retry_ids]
+    other_operations = [event for event in events if event["status"] != "error" and event["id"] not in retry_ids]
+    recent_limit = 12 - len(retries)
+    selected = errors + retries + other_operations[-recent_limit:]
     notes = []
     if any(re.match(r"(?:undo\s+)?network\s+", event["command"], re.I) for event in history["events"]):
         notes.append("OSPF network的地址与反掩码用于匹配参与OSPF的接口。0.0.0.0表示精确匹配接口主IP，通告路由前缀还取决于接口掩码与OSPF网络类型；不能将它直接解释为通告/32。")
