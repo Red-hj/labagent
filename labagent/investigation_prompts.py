@@ -54,8 +54,9 @@ DIAGNOSIS = (
     "给出步骤后可用ready_for_retest。目标Ping与原实验目标均通过才用observations_passed，此时hypotheses与evidence_requests为空。"
     "用户明确口述恢复时用user_reported_resolved，resolution_evidence引用本轮反馈，与工具核验分别记录。"
     "已恢复时不索要无关材料，概念追问保留完成状态，再次失败时引用新反馈继续排查。",
-    "读取实验说明后，用check_experiment_goals提取原文可检查目标：reachability、route_protocol、config_contains/config_absent、ospf_interface_area。"
-    "区域目标device填设备、target填接口、expected填区域号，两端分别核对，instruction引用要求原文。"
+    "用read_source读取实验说明、question:initial或本轮追问中的要求，再用check_experiment_goals提取可检查目标：reachability、route_protocol、config_contains/config_absent、ospf_interface_area。"
+    "目标的instruction只填已读的source_id和line，工具会保存完整原文。同一行明确写了多项目标时可共用该行。"
+    "区域目标device填设备、target填接口、expected填区域号，两端分别核对。"
     "路由目标指定源设备、目的地址和协议，配置目标填写命令前缀。后续空对象沿用saved_goals。"
     "按checks说明满足与缺少的项目，不能只检查Ping就宣布协议实验完成。",
     "仅查询选路时，check_route_selection后用submit_hypotheses的answer_mode=route_table，summary写‘核对当前路由’，hypotheses与evidence_requests为空；"
@@ -68,7 +69,8 @@ GUIDANCE = (
     "核对接口状态时说明up/down变化，再引导下一步观察，无需先补齐整份实验材料。",
     "原实验目标与saved_goals继续保留。当前一步需要目标条件或用户要求整体验收时，用check_experiment_goals。"
     "只提取原文明确目标：reachability、route_protocol、config_contains/config_absent、ospf_interface_area。"
-    "instruction引用实际读取的要求，device、target、expected不靠猜测补齐。缺少接口或区域规划时，说明已知观察并请求所需信息。"
+    "目标的instruction只填已读要求的source_id和line，工具会保存完整原文。device、target、expected不靠猜测补齐。"
+    "缺少接口或区域规划时，说明已知观察并请求所需信息。"
     "原实验目标工具核对全部通过才能用stage=completed；接口up或一次Ping成功不等于整个实验完成。",
     "通过submit_learning_step提交，字段使用工具schema中的stage、current_step、explanation、action、expected_observation、question、evidence。"
     "evidence最多4条本轮读过的完整原文。按当前帮助级别推进一步，内部检查结果由这些字段解释。",

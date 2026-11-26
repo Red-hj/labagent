@@ -444,6 +444,36 @@ class ExperimentGoalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             execute_tool("check_experiment_goals", {"goals": [smaller]}, current, sources, seen, diagnostic_context=context)
 
+    def test_multiple_goals_can_reference_the_same_read_line(self):
+        current = payload(2)
+        requirement = "  R1到10.3.3.3的Ping全部成功；R1通过OSPF学习10.3.3.3/32；R1不保留ip route-static命令。"
+        current["question"] = "核对全部目标。\n" + requirement
+        sources, _ = source_bundle(current)
+        seen, context = set(), {}
+        location = {"source_id": "question:initial", "line": 2}
+        selected = [{**goal, "instruction": location} for goal in goals()]
+        tool_args = {"goals": selected}
+        with self.assertRaisesRegex(ValueError, "实际读取"):
+            execute_tool("check_experiment_goals", tool_args, current, sources, seen, diagnostic_context=context)
+        self.assertEqual(context, {})
+        execute_tool("read_source", {"source_id": "question:initial", "start_line": 2, "end_line": 2},
+                     current, sources, seen)
+        invalid = {**selected[0], "instruction": {**location, "quote": "R1到10.3.3.3的Ping全部成功"}}
+        with self.assertRaisesRegex(ValueError, "完整原文行"):
+            execute_tool("check_experiment_goals", {"goals": [*selected[1:], invalid]},
+                         current, sources, seen, diagnostic_context=context)
+        self.assertEqual(context, {})
+        assessment, _ = execute_tool("check_experiment_goals", tool_args, current, sources, seen, diagnostic_context=context)
+        self.assertEqual(assessment["status"], "passed")
+        self.assertEqual(len(assessment["checks"]), 3)
+        self.assertTrue(all(item["instruction"] == {**location, "device": "实验问题与要求", "quote": requirement}
+                            for item in assessment["checks"]))
+        hypothesis = {"title": "目标", "reasoning": "来自实验要求", "evidence": [location]}
+        with self.assertRaisesRegex(ValueError, "字段不符合"):
+            execute_tool("submit_hypotheses", {"summary": "核对", "hypotheses": [hypothesis],
+                         "evidence_requests": []}, {**current, "interaction": {"type": "ask", "message": "查目标"}},
+                         sources, seen, diagnostic_context=context)
+
     def test_ping_success_cannot_override_failed_ospf_goal(self):
         current = payload(1); current["interaction"] = {"type": "verify", "message": "核对本轮结果"}
         sources, _ = source_bundle(current); context = {"criteria": goals()}; seen = {("config:1", 1)}
