@@ -16,11 +16,13 @@ def timestamp(value):
     return sum(float(part) * 60 ** index for index, part in enumerate(reversed(parts)))
 
 
-def time_label(seconds):
+def time_label(seconds, *, precise=False):
     if seconds is None:
         return "无时间戳"
-    minutes, seconds = divmod(int(seconds), 60)
-    return f"{minutes:02d}:{seconds:02d}"
+    minutes, remainder = divmod(seconds, 60)
+    if precise and remainder != int(remainder):
+        return f"{int(minutes):02d}:{remainder:06.3f}".rstrip("0")
+    return f"{int(minutes):02d}:{int(remainder):02d}"
 
 
 def prompt_info(text):

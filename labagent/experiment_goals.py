@@ -69,6 +69,12 @@ GOAL_TOOL = {"type": "function", "function": {
             "expected": {"type": "string", "description": "route_protocol填协议，ospf_interface_area填区域号，ospf_neighbor填目标状态。其他类型填空字符串。"},
             "instruction": {"type": "object", "properties": {"source_id": {"type": "string"}, "line": {"type": "integer"}, "quote": {"type": "string"}},
                             "required": ["source_id", "line", "quote"], "additionalProperties": False}},
+            "target": {"type": "string", "description": "reachability填目的IP；route_protocol填目的IP或网段；config类型填命令前缀；ospf_interface_area填接口名，每台设备一项。"},
+            "expected": {"type": "string", "description": "route_protocol填协议，如OSPF；ospf_interface_area填区域号，如0；其他类型填空字符串。"},
+            "instruction": {"type": "object", "description": "填本轮已读要求的材料编号和行号，工具会保存完整原文。同一行有多个目标时可共用该行。",
+                            "properties": {"source_id": {"type": "string"}, "line": {"type": "integer"},
+                                           "quote": {"type": "string", "description": "可省略。提交时填写完整原文行。"}},
+                            "required": ["source_id", "line"], "additionalProperties": False}},
         "required": ["id", "title", "kind", "device", "target", "expected", "instruction"], "additionalProperties": False}}},
         "additionalProperties": False}}}
 

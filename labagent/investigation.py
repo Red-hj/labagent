@@ -218,14 +218,16 @@ def short_text(value, limit):
     return safe_text(value)
 
 
-def checked_citation(citation, sources, seen):
-    exact_keys(citation, ("source_id", "line", "quote"))
+def checked_citation(citation, sources, seen, *, allow_line_reference=False):
+    location = {"source_id", "line"}
+    if not (allow_line_reference and isinstance(citation, dict) and citation.keys() == location):
+        exact_keys(citation, location | {"quote"})
     source_id, line = citation["source_id"], citation["line"]
     if not isinstance(source_id, str) or type(line) is not int or (source_id, line) not in seen:
         raise ValueError("引用须指向本轮实际读取过的原文行")
     source = sources[source_id]
     quote = source["lines"][line - 1]
-    if citation["quote"] != quote or not quote.strip() or quote == "[敏感内容已省略]":
+    if citation.get("quote", quote) != quote or not quote.strip() or quote == "[敏感内容已省略]":
         raise ValueError("quote必须逐字匹配可引用的完整原文行，保留缩进")
     return {"source_id": source_id, "line": line, "quote": quote, "device": source["device"]}
 
@@ -316,7 +318,7 @@ def _check_experiment_goals(args, payload, sources, seen, *, previous_materials=
             if any(goal[key] != existing[key] for key in ("title", "kind", "device", "target", "expected")):
                 raise ValueError("已保存的目标继续沿用；新要求使用新编号并引用原文")
             continue
-        instruction = checked_citation(goal["instruction"], sources, seen)
+        instruction = checked_citation(goal["instruction"], sources, seen, allow_line_reference=True)
         if goal["kind"] == "ospf_interface_area" and not area_instruction_supports_goal(
                 instruction["quote"], goal["device"], goal["target"], goal["expected"]):
             raise ValueError("区域目标的原文须同时写出设备、接口以及该接口唯一的目标区域；不要添加推测的接口或区号")
