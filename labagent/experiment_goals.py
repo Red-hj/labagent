@@ -9,7 +9,7 @@ import re
 
 from .connectivity import parse_ping_records
 from .runtime_parser import (FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_HEADER, FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
-                             OSPF_NEIGHBOR_STATES,
+                             FRR_NEIGHBOR_COMMANDS, FRR_NEIGHBOR_JSON_COMMAND, OSPF_NEIGHBOR_STATES,
                              parse_frr_neighbors, parse_frr_routes, parse_linux_routes, parse_neighbors,
                              parse_routes, select_route_records)
 from .operation_history import TIME, prompt_info
@@ -35,7 +35,7 @@ VRP_TABLE_COUNTS = re.compile(r"\s*Destinations\s*:\s*(\d{1,10})\s+Routes\s*:\s*
 OUTPUT_EXCERPT = re.compile(r"节选|摘录|片段|截断|未显示|\b(?:excerpt|truncated|partial)\b|^\s*(?:\.{3,}|…+)|-{2,}\s*More\s*-{2,}", re.I | re.M)
 
 
-OSPF_NEIGHBOR_COMMAND = re.compile(rf"(?:{FRR_NEIGHBOR_COMMAND}|display ospf(?:\s+\d+)? peer)", re.I)
+OSPF_NEIGHBOR_COMMAND = re.compile(rf"(?:{FRR_NEIGHBOR_COMMAND}(?: json)?|display ospf(?:\s+\d+)? peer)", re.I)
 OSPF_NEIGHBOR_WORDS = r"邻居|邻接|\b(?:neighbou?r|peer|adjacency)\b"
 OSPF_NEIGHBOR_CLAUSE_BOUNDARY = re.compile(
     rf"[;；。!?！？]|\.(?=\s|$)|[,，](?=[^,，;；。!?！？]*(?:{OSPF_NEIGHBOR_WORDS}))", re.I)
@@ -146,6 +146,43 @@ def _block(source, device, command, start, end, section=""):
             "raw_lines": source["lines"][start:end]}
 
 
+def current_runtime_sources(sources, previous_materials):
+    if previous_materials is None or not any(
+            is_config_block(block)
+            and previous_materials.get(sources[block["source_id"]]["device"]) != sources[block["source_id"]]["text"]
+            for block in evidence_blocks(sources)):
+        return sources
+    return {key: source for key, source in sources.items()
+            if source.get("collected") or source["kind"] in {"user_message", "submitted_command_output"}
+            or previous_materials.get(source["device"]) != source["text"]}
+
+
+def mark_stale_neighbor_materials(sources, previous_materials, stale_materials):
+    """Mark carried neighbor snapshots and report whether the configuration changed."""
+    if previous_materials is None:
+        return False
+    fresh = current_runtime_sources(sources, previous_materials)
+    changed = fresh is not sources
+    if not changed and not stale_materials:
+        return False
+    for block in evidence_blocks(sources):
+        source_id = block["source_id"]
+        source = sources[source_id]
+        name = source["device"]
+        if (source["kind"] not in {"submitted_material", "screenshot_ocr"} or source.get("collected")
+                or previous_materials.get(name) != source["text"]):
+            continue
+        if name in stale_materials:
+            source["stale_neighbor"] = True
+        elif source_id not in fresh:
+            command = " ".join(block["command"].lower().split())
+            text = "\n".join(block["lines"])
+            if (OSPF_NEIGHBOR_COMMAND.fullmatch(command) or parse_frr_neighbors(text, command=command) is not None
+                    or parse_neighbors(text)):
+                source["stale_neighbor"] = True
+    return changed
+
+
 def citation(block, number):
     return {"source_id": block["source_id"], "device": block["material"],
             "line": block["start"] + number, "quote": block["raw_lines"][number - 1]}
@@ -179,7 +216,7 @@ def submitted_pings(sources):
     return active, reported, [item for item in observations if item not in active]
 
 
-def check_goals(criteria, sources, *, include_history=False):
+def check_goals(criteria, sources, *, include_history=False, previous_materials=None):
     # A different upload order can renumber a source while its quoted instruction stays the same.
     by_name = {source["device"]: source for source in sources.values()}
     rebound = []
@@ -191,6 +228,8 @@ def check_goals(criteria, sources, *, include_history=False):
             goal = {**goal, "instruction": {**ref, "source_id": source["source_id"]}}
         rebound.append(goal)
     criteria = rebound
+    neighbor_sources = (current_runtime_sources(sources, previous_materials)
+                        if any(goal["kind"] == "ospf_neighbor" for goal in criteria) else sources)
     blocks = evidence_blocks(sources, include_history=include_history)
     explicit = explicit_area_goals(sources)
     area_lines = {(g["instruction"]["source_id"], g["instruction"]["line"]) for g in explicit}
@@ -209,7 +248,13 @@ def check_goals(criteria, sources, *, include_history=False):
         elif goal["kind"] == "ospf_interface_area":
             status, detail, evidence = _ospf_interface_area(goal, matching)
         elif goal["kind"] == "ospf_neighbor":
-            status, detail, evidence = _ospf_neighbor(goal, matching)
+            current = [block for block in matching if block["source_id"] in neighbor_sources
+                       and not neighbor_sources[block["source_id"]].get("stale_neighbor")]
+            # A new bound capture takes precedence over historical chat, and a
+            # capture pasted in this request is the most recent observation.
+            current.sort(key=lambda block: (block["source_id"] == "message:current",
+                                            block["kind"] == "submitted_command_output"))
+            status, detail, evidence = _ospf_neighbor(goal, current)
         else:
             status, detail, evidence = _config(goal, matching)
         checks.append({"id": goal["id"], "title": goal["title"], "kind": goal["kind"],
@@ -542,14 +587,22 @@ def _ospf_interface_area(goal, blocks):
     return ("passed" if actual == expected else "failed"), f"{device} 的 {target} 为 OSPF Area {actual}；实验要求 Area {expected}。", refs
 
 
+def complete_frr_neighbor_table(block, command, text, table):
+    return (table is not None and table["fully_parsed"] and block["complete"]
+            and command in FRR_NEIGHBOR_COMMANDS and not OUTPUT_EXCERPT.search(text))
+
+
 def _ospf_neighbor(goal, blocks):
     device, router_id, expected = goal["device"], goal["target"], goal["expected"].strip()
     missing = f"补充 {device} 的 OSPF 邻居输出以核对 Router ID {router_id} 的状态。"
     for block in reversed(blocks):
         text = "\n".join(block["lines"])
         command = " ".join(block["command"].lower().split())
-        frr_table = parse_frr_neighbors(text)
-        peers = frr_table["rows"] if frr_table is not None else parse_neighbors(text)
+        frr_table = parse_frr_neighbors(text, command=command)
+        if frr_table is not None:
+            peers = frr_table["rows"]
+        else:
+            peers = [] if command == FRR_NEIGHBOR_JSON_COMMAND else parse_neighbors(text)
         if frr_table is None and not peers and not OSPF_NEIGHBOR_COMMAND.fullmatch(command):
             continue
         # Use the latest recognized output for this device. An older Full row
@@ -557,14 +610,15 @@ def _ospf_neighbor(goal, blocks):
         matches = [peer for peer in peers if peer["router_id"] == router_id]
         states = {peer["state"].casefold(): peer["state"] for peer in matches}
         if not states:
-            if (frr_table is not None and frr_table["fully_parsed"] and block["complete"]
-                    and command == FRR_NEIGHBOR_COMMAND and not OUTPUT_EXCERPT.search(text)):
+            if complete_frr_neighbor_table(block, command, text, frr_table):
                 lines = [frr_table["header_line"]]
                 if peers:
                     lines.extend(sorted({peers[0]["line"], peers[-1]["line"]}))
                 evidence = [citation(block, number) for number in lines]
                 return "failed", f"{device} 的完整 FRRouting OSPF 邻居表中没有 Router ID {router_id}。", evidence
-            break
+            line = (frr_table["header_line"] if frr_table is not None else
+                    next((number for number, row in enumerate(block["lines"], 1) if row.strip()), None))
+            return "needs_evidence", missing, [citation(block, line)] if line is not None else []
         evidence = [citation(block, number) for number in sorted({
             peer[key] for peer in matches for key in ("line", "peer_line")
         })]

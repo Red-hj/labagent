@@ -1,4 +1,5 @@
 """Prepare bounded, cited investigation inputs without executing tools or models."""
+from datetime import datetime
 import json
 import re
 
@@ -6,11 +7,13 @@ from .knowledge import validate_scope, validate_course_documents
 from .personal import validate_memory_context
 from .learning import policy as learning_policy, STEP_TOOL
 from .experiment_state import experiment_context
-from .experiment_goals import evidence_blocks, submitted_pings, is_config_block, complete_config, OUTPUT_EXCERPT
+from .experiment_goals import (OSPF_NEIGHBOR_COMMAND, OUTPUT_EXCERPT, complete_config, complete_frr_neighbor_table,
+                               current_runtime_sources, evidence_blocks, is_config_block, submitted_pings)
 from .investigation_prompts import system_instructions, GOAL_TOOL_NAMES
 from .operation_history import inspect_history, prompt_info
 from .connectivity import host_literals
 from .diagnostic_planner import normalize_check_command
+from .runtime_parser import FRR_NEIGHBOR_COMMANDS, parse_frr_neighbors
 
 SENSITIVE = re.compile(r"authentication|password|passwd|cipher|community|secret|pre-shared|api[_-]?key|authorization|bearer|sk-[a-z0-9]{12,}|BEGIN.*PRIVATE KEY", re.I)
 
@@ -118,6 +121,25 @@ def source_bundle(payload, conversation=None, *, previous_materials=None):
     return sources, warnings
 
 
+def mark_stale_neighbor_messages(sources, conversation, evidence_after):
+    try:
+        cutoff = datetime.fromisoformat(evidence_after)
+    except (TypeError, ValueError):
+        return
+    if cutoff.tzinfo is None:
+        return
+    for index, turn in enumerate(conversation or [], 1):
+        source = sources.get(f"message:{index}")
+        if source is None:
+            continue
+        try:
+            posted = datetime.fromisoformat(turn.get("created_at", ""))
+        except (TypeError, ValueError):
+            posted = None
+        if posted is None or posted.tzinfo is None or posted < cutoff:
+            source["stale_neighbor"] = True
+
+
 def manifest(sources):
     return [{key: source[key] for key in ("source_id", "device", "kind")} |
             {"line_count": len(source["lines"]), "command": safe_text(source.get("command", ""))} for source in sources.values()]
@@ -165,20 +187,42 @@ def prepare_investigation(payload, sources, previous=None, *, conversation=None,
     return active_learning, messages, available_tools
 
 
-def observed_device_commands(sources, *, previous_materials=None):
+def _usable_frr_neighbors(block, command, text, table, targets):
+    if table is None or not table["fully_parsed"] or OUTPUT_EXCERPT.search(text):
+        return False
+
+    states = {}
+    for row in table["rows"]:
+        states.setdefault(row["router_id"], set()).add(row["state"].casefold())
+    if any(len(values) > 1 for values in states.values()):
+        return False
+    return (bool(states) and targets <= states.keys()) or complete_frr_neighbor_table(block, command, text, table)
+
+
+def observed_device_commands(sources, *, previous_materials=None, criteria=()):
     """Reuse current observations, but allow retests after a configuration changes."""
-    config_changed = previous_materials is not None and any(
-        is_config_block(block) and previous_materials.get(sources[block['source_id']]['device']) != sources[block['source_id']]['text']
-        for block in evidence_blocks(sources))
-    if config_changed:
-        # Carried output describes the previous configuration. A live tool capture
-        # is fresh even when its text happens to be identical to the previous run.
-        sources = {key: source for key, source in sources.items()
-                   if source.get('collected') or source['kind'] == 'user_message'
-                   or previous_materials.get(source['device']) != source['text']}
-    commands = set()
-    for block in evidence_blocks(sources):
+    sources = current_runtime_sources(sources, previous_materials)
+    required_neighbors = {}
+    for goal in criteria:
+        if goal["kind"] == "ospf_neighbor":
+            required_neighbors.setdefault(goal["device"].casefold(), set()).add(goal["target"])
+
+    commands, neighbor_devices = set(), set()
+    for block in reversed(evidence_blocks(sources)):
         command = normalize_check_command(block['command'])
+        if sources[block["source_id"]].get("stale_neighbor") and (not command or OSPF_NEIGHBOR_COMMAND.fullmatch(command)):
+            continue
+        if not command or command in FRR_NEIGHBOR_COMMANDS:
+            text = "\n".join(block["lines"])
+            table = parse_frr_neighbors(text, command=command)
+            if table is not None or command:
+                device = block["device"].casefold()
+                if device not in neighbor_devices and _usable_frr_neighbors(
+                        block, command, text, table, required_neighbors.get(device, set())):
+                    commands.update((block["device"], form) for form in FRR_NEIGHBOR_COMMANDS)
+                # A newer malformed or incomplete capture still supersedes earlier FRR observations.
+                neighbor_devices.add(device)
+                continue
         output = [line for line in block['lines'] if line.strip() and not prompt_info(line)]
         if not command or not output or OUTPUT_EXCERPT.search('\n'.join(output)):
             continue

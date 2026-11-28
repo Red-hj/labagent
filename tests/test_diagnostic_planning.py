@@ -2,11 +2,14 @@
 from copy import deepcopy
 import json
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
 from labagent import investigation
 from labagent.diagnostic_planner import rank_checks
+from labagent.engine import fingerprint
+from labagent.experiment_goals import mark_stale_neighbor_materials
 from labagent.investigation_context import observed_device_commands, prepare_investigation
 from labagent.investigation_verification import verify_excerpt_claims, verify_minimal_ospf_wildcard_advice
 from labagent.report import generate_report
@@ -89,6 +92,226 @@ class DiagnosticCheckPlanningTests(unittest.TestCase):
         current = cases()[0]["vrp-partial"]
         observed = observed_device_commands(investigation.source_bundle(current)[0])
         self.assertIn(("R1", "ping 10.3.3.3"), observed)
+
+    def test_original_frr_json_reuses_neighbor_table_for_either_command(self):
+        case = Path(__file__).resolve().parents[1] / "data/team_cases/lab_02/map_materials/repaired"
+        log = (case / "R1-run.log").read_text(encoding="utf-8")
+        text, json_command = "show ip ospf neighbor", "show ip ospf neighbor json"
+        current = {"configs": {"R1-run.log": log}, "question": "选择 R1 的下一项检查。"}
+        sources, seen = sources_and_seen(current)
+        proposals = [probe(command, ["a", "b", "c"]) for command in (text, json_command, "show ip ospf interface")]
+        evidence = {"source_id": "config:1", "line": 1, "quote": sources["config:1"]["lines"][0]}
+        candidates = [{**item, "evidence": [evidence]} for item in hypotheses()]
+        plan, _ = investigation.execute_tool("plan_diagnostic_checks", {"hypotheses": candidates, "tests": proposals},
+                                             current, sources, seen)
+        self.assertEqual(plan["selected"]["command"], "show ip ospf interface")
+        self.assertEqual({row["command"] for row in plan["tests"] if row["already_observed"]}, {text, json_command})
+        self.assertNotIn(("R2", text), observed_device_commands(sources))
+        route_text = ("<R2>show ip ospf neighbor\nNeighbor ID Pri State Up Time Dead Time Address Interface\n"
+                      "1.1.1.1 1 Full/- 6.070s 3.908s 10.12.0.1 transit:10.12.0.2")
+        current["configs"]["R2-run.log"] = route_text
+        observed = observed_device_commands(sources_and_seen(current)[0])
+        self.assertIn(("R2", json_command), observed)
+
+    def test_frr_neighbor_reuse_requires_current_usable_evidence_for_the_goal(self):
+        text, json_command = "show ip ospf neighbor", "show ip ospf neighbor json"
+        question = "R1 的 OSPF 邻居 2.2.2.2 应达到 Full。"
+        goal = {"id": "adjacency", "title": question, "kind": "ospf_neighbor", "device": "R1",
+                "target": "2.2.2.2", "expected": "Full",
+                "instruction": {"source_id": "question:initial", "line": 1, "quote": question}}
+        old = '{"neighbors":{"2.2.2.2":[{"nbrState":"Full/-"}]}}'
+        other = '{"neighbors":{"3.3.3.3":[{"nbrState":"Full/-"}]}}'
+        conflict = '{"neighbors":{"2.2.2.2":[{"nbrState":"Full/-"},{"nbrState":"Init/-"}]}}'
+        current = {"question": question, "configs": {"R1-old.log": f"<R1>{json_command}\n{old}"}}
+        for capture, complete, observed, status in (
+            ('{"neighbors":{}}', False, False, "needs_evidence"),
+            ('{"neighbors":{}}', True, True, "failed"),
+            (other, False, False, "needs_evidence"),
+            (other, True, True, "failed"),
+            (conflict, True, False, "needs_evidence"),
+            (old[:-1], True, False, "needs_evidence"),
+            (old, False, True, "passed"),
+        ):
+            with self.subTest(capture=capture, complete=complete):
+                current["command_outputs"] = [{"device": "R1", "command": json_command, "text": capture,
+                                               "complete": complete, "config_fingerprint": fingerprint(current)}]
+                sources, seen = sources_and_seen(current)
+                context = {}
+                review, _ = investigation.execute_tool("check_experiment_goals", {"goals": [goal]}, current, sources,
+                                                        seen, diagnostic_context=context)
+                evidence = {"source_id": "output:1", "line": 1, "quote": capture}
+                candidates = [{**item, "evidence": [evidence]} for item in hypotheses()]
+                plan, _ = investigation.execute_tool("plan_diagnostic_checks", {"hypotheses": candidates, "tests": [
+                    probe(text, ["a", "b", "c"]), probe(json_command, ["a", "b", "c"])]},
+                    current, sources, seen, diagnostic_context=context)
+                self.assertEqual(review["checks"][0]["status"], status)
+                self.assertEqual([row["already_observed"] for row in plan["tests"]], [observed, observed])
+                self.assertEqual(plan["selected"] is None, observed)
+
+    def test_frr_neighbor_reuse_expires_when_the_carried_configuration_changes(self):
+        command = "show ip ospf neighbor json"
+        text = '<R1>show ip ospf neighbor json\n{"neighbors":{"2.2.2.2":[{"nbrState":"Full/-"}]}}'
+        before = {"R1.cfg": "sysname R1\nospf 1\n area 1\nreturn", "R1-neighbor.log": text}
+        current = {"configs": {**before, "R1.cfg": before["R1.cfg"].replace("area 1", "area 0")}}
+        sources, _ = sources_and_seen(current)
+        observed = observed_device_commands(sources, previous_materials=before)
+        self.assertNotIn(("R1", command), observed)
+        sources["config:2"]["collected"] = True
+        observed = observed_device_commands(sources, previous_materials=before)
+        self.assertIn(("R1", command), observed)
+        self.assertIn(("R1", "show ip ospf neighbor"), observed)
+
+    def test_neighbor_approval_waits_for_fresh_capture_across_rounds_and_report(self):
+        log_path = Path(__file__).resolve().parents[1] / "data/team_cases/lab_02/map_materials/repaired/R1-run.log"
+        command = "show ip ospf neighbor json"
+        body = log_path.read_text(encoding="utf-8").split(f"<R1>{command}\n", 1)[1]
+        material = "R1-neighbors.log"
+        before = {"R1.cfg": "sysname R1\nospf 1\n area 0\nreturn", material: f"<R1>{command}\n{body}"}
+        after = {**before, "R1.cfg": before["R1.cfg"].replace("area 0", "area 1")}
+        question = "R1 的 OSPF 邻居 2.2.2.2 应达到 Full。"
+        goal = {"id": "neighbor", "title": question, "kind": "ospf_neighbor", "device": "R1",
+                "target": "2.2.2.2", "expected": "Full",
+                "instruction": {"source_id": "question:initial", "line": 1, "quote": question}}
+        original = {"configs": before, "question": question}
+        sources, seen = sources_and_seen(original)
+        first, _ = investigation.execute_tool("check_experiment_goals", {"goals": [goal]}, original, sources, seen)
+        previous, previous_materials = {"goal_assessment": first}, None
+        attempts = []
+        for number, (configs, fresh, status) in enumerate((
+                (before, False, "passed"), (after, False, "needs_evidence"),
+                (after, False, "needs_evidence"), (after, True, "passed")), 1):
+            payload = {"configs": dict(configs), "question": question, "use_llm": False}
+            if number == 3:
+                payload["interaction"] = {"type": "ask", "message": "还需要复测邻居吗？"}
+            if fresh:
+                payload["command_outputs"] = [{"device": "R1", "command": command, "text": body, "complete": True,
+                                               "config_fingerprint": fingerprint(payload)}]
+            result = investigation.investigate(payload, previous, previous_materials=previous_materials)
+            analysis = result["investigation"]
+            check, = analysis["goal_assessment"]["checks"]
+            self.assertEqual(check["status"], status)
+            if number > 1:
+                self.assertEqual(analysis["experiment_state"]["stale_neighbor_materials"], [material])
+            if status == "needs_evidence":
+                self.assertEqual(check["evidence"], [])
+            if fresh:
+                self.assertEqual([ref["source_id"] for ref in check["evidence"]], ["output:1", "output:1"])
+                for ref in check["evidence"]:
+                    self.assertEqual(ref["quote"], body.splitlines()[ref["line"] - 1])
+
+            sources, _ = sources_and_seen(payload)
+            stale = set(previous.get("experiment_state", {}).get("stale_neighbor_materials", []))
+            mark_stale_neighbor_materials(sources, previous_materials, stale)
+            observed = observed_device_commands(sources, previous_materials=previous_materials, criteria=[goal])
+            self.assertEqual(("R1", command) in observed, status == "passed")
+            attempts.append({"input": payload, "result": result, "created_at": f"2026-11-28T08:00:0{number}+00:00"})
+            previous, previous_materials = analysis, configs
+
+        report = generate_report({"session_id": "neighbor-retest", "attempts": attempts,
+                                  "learning_record": {"config_revisions": 1}})
+        for row in ("| 1 | 1/1 | 0 | 0 |", "| 2 | 0/1 | 0 | 1 |", "| 3 | 0/1 | 0 | 1 |", "| 4 | 1/1 | 0 | 0 |"):
+            self.assertIn(row, report)
+        self.assertIn('"nbrState":"Full', report)
+
+    def test_neighbor_chat_evidence_stays_with_the_configuration_when_it_was_posted(self):
+        capture = Path(__file__).resolve().parents[1] / "data/team_cases/lab_02/map_materials/repaired/R1-run.log"
+        command = "show ip ospf neighbor json"
+        body = capture.read_text(encoding="utf-8").split(f"<R1>{command}\n", 1)[1]
+        pasted = f"<R1>{command}\n{body}"
+        question = "R1 的 OSPF 邻居 2.2.2.2 应达到 Full。"
+        goal = {"id": "neighbor", "title": question, "kind": "ospf_neighbor", "device": "R1",
+                "target": "2.2.2.2", "expected": "Full",
+                "instruction": {"source_id": "question:initial", "line": 1, "quote": question}}
+        before = {"R1.cfg": "sysname R1\nospf 1\n area 0\nreturn"}
+        after = {"R1.cfg": before["R1.cfg"].replace("area 0", "area 1")}
+        payload = {"question": question, "configs": before, "interaction": {"type": "ask", "message": pasted}}
+        sources, seen = sources_and_seen(payload)
+        original, _ = investigation.execute_tool("check_experiment_goals", {"goals": [goal]}, payload, sources, seen)
+        self.assertEqual(original["checks"][0]["status"], "passed")
+        previous, previous_materials = {"goal_assessment": original}, before
+        history = [{"intent": "ask", "user": pasted, "assistant": "核对邻居", "created_at": "2000-01-01T00:00:00+00:00"}]
+
+        for message, expected, expected_source in (
+                ("已更新配置。", "needs_evidence", None),
+                ("还需要复测吗？", "needs_evidence", None),
+                (pasted, "passed", "message:current"),
+                ("可以继续分析吗？", "passed", "message:2"),
+                ("收到新的空邻居表。", "failed", "output:1")):
+            with self.subTest(expected=expected, source=expected_source):
+                payload = {"question": question, "configs": dict(after), "use_llm": False,
+                           "interaction": {"type": "ask", "message": message}}
+                empty = '{"neighbors":{}}'
+                if expected_source == "output:1":
+                    payload["command_outputs"] = [{"device": "R1", "command": command, "text": empty,
+                                                   "complete": True, "config_fingerprint": fingerprint(payload)}]
+                result = investigation.investigate(payload, previous, conversation=history, previous_materials=previous_materials)
+                previous = result["investigation"]
+                previous_materials = after
+                check, = previous["goal_assessment"]["checks"]
+                self.assertEqual(check["status"], expected)
+                self.assertNotIn("stale_neighbor_materials", previous["experiment_state"])
+                if expected_source is None:
+                    self.assertEqual(check["evidence"], [])
+                else:
+                    self.assertEqual({row["source_id"] for row in check["evidence"]}, {expected_source})
+                    lines = (empty if expected_source == "output:1" else pasted).splitlines()
+                    for ref in check["evidence"]:
+                        self.assertEqual(lines[ref["line"] - 1], ref["quote"])
+                if expected_source == "message:current":
+                    history.append({"intent": "ask", "user": pasted, "assistant": "新采集通过", "created_at": result["created_at"]})
+
+    def test_new_neighbor_evidence_updates_previously_closed_session_without_the_model(self):
+        path = Path(__file__).resolve().parents[1] / "data/team_cases/lab_02/map_materials"
+        command = "show ip ospf neighbor json"
+        def output(phase):
+            return (path / phase / "R1-run.log").read_text(encoding="utf-8").split(f"<R1>{command}\n", 1)[1]
+
+        full, empty = output("repaired"), output("fault")
+        question = "R1 的 OSPF 邻居 2.2.2.2 应达到 Full。"
+        goal = {"id": "adjacency", "title": question, "kind": "ospf_neighbor", "device": "R1",
+                "target": "2.2.2.2", "expected": "Full",
+                "instruction": {"source_id": "question:initial", "line": 1, "quote": question}}
+        configs = {"R1.cfg": "sysname R1\nospf 1\n area 0\nreturn"}
+        initial = {"configs": configs, "question": question}
+        initial["command_outputs"] = [{"device": "R1", "command": command, "text": full, "complete": True,
+                                       "config_fingerprint": fingerprint(initial)}]
+        sources, seen = sources_and_seen(initial)
+        previous_check, _ = investigation.execute_tool("check_experiment_goals", {"goals": [goal]}, initial, sources, seen)
+        self.assertEqual(previous_check["status"], "passed")
+        for outcome, closed_status in (("observations_passed", "verified_from_observations"),
+                                       ("user_reported_resolved", "resolved_by_user_report")):
+            previous = {"goal_assessment": previous_check, "outcome": outcome, "verification": {"pings": []},
+                        "summary": "上次复测已通过。"}
+            for text, complete, verdict, status in (
+                (None, False, "passed", closed_status),
+                ("\n" + full, True, "passed", closed_status),
+                (empty, True, "failed", "goals_pending"),
+                (empty, False, "needs_evidence", "goals_pending"),
+                (empty.rstrip()[:-1], True, "needs_evidence", "goals_pending"),
+            ):
+                with self.subTest(outcome=outcome, verdict=verdict, complete=complete):
+                    payload = {**initial, "use_llm": False, "command_outputs": []}
+                    if text is not None:
+                        payload["command_outputs"] = [{**initial["command_outputs"][0], "text": text, "complete": complete}]
+                    result = investigation.investigate(payload, previous, previous_materials=configs)
+                    review = result["investigation"]
+                    check, = review["goal_assessment"]["checks"]
+                    self.assertEqual(result["llm"]["status"], "not_configured")
+                    self.assertEqual((result["status"], check["status"]), (status, verdict))
+                    if text is not None:
+                        self.assertTrue(check["evidence"])
+                        for ref in check["evidence"]:
+                            self.assertEqual((ref["source_id"], ref["quote"]), ("output:1", text.splitlines()[ref["line"] - 1]))
+                    if status == "goals_pending":
+                        self.assertNotIn("verification", review)
+                        self.assertEqual(review["pending_requests"], [check["request"]])
+                        self.assertEqual(review["summary"], check["detail"])
+                        report = generate_report({"session_id": "retest", "learning_record": {"config_revisions": 0},
+                                                  "attempts": [{"result": result, "input": payload,
+                                                                "created_at": result["created_at"]}]})
+                        self.assertIn(check["detail"], report)
+                        self.assertIn(check["evidence"][0]["quote"].strip(), report)
+                    self.assertEqual(previous["goal_assessment"]["checks"][0]["status"], "passed")
 
     def test_changed_config_allows_retest_of_old_outputs_but_keeps_live_capture(self):
         before = {"R1.cfg":"sysname R1\nospf 1\n area 1\nreturn",

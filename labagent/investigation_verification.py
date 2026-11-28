@@ -155,31 +155,58 @@ def assess_goals(context, sources, seen, payload, previous_materials):
     if context.get("goal_checks_disabled") or not (context.get("criteria") or explicit_area_goals(sources)):
         return {}
     same_materials = payload["configs"] == previous_materials
-    assessment = check_goals(context.get("criteria", []), sources, include_history=same_materials)
+    assessment = check_goals(context.get("criteria", []), sources, include_history=same_materials,
+                             previous_materials=previous_materials)
     for check in assessment["checks"]:
         seen.update((item["source_id"], item["line"]) for item in check["evidence"])
     return assessment
 
 
+def _current_neighbor_checks(assessment, sources, goal_ids):
+    return {check["id"]: check for check in assessment.get("checks", []) if check["id"] in goal_ids
+            and any(ref["source_id"] == "message:current"
+                    or sources.get(ref["source_id"], {}).get("kind") == "submitted_command_output"
+                    for ref in check["evidence"])}
+
+
 def merge_investigation_state(analysis, model, payload, sources, previous, previous_materials, engine_state, *, goal_checks=True, comparison_reply=False):
     same_materials = list(payload["configs"].items()) == list((previous_materials or {}).items())
     previous_closed = model.get("status") != "cancelled" and (previous or {}).get("outcome") in RESOLVED_OUTCOMES
-    if not analysis and previous_closed and same_materials and not payload.get("learning"):
+    preserve_resolution = previous_closed and same_materials and not payload.get("learning") and not comparison_reply
+    prior_assessment = (previous or {}).get("goal_assessment", {})
+    saved_criteria = prior_assessment.get("criteria", [])
+    saved_assessment = engine_state.get("goal_assessment")
+    if not saved_assessment and goal_checks and saved_criteria:
+        saved_assessment = check_goals(saved_criteria, sources, include_history=same_materials,
+                                       previous_materials=previous_materials)
+    assessment = analysis.get("goal_assessment") or saved_assessment or {}
+    prior_passes = {check["id"] for check in prior_assessment.get("checks", [])
+                    if check["kind"] == "ospf_neighbor" and check["status"] == "passed"}
+    fresh_neighbors = _current_neighbor_checks(assessment, sources, prior_passes) if previous_closed and prior_passes else {}
+    reopened = [check for check in fresh_neighbors.values() if check["status"] != "passed"]
+    if not analysis and preserve_resolution and not reopened:
         analysis = dict(previous)
-    saved_criteria = (previous or {}).get("goal_assessment", {}).get("criteria", [])
-    saved_assessment = engine_state.get("goal_assessment") or (check_goals(saved_criteria, sources, include_history=same_materials)
-                                                              if goal_checks and saved_criteria else {})
+        if fresh_neighbors:
+            checks = [fresh_neighbors.get(check["id"], check) for check in prior_assessment["checks"]]
+            analysis["goal_assessment"] = {**prior_assessment, "checks": checks}
     if not analysis and saved_assessment:
         analysis = {"goal_assessment": saved_assessment, "experiment_goal": (previous or {}).get("experiment_goal", ""),
                     "verification_targets": (previous or {}).get("verification_targets", []),
                     "summary": model.get("message", "本轮分析尚未完成。"), "outcome": "investigating"}
+    if reopened and not comparison_reply and not payload.get("learning"):
+        detail = " ".join(check["detail"] for check in reopened)
+        analysis.update(outcome="goals_pending", goal_assessment=assessment, summary=detail, reply=detail,
+                        evidence_requests=[check["request"] for check in reopened])
+        analysis.pop("verification", None)
+        analysis.pop("resolution_summary", None)
     if analysis:
         current_failure = any(citation["source_id"] == "message:current" for item in analysis.get("hypotheses", []) for citation in item["evidence"])
         current_failure |= any(row["source_id"] == "message:current" and not row["passed"] for tool in model["tool_trace"]
                                if tool["tool"] == "check_submitted_pings" and tool["status"] == "ok" for row in tool["result"]["pings"])
         goal_pending = analysis.get("goal_assessment", {}).get("checks", [])
         goal_failure = any(item["status"] == "failed" for item in goal_pending)
-        if not comparison_reply and not payload.get("learning") and previous_closed and same_materials and not current_failure and not goal_failure and analysis.get("outcome") not in RESOLVED_OUTCOMES and analysis.get("outcome") != "goals_pending":
+        if (preserve_resolution and not current_failure and not goal_failure
+                and analysis.get("outcome") not in RESOLVED_OUTCOMES | {"goals_pending"}):
             analysis["outcome"] = previous["outcome"]
             analysis["verification"] = previous["verification"]
         closed = analysis.get("outcome") in RESOLVED_OUTCOMES
