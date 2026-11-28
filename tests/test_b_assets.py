@@ -198,6 +198,8 @@ class BEvaluationTests(unittest.TestCase):
             self.assertEqual(report['metrics']['strict_case_agreement'], b.score(1, 1))
             self.assertEqual(report['manifest_sha256'], b.digest(pack / 'manifest.json'))
             self.assertEqual(report['labels_sha256'], b.digest(labels))
+            self.assertEqual(report['device_endpoint_counts']['findings'], dict.fromkeys(b.ENDPOINT_LABELS, 0))
+            self.assertIn('| 故障 · 设备端点命中 | 0 |', (output / '报告.md').read_text(encoding='utf8'))
 
     def test_strict_judgment_detects_wrong_side_missing_answer_and_extra_finding(self):
         expected = {'status': 'fault_found', 'findings': [{'code': 'AREA_POLICY_VIOLATION', 'link_id': 'L1', 'devices': ['R2']}], 'unknowns': []}
@@ -207,6 +209,32 @@ class BEvaluationTests(unittest.TestCase):
         self.assertFalse(b.assess(expected, None)['strict_match'])
         extra = {**expected, 'findings': expected['findings'] + [{**expected['findings'][0], 'link_id': 'L2'}]}
         self.assertFalse(b.assess(expected, extra)['strict_match'])
+
+    def test_device_endpoint_counts_separate_link_scope_and_grouping(self):
+        left = {'code': 'AREA_POLICY_VIOLATION', 'link_id': 'L1', 'devices': ['R1']}
+        right = {**left, 'devices': ['R2']}
+        subnet = {'code': 'SUBNET_MISMATCH', 'link_id': 'L2', 'devices': ['R2', 'R3']}
+        partial = {**subnet, 'devices': ['R3']}
+        missing = {'code': 'MISSING_IP', 'link_id': 'L3', 'devices': ['R3']}
+
+        def result(findings, unknowns=(), *, status='fault_found'):
+            return {'status': status, 'findings': list(findings), 'unknowns': list(unknowns)}
+
+        rows = [
+            b.assess(result([left, right]), result([{**left, 'devices': ['R1', 'R2']}], status='awaiting_verification')),
+            b.assess(result([subnet]), result([partial, {**partial, 'link_id': 'L4'}])),
+            b.assess(result([subnet], [missing]), None),
+            b.assess(result([], [missing]), result([], [{**missing, 'link_id': 'L4'}])),
+        ]
+        counts = b.count_device_endpoints(rows)
+        self.assertTrue(all(not row['strict_match'] for row in rows))
+        self.assertEqual(counts, {
+            'findings': {'matched': 3, 'missing': 3, 'extra': 1, 'grouping_only': 1},
+            'unknowns': {'matched': 0, 'missing': 2, 'extra': 1, 'grouping_only': 0},
+        })
+        rendered = b.device_endpoint_rows([{'records': rows}, {'device_endpoint_counts': counts}, {}, None])
+        self.assertIn('| 故障 · 设备相同但分组不同 | 1 | 1 | 未记录 | 待运行 |', rendered)
+        self.assertEqual(b.device_endpoint_rows([{}, None]), [])
 
     def test_mismatch_details_distinguish_status_and_issue_locations(self):
         expected = {'status': 'needs_information', 'findings': [

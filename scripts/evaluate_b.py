@@ -26,6 +26,9 @@ EVALUATION_MODES = ('rules', 'model-direct', 'model-knowledge')
 MODEL_COMPARISON_KEYS = ('base_inputs_sha256', 'provider', 'model', 'max_tokens_per_call', 'temperature')
 REVIEW_OPTIONS = {'claim_review': '回复复核', 'normalize_structure': '结构校正',
                   'check_fault_evidence': '故障证据核对', 'local_only': '仅本地复核'}
+ISSUE_FIELDS = {'findings': '故障', 'unknowns': '补证项'}
+ENDPOINT_LABELS = {'matched': '设备端点命中', 'missing': '漏报设备端点', 'extra': '多报设备端点',
+                   'grouping_only': '设备相同但分组不同'}
 REQUEST_FIELDS = {'question', 'configs', 'topology', 'requirements', 'hint_level', 'use_llm', 'evidence_kind'}
 LINK_EVIDENCE_CHECKS = (
     '按 parsed_links 逐条核对 topology.links 的两端。ping_targets 只用于后续连通性验证，'
@@ -149,6 +152,45 @@ def _issue_locations(items):
     return by_issue
 
 
+def count_device_endpoints(rows):
+    """Count devices per case, issue type, code and link, keeping grouping differences visible."""
+    result = {field: dict.fromkeys(ENDPOINT_LABELS, 0) for field in ISSUE_FIELDS}
+    for row in rows:
+        for field, counts in result.items():
+            expected = _issue_locations(row['expected'][field])
+            actual = _issue_locations((row['actual'] or {}).get(field, []))
+            for issue in expected.keys() | actual.keys():
+                expected_groups = {frozenset(group) for group in expected.get(issue, [])}
+                actual_groups = {frozenset(group) for group in actual.get(issue, [])}
+                expected_devices = frozenset().union(*expected_groups)
+                actual_devices = frozenset().union(*actual_groups)
+                counts['matched'] += len(expected_devices & actual_devices)
+                counts['missing'] += len(expected_devices - actual_devices)
+                counts['extra'] += len(actual_devices - expected_devices)
+                if expected_devices == actual_devices and expected_groups != actual_groups:
+                    counts['grouping_only'] += 1
+    return result
+
+
+def device_endpoint_rows(reports):
+    counts = []
+    for report in reports:
+        data = report.get('device_endpoint_counts') if report is not None else None
+        if data is None and report is not None and 'records' in report:
+            data = count_device_endpoints(report['records'])
+        counts.append(data)
+    if all(data is None for data in counts):
+        return []
+
+    rows = []
+    for field, kind in ISSUE_FIELDS.items():
+        for key, label in ENDPOINT_LABELS.items():
+            values = [str(data[field][key]) if data is not None else '待运行' if report is None else '未记录'
+                      for report, data in zip(reports, counts)]
+            rows.append('| ' + ' | '.join([f'{kind} · {label}', *values]) + ' |')
+    return rows
+
+
 def _device_groups(groups):
     rendered = ['、'.join(map(_report_code, devices)) for devices in groups]
     return rendered[0] if len(rendered) == 1 else ' / '.join(f'（{item}）' for item in rendered)
@@ -167,7 +209,7 @@ def describe_mismatch(row, prediction):
     if expected['status'] != actual['status']:
         states = {'fault_found': '发现故障', 'needs_information': '待补证', 'awaiting_verification': '待复测'}
         details.append(f'状态预期为{states[expected["status"]]}，实际为{states[actual["status"]]}。')
-    for field, label in (('findings', '故障'), ('unknowns', '补证项')):
+    for field, label in ISSUE_FIELDS.items():
         expected_locations = _issue_locations(expected[field])
         actual_locations = _issue_locations(actual[field])
         for code, link in sorted(expected_locations.keys() | actual_locations.keys()):
@@ -251,6 +293,7 @@ def benchmark(output, mode, predictions=None, *, benchmark_dir=BENCHMARK, labels
               'label_review': manifest['review_status'], 'manifest_sha256': manifest_hash,
               'labels_sha256': digest(labels_path), 'engine_sha256': digest(ROOT / 'labagent/engine.py'),
               'external_prediction_source': model_metadata, 'metrics': metrics,
+              'device_endpoint_counts': count_device_endpoints(rows),
               'runtime': summarize_runtime(results), 'missing_responses': len(set(labels) - set(results)),
               'invalid_or_missing_predictions': sum(r['actual'] is None for r in rows),
               'by_family': {key: score(sum(row['strict_match'] for row in value), len(value)) for key, value in groups.items()},
@@ -271,6 +314,10 @@ def benchmark(output, mode, predictions=None, *, benchmark_dir=BENCHMARK, labels
     lines += ['| 建议实际修复有效率 | 未测量 |', '',
               f'格式无效或未返回预测：{report["invalid_or_missing_predictions"]} 例，其中无预测记录 {report["missing_responses"]} 例。',
               f'逐例耗时中位数（毫秒）：{report["runtime"]["median_elapsed_ms"]}；服务返回总 token 统计：{report["runtime"]["usage"]["total_tokens"]}。',
+              '', '## 链路设备端点', '',
+              '按案例、类别、错误码和链路核对设备。无有效预测时，标签中的设备计入漏报。',
+              '设备相同但分组不同按错误码与链路的组合计数。严格匹配沿用原评分规则。', '',
+              '| 核对项 | 数量 |', '| --- | --- |', *device_endpoint_rows([report]),
               '', '## 按拓扑家族', '']
     lines += [f'- {key}：{metric_text(metric)}' for key, metric in report['by_family'].items()]
     lines += ['', '## 不匹配案例', '']
@@ -570,7 +617,7 @@ def comparison_metric_rows(reports):
     ):
         values = [field(report) if report is not None else '待运行' for report in reports]
         rows.append('| ' + ' | '.join([label, *('未记录' if value is None else str(value) for value in values)]) + ' |')
-    return rows
+    return rows + device_endpoint_rows(reports)
 
 
 def comparison(reports):
