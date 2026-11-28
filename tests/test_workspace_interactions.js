@@ -57,7 +57,10 @@ async function replayChecks() {
   const $=id=>id==="replay-video"?video:(nodes.has(id)?nodes.get(id):(nodes.set(id,{}),nodes.get(id)));
   const context=vm.createContext({$,replaySeek:0, recordings:new Map([["demo",{id:"demo",video_url:"/demo"}]]),
     renderRecordingChoices(){},message(){},locateCitation:()=>located++});
-  vm.runInContext(part("function locateOperation(","function renderOperationHistory("),context);
+  vm.runInContext(part("function recordingForOperation(","function renderOperationHistory("),context);
+  assert.equal(vm.runInContext("operationTime(2.5)",context),"00:02.5");
+  assert.equal(vm.runInContext("operationTime(62.501)",context),"01:02.501");
+  assert.equal(vm.runInContext("operationTime(62)",context),"01:02");
   vm.runInContext('locateOperation({material:"终端操作.log",seconds:3,time_label:"00:03"})',context);
   assert.equal(video.currentTime,3); assert.equal(played,1,"clicking an operation should start playback");
   vm.runInContext('locateOperation({material:"another-device.log",seconds:8,evidence:[{}]})',context);
@@ -89,7 +92,7 @@ async function sameNameReplayChecks() {
     recordings:new Map(), screenshots:new Map(), materials:new Map(), videoReady:true, replaySeek:0, operationHistory:null,
     mediaUrl:value=>value, syncWorkspaceLayout(){},requestState(){},renderMaterials(){},previewOperations:async()=>{},
     element:(tag,text)=>({tag,text}), api:async route=>statuses.get(route.split("/").at(-1))});
-  vm.runInContext(part("function renderRecordingChoices(","function locateOperation("),context);
+  vm.runInContext(part("function recordingLabels(","function renderOperationHistory("),context);
   vm.runInContext(part("async function waitForRecording(","function requestState("),context);
   const add = async (id,kind,name) => {
     statuses.set(id,{id, kind, name, status:"ready", material_name:id+".log", transcript:id, video_url:"/video/"+id});
@@ -101,6 +104,16 @@ async function sameNameReplayChecks() {
   assert.deepEqual(select.options.map(option=>[option.value,option.text]),[
     ["first","terminal.webm"],["second","terminal.webm（2）"],
   ]);
+  const locate = event => {
+    context.event = event;
+    return JSON.parse(JSON.stringify(vm.runInContext("operationLocation(event, recordingLabels())",context)));
+  };
+  assert.deepEqual(locate({material:"second.log",line:3,seconds:2.5}),
+    {label:"00:02.5",source:"terminal.webm（2） · 第3行",playable:true});
+  assert.deepEqual(locate({material:"timed.log",line:4,seconds:2.5}),
+    {label:"00:02.5",source:"timed.log · 第4行",playable:false});
+  assert.deepEqual(locate({material:"untimed.log",line:5,seconds:null}),
+    {label:"第5行",source:"untimed.log",playable:false});
   await vm.runInContext('waitForRecording("first")',context);
   assert.equal(context.recordings.size,2,"reopening an existing recording remains idempotent");
 

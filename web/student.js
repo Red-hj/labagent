@@ -414,14 +414,19 @@ function renderRepairComparisons(comparisons) {
     }
   }
 }
+function recordingLabels() {
+  const counts = new Map(), labels = new Map();
+  for (const [id, recording] of recordings) {
+    const count = (counts.get(recording.name) || 0) + 1;
+    counts.set(recording.name, count);
+    labels.set(id, count === 1 ? recording.name : recording.name + "（" + count + "）");
+  }
+  return labels;
+}
 function renderRecordingChoices() {
   const select = $("replay-recording"), selected = select.value;
   select.replaceChildren();
-  const nameCounts = new Map();
-  for (const [id, recording] of recordings) {
-    const count = (nameCounts.get(recording.name) || 0) + 1;
-    nameCounts.set(recording.name, count);
-    const label = count === 1 ? recording.name : recording.name + "（" + count + "）";
+  for (const [id, label] of recordingLabels()) {
     const option = element("option", label);
     option.value = id;
     select.append(option);
@@ -440,11 +445,29 @@ function renderRecordingChoices() {
   $("process-section").hidden = !recordings.size && !operationHistory?.event_count;
   syncWorkspaceLayout();
 }
+function recordingForOperation(event) {
+  return [...recordings.values()].find(item => item.material_name === event.material || item.id === "demo" && event.material === "终端操作.log");
+}
+function operationTime(seconds) {
+  const totalMs = Math.round(seconds * 1000);
+  const minute = String(Math.floor(totalMs / 60000)).padStart(2,"0");
+  const second = String(Math.floor(totalMs / 1000) % 60).padStart(2,"0");
+  const fraction = String(totalMs % 1000).padStart(3,"0").replace(/0+$/,"");
+  return minute + ":" + second + (fraction ? "." + fraction : "");
+}
+function operationLocation(event, labels) {
+  const recording = recordingForOperation(event);
+  const timed = Number.isFinite(event.seconds);
+  const material = labels.get(recording?.id) || event.material;
+  const line = "第" + event.line + "行";
+  return {label:timed ? operationTime(event.seconds) : line,
+    source:timed ? material + " · " + line : material, playable:timed && Boolean(recording)};
+}
 function locateOperation(event) {
-  const recording = [...recordings.values()].find(item => item.material_name === event.material || item.id === "demo" && event.material === "终端操作.log");
+  const recording = recordingForOperation(event);
   if (recording) { $("replay-recording").value = recording.id; renderRecordingChoices(); }
   const video = $("replay-video");
-  if (event.seconds !== null && recording) {
+  if (Number.isFinite(event.seconds) && recording) {
     const seekNumber = ++replaySeek;
     const seek = () => {
       if (seekNumber !== replaySeek) return;
@@ -452,7 +475,7 @@ function locateOperation(event) {
       video.currentTime = event.seconds;
       video.play().catch(() => { $("replay-status").textContent = "已定位到对应画面，点击“播放回放”继续。"; });
       video.scrollIntoView({block:"center"});
-      message("已跳到 " + event.time_label + " 的画面。");
+      message("已跳到 " + operationTime(event.seconds) + " 的画面。");
     };
     if (video.readyState >= 1) seek(); else video.addEventListener("loadedmetadata", seek, {once:true});
   } else locateCitation(event.evidence[0]);
@@ -464,16 +487,19 @@ function renderOperationHistory(history) {
   $("operation-count").textContent = history.event_count ? history.event_count + " 步 · " + history.error_count + " 处报错" : "正在准备操作时间线";
   const focus = (history.events || []).find(item => item.id === (history.focus_id || history.first_issue_id));
   const container = $("operation-focus"); container.replaceChildren(); container.hidden = !focus;
+  const labels = recordingLabels();
   if (focus) {
+    const location = operationLocation(focus, labels);
     container.append(element("span", focus.recovered ? "报错后已重新输入" : "关键操作", "eyebrow"),
-      element("h4", (focus.seconds === null ? "第" + focus.line + "行" : focus.time_label) + " · " + focus.device + " · " + focus.view_label),
+      element("h4", location.label + " · " + focus.device + " · " + focus.view_label),
+      element("p", location.source, "operation-source"),
       element("pre", focus.command), element("p", focus.explanation || "结合当前配置与实验目标核对这一步的影响。"));
     if (focus.error) container.append(element("p", focus.error, "operation-error-text"));
-    const jump = element("button", recordings.size && focus.seconds !== null ? "查看这个时间点 ↗" : "定位操作原文 ↗", "secondary-button"); jump.type = "button";
+    const jump = element("button", location.playable ? "查看这个时间点 ↗" : "定位操作原文 ↗", "secondary-button"); jump.type = "button";
     jump.addEventListener("click", () => locateOperation(focus));
     const ask = element("button", "分析这一步", "text-button operation-analyze"); ask.type = "button";
     ask.addEventListener("click", () => {
-      const text = "请分析" + focus.material + "中" + (focus.seconds === null ? "第" + focus.line + "行" : focus.time_label) + "、" + focus.device + "执行“" + focus.command + "”这一步的影响，结合后续操作和当前配置给出继续步骤。";
+      const text = "请分析" + focus.material + "中" + location.label + "、" + focus.device + "执行“" + focus.command + "”这一步的影响，结合后续操作和当前配置给出继续步骤。";
       if (sessionId) performInteraction("ask", text);
       else { $("problem").value = text; $("analyze").click(); }
     });
@@ -482,9 +508,13 @@ function renderOperationHistory(history) {
   $("operation-timeline").replaceChildren();
   for (const event of history.events || []) {
     const row = element("li", undefined, "operation-event " + event.status + (event.recovered ? " recovered" : ""));
-    const jump = element("button", event.seconds === null ? "第" + event.line + "行" : event.time_label, "text-button operation-time"); jump.type = "button";
+    const location = operationLocation(event, labels);
+    const jump = element("button", location.label, "text-button operation-time"); jump.type = "button";
+    jump.setAttribute("aria-label", (location.playable ? "播放 " : "定位原文 ") + location.label + " · " + location.source);
     jump.addEventListener("click", () => locateOperation(event));
-    row.append(jump, element("strong", event.device + " · " + event.view_label), element("span", event.recovered ? "后续已重试" : {error:"命令报错",returned:"终端已返回",issued:"命令已输入"}[event.status], "tag"), element("pre", event.command));
+    row.append(jump, element("strong", event.device + " · " + event.view_label),
+      element("span", event.recovered ? "后续已重试" : {error:"命令报错",returned:"终端已返回",issued:"命令已输入"}[event.status], "tag"),
+      element("p", location.source, "operation-source"), element("pre", event.command));
     if (event.error) row.append(element("p", event.error, "operation-error-text"));
     $("operation-timeline").append(row);
   }
