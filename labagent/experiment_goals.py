@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 
 from .connectivity import parse_ping_records
-from .runtime_parser import (FRR_NEIGHBOR_HEADER, FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
+from .runtime_parser import (FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_HEADER, FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
                              OSPF_NEIGHBOR_STATES,
                              parse_frr_neighbors, parse_frr_routes, parse_linux_routes, parse_neighbors,
                              parse_routes, select_route_records)
@@ -32,10 +32,10 @@ AREA_REQUIREMENT = re.compile(
 INSTRUCTION_FILE = re.compile(r"(?:实验|课程)(?:说明|要求|指导)|\b(?:instructions?|requirements?)\b", re.I)
 VRP_TABLE_SCOPE = re.compile(r"\s*Routing Tables?\s*:\s*(.+?)\s*", re.I)
 VRP_TABLE_COUNTS = re.compile(r"\s*Destinations\s*:\s*(\d{1,10})\s+Routes\s*:\s*(\d{1,10})\s*", re.I)
-ROUTE_EXCERPT = re.compile(r"节选|摘录|片段|截断|未显示|\b(?:excerpt|truncated|partial)\b|^\s*(?:\.{3,}|…+)|----\s*More\s*----", re.I | re.M)
+OUTPUT_EXCERPT = re.compile(r"节选|摘录|片段|截断|未显示|\b(?:excerpt|truncated|partial)\b|^\s*(?:\.{3,}|…+)|-{2,}\s*More\s*-{2,}", re.I | re.M)
 
 
-OSPF_NEIGHBOR_COMMAND = re.compile(r"(?:show ip ospf neighbor|display ospf(?:\s+\d+)? peer)", re.I)
+OSPF_NEIGHBOR_COMMAND = re.compile(rf"(?:{FRR_NEIGHBOR_COMMAND}|display ospf(?:\s+\d+)? peer)", re.I)
 
 
 def neighbor_instruction_supports_goal(instruction, device, router_id, expected):
@@ -307,10 +307,10 @@ def check_route_selection(device, target, blocks):
         counts = [(i, int(match[1]), int(match[2])) for i, line in enumerate(block["lines"], 1)
                   if (match := VRP_TABLE_COUNTS.fullmatch(line))] if vrp and not frr else []
         complete = (command == "display ip routing-table" and len(public_table) == 1 and len(counts) == 1
-                    and all_rows is not None and not ROUTE_EXCERPT.search(text) and not ROUTE_EXCERPT.search(block["material"])
+                    and all_rows is not None and not OUTPUT_EXCERPT.search(text) and not OUTPUT_EXCERPT.search(block["material"])
                     and counts[0][1:] == (len({row["network"] for row in all_rows}), len(all_rows)))
         complete_linux = (linux and linux_command and block["complete"] and bool(rows)
-                          and not ROUTE_EXCERPT.search(text) and not ROUTE_EXCERPT.search(block["material"]))
+                          and not OUTPUT_EXCERPT.search(text) and not OUTPUT_EXCERPT.search(block["material"]))
         chosen = select_route_records(rows, network if network is not None else address, lowest_metric=linux)
         if not chosen:
             result["evidence"] = [citation(block, header)]
@@ -536,16 +536,23 @@ def _ospf_neighbor(goal, blocks):
     missing = f"补充 {device} 的 OSPF 邻居输出以核对 Router ID {router_id} 的状态。"
     for block in reversed(blocks):
         text = "\n".join(block["lines"])
-        peers = parse_frr_neighbors(text)
-        if peers is None:
-            peers = parse_neighbors(text)
-            if not peers and not OSPF_NEIGHBOR_COMMAND.fullmatch(" ".join(block["command"].split())):
-                continue
+        command = " ".join(block["command"].lower().split())
+        frr_table = parse_frr_neighbors(text)
+        peers = frr_table["rows"] if frr_table is not None else parse_neighbors(text)
+        if frr_table is None and not peers and not OSPF_NEIGHBOR_COMMAND.fullmatch(command):
+            continue
         # Use the latest recognized output for this device. An older Full row
         # cannot substitute for a target missing from the new capture.
         matches = [peer for peer in peers if peer["router_id"] == router_id]
         states = {peer["state"].casefold(): peer["state"] for peer in matches}
         if not states:
+            if (frr_table is not None and frr_table["fully_parsed"] and block["complete"]
+                    and command == FRR_NEIGHBOR_COMMAND and not OUTPUT_EXCERPT.search(text)):
+                lines = [frr_table["header_line"]]
+                if peers:
+                    lines.extend(sorted({peers[0]["line"], peers[-1]["line"]}))
+                evidence = [citation(block, number) for number in lines]
+                return "failed", f"{device} 的完整 FRRouting OSPF 邻居表中没有 Router ID {router_id}。", evidence
             break
         evidence = [citation(block, number) for number in sorted({
             peer[key] for peer in matches for key in ("line", "peer_line")

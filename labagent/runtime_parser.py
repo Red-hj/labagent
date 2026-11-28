@@ -4,6 +4,7 @@ import ipaddress
 import re
 
 from .engine import fingerprint
+from .operation_history import prompt_info
 from .parser import interface_id, parse_config
 from .connectivity import parse_ping_records
 
@@ -18,23 +19,39 @@ LINUX_PROTOCOLS = dict(kernel="Direct", static="Static", boot="Boot", ospf="OSPF
 
 
 OSPF_NEIGHBOR_STATES = frozenset(("down", "attempt", "init", "2-way", "exstart", "exchange", "loading", "full"))
+FRR_NEIGHBOR_COMMAND = "show ip ospf neighbor"
 FRR_NEIGHBOR_HEADER = re.compile(r"\s*Neighbor\s+ID\s+Pri\s+State\s+.*\bAddress\s+Interface\b.*", re.I)
 FRR_NEIGHBOR_ROW = re.compile(r"\s*(\d+(?:\.\d+){3})\s+\d+\s+([\w-]+)(?:/\S+)?"
-                             r"\s+(?:\S+\s+){1,2}\d+(?:\.\d+){3}\s+\S+(?:\s+.*)?", re.I)
+                             r"\s+(?:\S+\s+){1,2}(\d+(?:\.\d+){3})\s+\S+(?:\s+.*)?", re.I)
 
 
 def parse_frr_neighbors(text):
-    """Return rows for the last recognized FRRouting neighbor table, even if empty."""
+    """Return the last FRR table without treating partial parsing as coverage."""
     lines = text.splitlines()
     header = next((index for index in range(len(lines) - 1, -1, -1)
                    if FRR_NEIGHBOR_HEADER.fullmatch(lines[index])), None)
     if header is None:
         return None
+    preamble = [line for line in lines[:header] if line.strip()]
+    echo = prompt_info(preamble[0]) if len(preamble) == 1 else None
+    fully_parsed = not preamble or bool(echo and " ".join(echo[3].lower().split()) == FRR_NEIGHBOR_COMMAND)
     rows = []
     for number, line in enumerate(lines[header + 1:], header + 2):
-        if match := FRR_NEIGHBOR_ROW.fullmatch(line):
-            rows.append({"router_id": match[1], "state": match[2], "line": number, "peer_line": number})
-    return rows
+        if not line.strip():
+            continue
+        match = FRR_NEIGHBOR_ROW.fullmatch(line)
+        if match is None:
+            fully_parsed = False
+            continue
+        rows.append({"router_id": match[1], "state": match[2], "line": number, "peer_line": number})
+        try:
+            ipaddress.IPv4Address(match[1])
+            ipaddress.IPv4Address(match[3])
+        except ValueError:
+            fully_parsed = False
+        if match[2].casefold() not in OSPF_NEIGHBOR_STATES:
+            fully_parsed = False
+    return {"header_line": header + 1, "rows": rows, "fully_parsed": fully_parsed}
 
 
 def parse_neighbors(text):

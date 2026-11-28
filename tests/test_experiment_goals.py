@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from labagent.demos import ospf_goals_demo, network_access_demo
+from labagent.engine import fingerprint
 from labagent.diagnostic_planner import rank_checks, validate_plan
 from labagent.experiment_goals import check_goals
 from labagent.investigation import source_bundle, execute_tool, investigate
@@ -81,6 +82,54 @@ class ExperimentGoalTests(unittest.TestCase):
                     ref, = check["evidence"]
                     self.assertEqual(ref["quote"], row)
                     self.assertEqual(ref["device"], name if name.startswith("R1") else "R1-older.log")
+
+    def test_frr_neighbor_absence_requires_a_complete_bound_capture(self):
+        instruction = "R1 的 OSPF 邻居 Router ID 2.2.2.2 必须达到 Full。"
+        goal = {"id": "adjacency", "title": instruction, "kind": "ospf_neighbor", "device": "R1",
+                "target": "2.2.2.2", "expected": "Full",
+                "instruction": {"source_id": "question:initial", "line": 1}}
+        header = "Neighbor ID Pri State Up Time Dead Time Address Interface RXmtL RqstL DBsmL"
+        peer = "3.3.3.3 1 Full/- 6.070s 3.908s 10.12.0.3 transit:10.12.0.1 0 0 0"
+        cases = (
+            ("empty", {}, "failed"),
+            ("other router", {"text": header + "\n" + peer}, "failed"),
+            ("explicit prompt", {"text": "R1# show ip ospf neighbor\n" + header}, "failed"),
+            ("partial", {"complete": False}, "needs_evidence"),
+            ("stale", {"config_fingerprint": "previous"}, "needs_evidence"),
+            ("filtered", {"command": "show ip ospf neighbor 3.3.3.3"}, "needs_evidence"),
+            ("unrelated command", {"command": "show ip route"}, "needs_evidence"),
+            ("VRP command", {"command": "display ospf peer"}, "needs_evidence"),
+            ("malformed row", {"text": header + "\n2.2.2.2 1"}, "needs_evidence"),
+            ("invalid address", {"text": header + "\n" + peer.replace("10.12.0.3", "10.12.0.999")}, "needs_evidence"),
+            ("unknown state", {"text": header + "\n" + peer.replace("Full", "Fuli")}, "needs_evidence"),
+            ("pager", {"text": header + "\n" + peer + " --More--"}, "needs_evidence"),
+            ("mixed device", {"text": header + "\nR2# show ip ospf neighbor\n" + header}, "needs_evidence"),
+        )
+        for label, overrides, status in cases:
+            with self.subTest(label=label):
+                current = {"question": instruction, "configs": {"目标.txt": instruction}}
+                output = {"device": "R1", "command": "show ip ospf neighbor", "text": "\n" + header + "\n",
+                          "complete": True, "config_fingerprint": fingerprint(current), **overrides}
+                current["command_outputs"] = [output]
+                sources, _ = source_bundle(current)
+                result, _ = execute_tool("check_experiment_goals", {"goals": [goal]}, current, sources,
+                                         {("question:initial", 1)})
+                check, = result["checks"]
+                self.assertEqual(check["status"], status)
+                if status == "failed":
+                    self.assertIn("完整 FRRouting OSPF 邻居表", check["detail"])
+                    self.assertEqual(check["evidence"][0]["quote"], header)
+                    self.assertTrue(all(ref["source_id"] == "output:1" and output["text"].splitlines()[ref["line"] - 1]
+                                        == ref["quote"] for ref in check["evidence"]))
+
+        goal["instruction"]["quote"] = instruction
+        current = {"question": instruction, "configs": {"R1-old.log": header + "\n" + peer.replace("3.3.3.3", "2.2.2.2")}}
+        current["command_outputs"] = [{"device": "R1", "command": "show ip ospf neighbor", "text": header,
+                                      "complete": True, "config_fingerprint": fingerprint(current)}]
+        sources, _ = source_bundle(current)
+        check, = check_goals([goal], sources)["checks"]
+        self.assertEqual(check["status"], "failed")
+        self.assertEqual(check["evidence"][0]["source_id"], "output:1")
 
     def test_promptless_neighbor_table_does_not_hide_the_current_linux_route(self):
         route = "192.168.20.0/24 nhid 17 via 10.12.0.2 dev transit proto ospf metric 20"
