@@ -182,9 +182,15 @@ def generate_open_report(history):
             for item in check["evidence"]:
                 rows.append(f"  - 结果：{clean(item['device'])} 第{item['line']}行：{clean(item['quote'])}")
     plan = analysis.get("diagnostic_plan", {})
-    if plan.get("selected") and result["status"] not in RESOLVED_STATUSES:
-        selected = plan["selected"]
-        rows += ["", "## 下一项检查的选择", "", f"{clean(selected['device'])}：{clean(selected['command'])}", "", clean(plan["reason"])]
+    if plan and result["status"] not in RESOLVED_STATUSES | {"cancelled"} and analysis.get("outcome") != "ready_for_retest":
+        selected = plan.get("selected")
+        rows += ["", "## 下一项检查的选择" if selected else "## 检查规划结果", ""]
+        if selected:
+            rows += [f"{clean(selected['device'])}：{clean(selected['command'])}", ""]
+        rows.append(clean(plan["reason"]))
+        for check in plan.get("tests", []):
+            if check.get("already_observed"):
+                rows.append(f"- 已提供输出：{clean(check['device'])} · {clean(check['command'])}")
         for hypothesis in plan["hypotheses"]:
             rows.append(f"- {clean(hypothesis['title'])}：" + {"active": "待检查", "supported": "已有支持依据", "ruled_out": "已排除"}[hypothesis["state"]])
     rows += ["", "## 排查方向与原文依据", ""]

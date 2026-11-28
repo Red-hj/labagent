@@ -38,6 +38,8 @@ MCP 实验电脑连接入口已部署：在实验电脑运行连接程序，网�
 
 ## 开发资料
 
+开放排查的输入与模型上下文由 `labagent/investigation_context.py` 准备，引用、补证与状态归并由 `labagent/investigation_verification.py` 核对，`labagent/investigation.py` 维护模型与工具调度。P1 检查规划优化当前位于开发分支，发布状态和验证结果见开发任务记录。
+
 前端对话组件使用 React 19 + TypeScript，源码在 `frontend/src/`。修改组件后运行 `npm ci`、`npm run check:web`、`npm run build:web`；构建后的 `web/react-conversation.js` 随代码提交，Python 网站直接提供静态文件。普通启动继续使用 `start.cmd`。
 
 - [零基础使用说明](docs/零基础使用说明.md)
