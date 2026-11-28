@@ -122,7 +122,15 @@
           <label id="recording-label" for="replay-recording" hidden>上传的录屏 / 示例视频</label><select id="replay-recording" hidden></select>
           <video id="replay-video" controls playsinline preload="metadata" aria-label="实验操作回放视频" hidden></video><div id="replay-controls" class="replay-controls" hidden><button id="play-replay" type="button" class="secondary-button">播放回放</button><button id="retry-replay" type="button" class="text-button">重新加载回放</button><span id="replay-status" class="section-note" role="status"></span></div><p id="recording-note" class="section-note" hidden>这里播放你上传的实验录屏；内置示例使用配套演示视频。点击操作时间点可跳转并播放，时间来自每0.5秒采样识别。</p>
           <div id="operation-focus" class="operation-focus" hidden></div>
-          <details id="operation-details"><summary>查看操作时间线</summary><ol id="operation-timeline" class="operation-timeline"></ol></details>
+          <details id="operation-details">
+            <summary>查看操作时间线</summary>
+            <div class="operation-filters">
+              <label id="operation-source-control" hidden>来源 <select id="operation-source-filter" aria-controls="operation-timeline"><option value="">全部材料</option></select></label>
+              <label><input id="operation-issues-filter" type="checkbox" aria-controls="operation-timeline">只看报错和重试</label>
+            </div>
+            <p id="operation-filter-count" class="section-note" role="status" hidden></p>
+            <ol id="operation-timeline" class="operation-timeline"></ol>
+          </details>
         </section>
         </div>
         <div id="diagnosis-panel" role="tabpanel" aria-labelledby="diagnosis-tab">

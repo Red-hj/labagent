@@ -414,14 +414,17 @@ function renderRepairComparisons(comparisons) {
     }
   }
 }
-function recordingLabels() {
+function listedSourceLabels(sources) {
   const counts = new Map(), labels = new Map();
-  for (const [id, recording] of recordings) {
-    const count = (counts.get(recording.name) || 0) + 1;
-    counts.set(recording.name, count);
-    labels.set(id, count === 1 ? recording.name : recording.name + "（" + count + "）");
+  for (const [id, name] of sources) {
+    const count = (counts.get(name) || 0) + 1;
+    counts.set(name, count);
+    labels.set(id, count === 1 ? name : name + "（" + count + "）");
   }
   return labels;
+}
+function recordingLabels() {
+  return listedSourceLabels([...recordings].map(([id, recording]) => [id, recording.name]));
 }
 function renderRecordingChoices() {
   const select = $("replay-recording"), selected = select.value;
@@ -455,10 +458,13 @@ function operationTime(seconds) {
   const fraction = String(totalMs % 1000).padStart(3,"0").replace(/0+$/,"");
   return minute + ":" + second + (fraction ? "." + fraction : "");
 }
+function operationSourceName(event, labels, recording = recordingForOperation(event)) {
+  return labels.get(recording?.id) || event.material;
+}
 function operationLocation(event, labels) {
   const recording = recordingForOperation(event);
   const timed = Number.isFinite(event.seconds);
-  const material = labels.get(recording?.id) || event.material;
+  const material = operationSourceName(event, labels, recording);
   const line = "第" + event.line + "行";
   return {label:timed ? operationTime(event.seconds) : line,
     source:timed ? material + " · " + line : material, playable:timed && Boolean(recording)};
@@ -479,6 +485,34 @@ function locateOperation(event) {
     };
     if (video.readyState >= 1) seek(); else video.addEventListener("loadedmetadata", seek, {once:true});
   } else locateCitation(event.evidence[0]);
+}
+function filterOperationTimeline() {
+  const source = $("operation-source-filter").value;
+  const issuesOnly = $("operation-issues-filter").checked;
+  const list = $("operation-timeline");
+  let shown = 0;
+  for (const row of list.children) {
+    const matchesSource = !source || row.dataset.source === source;
+    const matchesIssue = !issuesOnly || row.dataset.issue === "true";
+    row.hidden = !(matchesSource && matchesIssue);
+    if (!row.hidden) shown++;
+  }
+  const total = operationHistory?.event_count || list.children.length;
+  const count = $("operation-filter-count");
+  count.hidden = !total || (!source && !issuesOnly && shown === total);
+  count.textContent = shown ? "显示 " + shown + " / " + total + " 步" : "没有符合筛选条件的操作。";
+}
+function renderOperationSources(sources) {
+  const select = $("operation-source-filter"), selected = select.value;
+  const all = element("option", "全部材料"); all.value = "";
+  select.replaceChildren(all);
+  for (const [key, label] of listedSourceLabels(sources)) {
+    const option = element("option", label); option.value = key; select.append(option);
+  }
+  const multiple = sources.size > 1;
+  select.value = multiple && sources.has(selected) ? selected : "";
+  $("operation-source-control").hidden = !multiple;
+  if (!sources.size) $("operation-issues-filter").checked = false;
 }
 function linkedOperationButton(event, label, labels) {
   const location = operationLocation(event, labels);
@@ -528,8 +562,13 @@ function renderOperationHistory(history) {
     container.append(ask);
   }
   $("operation-timeline").replaceChildren();
+  const sources = new Map();
   for (const event of events) {
     const row = element("li", undefined, "operation-event " + event.status + (event.recovered ? " recovered" : ""));
+    const source = JSON.stringify([event.source_id || "", event.material]);
+    if (!sources.has(source)) sources.set(source, operationSourceName(event, labels));
+    row.dataset.source = source;
+    row.dataset.issue = String(event.status === "error" || earlierErrors.has(event.id));
     const location = operationLocation(event, labels);
     const jump = element("button", location.label, "text-button operation-time"); jump.type = "button";
     jump.setAttribute("aria-label", (location.playable ? "播放 " : "定位原文 ") + location.label + " · " + location.source);
@@ -550,6 +589,8 @@ function renderOperationHistory(history) {
     }
     $("operation-timeline").append(row);
   }
+  renderOperationSources(sources);
+  filterOperationTimeline();
   $("operation-details").hidden = !history.event_count;
 }
 async function waitForRecording(id) {
@@ -929,6 +970,8 @@ for (const button of document.querySelectorAll("[data-demo-preset]")) button.add
 $("load-demo-repair").addEventListener("click", () => loadDemo(true));
 $("load-demo-final").addEventListener("click", () => loadDemo(true, true));
 $("replay-recording").addEventListener("change", renderRecordingChoices);
+$("operation-source-filter").addEventListener("change", filterOperationTimeline);
+$("operation-issues-filter").addEventListener("change", filterOperationTimeline);
 $("play-replay").addEventListener("click", () => {
   const video = $("replay-video");
   if (video.error) video.load();

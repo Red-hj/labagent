@@ -77,8 +77,8 @@ async function replayChecks() {
 function replayLinkChecks() {
   const nodes = new Map(), visited = [];
   const element = (tag,text,className) => ({
-    tag,text,className,children:[],append(...items){this.children.push(...items);},
-    replaceChildren(){this.children=[];},setAttribute(key,value){this[key]=value;},
+    tag,text,className,value:"",dataset:{},children:[],append(...items){this.children.push(...items);},
+    replaceChildren(...items){this.children=items;},setAttribute(key,value){this[key]=value;},
     addEventListener(name,handler){this[name]=handler;},
   });
   const $ = id => {
@@ -88,13 +88,15 @@ function replayLinkChecks() {
   const context = vm.createContext({$,element,recordings:new Map(),operationHistory:null,
     recordingLabels:()=>new Map(),syncWorkspaceLayout(){},locateOperation:event=>visited.push(event.id)});
   vm.runInContext(part("function recordingForOperation(","function locateOperation("),context);
-  vm.runInContext(part("function linkedOperationButton(","async function waitForRecording("),context);
+  vm.runInContext(part("function listedSourceLabels(","function recordingLabels("),context);
+  vm.runInContext(part("function filterOperationTimeline(","async function waitForRecording("),context);
   const base={material:"terminal.log",device:"R2",view_label:"配置视图",command:"router ospf",seconds:null};
-  context.history={event_count:4,error_count:3,first_issue_id:"op1",events:[
+  context.history={event_count:6,error_count:3,first_issue_id:"op1",events:[
     {...base,id:"op1",line:1,status:"error",retry_event_id:"op3",recovered:true},
     {...base,id:"op2",line:3,status:"error",retry_event_id:"op3",recovered:true},
     {...base,id:"op3",line:5,status:"returned"},
-    {...base,id:"op4",line:7,status:"error",retry_event_id:"unavailable",recovered:true},
+    {...base,id:"op4",material:"other.log",line:7,status:"error",retry_event_id:"unavailable",recovered:true},
+    {...base,id:"op5",material:"other.log",line:8,status:"returned"},
   ]};
   vm.runInContext("renderOperationHistory(history)",context);
   const [first, second, retry, missing] = $("operation-timeline").children;
@@ -109,6 +111,23 @@ function replayLinkChecks() {
   details.children[1].click();
   details.children[2].click();
   assert.deepEqual(visited,["op3","op3","op1","op2"]);
+
+  const source = $("operation-source-filter"), issues = $("operation-issues-filter");
+  const visible = () => $("operation-timeline").children.filter(row=>!row.hidden);
+  assert.deepEqual(source.children.map(option=>option.text),["全部材料","terminal.log","other.log"]);
+  assert.equal($("operation-filter-count").textContent,"显示 5 / 6 步");
+  source.value = missing.dataset.source;
+  issues.checked = true;
+  vm.runInContext("filterOperationTimeline()",context);
+  assert.deepEqual(visible(),[missing]);
+  source.value = first.dataset.source;
+  vm.runInContext("filterOperationTimeline()",context);
+  assert.deepEqual(visible(),[first,second,retry]);
+  context.history = {event_count:3,events:context.history.events.slice(0,3)};
+  vm.runInContext("renderOperationHistory(history)",context);
+  assert.equal(source.value,"","a single material clears the source filter");
+  vm.runInContext("renderOperationHistory({})",context);
+  assert.equal(issues.checked,false);
 }
 
 async function sameNameReplayChecks() {
@@ -129,7 +148,7 @@ async function sameNameReplayChecks() {
     recordings:new Map(), screenshots:new Map(), materials:new Map(), videoReady:true, replaySeek:0, operationHistory:null,
     mediaUrl:value=>value, syncWorkspaceLayout(){},requestState(){},renderMaterials(){},previewOperations:async()=>{},
     element:(tag,text)=>({tag,text}), api:async route=>statuses.get(route.split("/").at(-1))});
-  vm.runInContext(part("function recordingLabels(","function renderOperationHistory("),context);
+  vm.runInContext(part("function listedSourceLabels(","function renderOperationHistory("),context);
   vm.runInContext(part("async function waitForRecording(","function requestState("),context);
   const add = async (id,kind,name) => {
     statuses.set(id,{id, kind, name, status:"ready", material_name:id+".log", transcript:id, video_url:"/video/"+id});
