@@ -36,13 +36,23 @@ OUTPUT_EXCERPT = re.compile(r"节选|摘录|片段|截断|未显示|\b(?:excerpt
 
 
 OSPF_NEIGHBOR_COMMAND = re.compile(rf"(?:{FRR_NEIGHBOR_COMMAND}|display ospf(?:\s+\d+)? peer)", re.I)
+OSPF_NEIGHBOR_WORDS = r"邻居|邻接|\b(?:neighbou?r|peer|adjacency)\b"
+OSPF_NEIGHBOR_CLAUSE_BOUNDARY = re.compile(
+    rf"[;；。!?！？]|\.(?=\s|$)|[,，](?=[^,，;；。!?！？]*(?:{OSPF_NEIGHBOR_WORDS}))", re.I)
+OSPF_STATE_MENTION = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:" + "|".join(sorted(OSPF_NEIGHBOR_STATES)) + r")(?![A-Za-z0-9_-])", re.I)
 
 
 def neighbor_instruction_supports_goal(instruction, device, router_id, expected):
-    if not re.search(r"邻居|邻接|\b(?:neighbou?r|peer|adjacency)\b", instruction, re.I):
-        return False
-    return all(re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(value.strip()) + r"(?![A-Za-z0-9_.-])", instruction, re.I)
-               for value in (device, router_id, expected))
+    target_tokens = [re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(value.strip()) + r"(?![A-Za-z0-9_.-])", re.I)
+                     for value in (device, router_id)]
+    expected_states = {expected.strip().casefold()}
+    for clause in OSPF_NEIGHBOR_CLAUSE_BOUNDARY.split(instruction):
+        if (re.search(OSPF_NEIGHBOR_WORDS, clause, re.I)
+                and all(token.search(clause) for token in target_tokens)
+                and {state.casefold() for state in OSPF_STATE_MENTION.findall(clause)} == expected_states):
+            return True
+    return False
 
 
 def area_instruction_supports_goal(instruction, device, interface, expected):
