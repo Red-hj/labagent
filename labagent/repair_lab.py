@@ -54,13 +54,16 @@ def _route_protocol(goal, observed):
     lookup = network if network is not None else ipaddress.IPv4Address(target)
     chosen = select_route_records(kernel_rows, lookup, lowest_metric=True)
     kernel_protocols = {row["protocol"].lower() for row in chosen}
+    link_down = any(row["link_down"] for row in chosen)
     if kernel_rows is None:
         kernel = "输出无法核验"
+    elif link_down:
+        kernel = "匹配项带 linkdown，链路状态待核对"
     else:
         kernel = "、".join(sorted(kernel_protocols)) or "目标路由未匹配"
     detail = f"FRRouting 路由来源：{source}。Linux 主路由表：{kernel}。"
     evidence = f"FRRouting\n{evidence.strip()}\n\nLinux 主路由表\n{raw.strip()}"
-    return passed and kernel_protocols == {expected}, detail, evidence
+    return passed and not link_down and kernel_protocols == {expected}, detail, evidence
 
 
 def evaluate_phase(goals, phase):

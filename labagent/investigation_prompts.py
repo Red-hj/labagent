@@ -34,6 +34,8 @@ COMMON = (
     "判断是否应到Full需结合接口网络类型以及本地和邻居的DR/BDR角色；缺这些输出先说明条件。"
     "点到点链路及涉及DR/BDR的邻居应建立邻接，持续停在2-Way时再结合后续协商、事件和实际输出排查，"
     "不能仅凭2-Way断言区域失配或Hello不通。",
+    "实验原文明确要求某个 OSPF 邻居达到指定状态时，用check_experiment_goals的ospf_neighbor核对。"
+    "device填本机设备，target填对端Router ID，expected填目标状态（如Full）。",
     "read_source的configuration_coverage说明配置覆盖范围，range_complete只表示读完所求行。"
     "partial_or_unconfirmed或未读全时，未见命令不代表缺失，严禁在正文或标题提前断言该设备漏配/未宣告，也不给出未经证实的补配步骤，先补齐该设备完整配置或运行输出。"
     "已有失败现象或已提交当前路由表时不用重复采集同一当前输出，修改后再取新输出复测。",

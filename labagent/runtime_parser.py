@@ -4,6 +4,7 @@ import ipaddress
 import re
 
 from .engine import fingerprint
+from .operation_history import prompt_info
 from .parser import interface_id, parse_config
 from .connectivity import parse_ping_records
 
@@ -17,9 +18,45 @@ LINUX_ROUTE_ROW = re.compile(r"\s*(default|\d+(?:\.\d+){3}(?:/\d+)?)\s+(.+)")
 LINUX_PROTOCOLS = dict(kernel="Direct", static="Static", boot="Boot", ospf="OSPF", bgp="BGP", rip="RIP", isis="ISIS", dhcp="DHCP")
 
 
+OSPF_NEIGHBOR_STATES = frozenset(("down", "attempt", "init", "2-way", "exstart", "exchange", "loading", "full"))
+FRR_NEIGHBOR_COMMAND = "show ip ospf neighbor"
+FRR_NEIGHBOR_HEADER = re.compile(r"\s*Neighbor\s+ID\s+Pri\s+State\s+.*\bAddress\s+Interface\b.*", re.I)
+FRR_NEIGHBOR_ROW = re.compile(r"\s*(\d+(?:\.\d+){3})\s+\d+\s+([\w-]+)(?:/\S+)?"
+                             r"\s+(?:\S+\s+){1,2}(\d+(?:\.\d+){3})\s+\S+(?:\s+.*)?", re.I)
+
+
+def parse_frr_neighbors(text):
+    """Return the last FRR table without treating partial parsing as coverage."""
+    lines = text.splitlines()
+    header = next((index for index in range(len(lines) - 1, -1, -1)
+                   if FRR_NEIGHBOR_HEADER.fullmatch(lines[index])), None)
+    if header is None:
+        return None
+    preamble = [line for line in lines[:header] if line.strip()]
+    echo = prompt_info(preamble[0]) if len(preamble) == 1 else None
+    fully_parsed = not preamble or bool(echo and " ".join(echo[3].lower().split()) == FRR_NEIGHBOR_COMMAND)
+    rows = []
+    for number, line in enumerate(lines[header + 1:], header + 2):
+        if not line.strip():
+            continue
+        match = FRR_NEIGHBOR_ROW.fullmatch(line)
+        if match is None:
+            fully_parsed = False
+            continue
+        rows.append({"router_id": match[1], "state": match[2], "line": number, "peer_line": number})
+        try:
+            ipaddress.IPv4Address(match[1])
+            ipaddress.IPv4Address(match[3])
+        except ValueError:
+            fully_parsed = False
+        if match[2].casefold() not in OSPF_NEIGHBOR_STATES:
+            fully_parsed = False
+    return {"header_line": header + 1, "rows": rows, "fully_parsed": fully_parsed}
+
+
 def parse_neighbors(text):
     records = []
-    local_ip = peer = None
+    local_ip = peer = router_id = None
     peer_line = None
     for number, line in enumerate(text.splitlines(), 1):
         match = re.search(r"Area\s+[\d.]+\s+interface\s+([\d.]+)", line, re.I)
@@ -28,11 +65,12 @@ def parse_neighbors(text):
             peer = None
         match = re.search(r"Router ID:\s*([\d.]+)\s+Address:\s*([\d.]+)", line, re.I)
         if match:
-            peer = match[2]
+            router_id, peer = match[1], match[2]
             peer_line = number
-        match = re.search(r"\bState:\s*(\w+)", line, re.I)
+        match = re.search(r"\bState:\s*([\w-]+)", line, re.I)
         if match and local_ip and peer:
-            records.append({"local_ip": local_ip, "peer_ip": peer, "state": match[1], "line": number, "peer_line": peer_line})
+            records.append({"local_ip": local_ip, "peer_ip": peer, "router_id": router_id,
+                            "state": match[1], "line": number, "peer_line": peer_line})
             peer = None
     return records
 
@@ -105,9 +143,11 @@ def parse_linux_routes(text):
             return None
         network = str(ipaddress.IPv4Network("0.0.0.0/0" if row[1] == "default" else row[1], strict=False))
         tokens, fields, position = row[2].split(), {}, 0
+        flags = set()
         while position < len(tokens):
             key = tokens[position]
-            if key == "onlink":
+            if key in {"onlink", "linkdown"}:
+                flags.add(key)
                 position += 1
                 continue
             if key not in {"via", "dev", "proto", "scope", "src", "metric", "nhid", "table", "mtu", "advmss", "pref"} or key in fields:
@@ -130,7 +170,7 @@ def parse_linux_routes(text):
         protocol = fields.get("proto", "Unknown")
         records.append({"network": network, "protocol": LINUX_PROTOCOLS.get(protocol.lower(), protocol),
                         "next_hop": gateway, "interface": fields["dev"], "metric": int(metric),
-                        "line": number, "text": line.strip()})
+                        "link_down": "linkdown" in flags, "line": number, "text": line.strip()})
     return records
 
 
