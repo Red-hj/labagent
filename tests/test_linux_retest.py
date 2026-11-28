@@ -240,7 +240,11 @@ class LinuxRouteTests(unittest.TestCase):
             report = generate_report(store.history(first["session_id"]))
             self.assertIn("OSPF", report)
             self.assertIn("192.168.20.0/24", report)
-            self.assertNotIn("待补 R1 当前路由表", report)
+            goal_section = report.split("## 实验目标逐项核对", 1)[1].split("\n## ", 1)[0]
+            initial_checks, final_checks = goal_section.split("### 第2轮", 1)
+            self.assertIn("待补 R1 当前路由表", initial_checks)
+            self.assertIn("| 2 | 4/4 | 0 | 0 |", initial_checks)
+            self.assertNotIn("待补 R1 当前路由表", final_checks)
 
 
 if __name__ == "__main__":
