@@ -8,9 +8,8 @@ from pathlib import Path
 import re
 
 from .connectivity import parse_ping_records
-from .runtime_parser import (FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_HEADER, FRR_NEIGHBOR_JSON_COMMAND, FRR_ROUTE_LEGEND,
-                             LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
-                             OSPF_NEIGHBOR_STATES,
+from .runtime_parser import (FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_HEADER, FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
+                             FRR_NEIGHBOR_JSON_COMMAND, OSPF_NEIGHBOR_STATES,
                              parse_frr_neighbors, parse_frr_routes, parse_linux_routes, parse_neighbors,
                              parse_routes, select_route_records)
 from .operation_history import TIME, prompt_info
