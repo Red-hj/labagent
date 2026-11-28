@@ -6,7 +6,7 @@ from .knowledge import validate_scope, validate_course_documents
 from .personal import validate_memory_context
 from .learning import policy as learning_policy, STEP_TOOL
 from .experiment_state import experiment_context
-from .experiment_goals import evidence_blocks, submitted_pings, is_config_block, complete_config, ROUTE_EXCERPT
+from .experiment_goals import evidence_blocks, submitted_pings, is_config_block, complete_config, OUTPUT_EXCERPT
 from .investigation_prompts import system_instructions, GOAL_TOOL_NAMES
 from .operation_history import inspect_history, prompt_info
 from .connectivity import host_literals
@@ -66,6 +66,8 @@ def validate_open(payload):
     for output in outputs:
         if not isinstance(output, dict) or not all(isinstance(output.get(key), str) for key in ("device", "command", "text")) or len(output["text"]) > 100000:
             raise ValueError("运行输出须包含 device、command、text，正文不超过100KB")
+        if "complete" in output and type(output["complete"]) is not bool:
+            raise ValueError("complete 必须为布尔值")
     if payload.get("evidence_kind", "user_submitted") not in ("demo", "user_submitted"):
         raise ValueError("evidence_kind 无效")
     recordings = payload.get("recordings", [])
@@ -102,7 +104,9 @@ def source_bundle(payload, conversation=None, *, previous_materials=None):
         if output.get("config_fingerprint") != fingerprint(payload):
             warnings.append(f"运行输出{index}未绑定当前输入，未提供给模型；请采集或确认新输出并绑定后继续。")
             continue
-        sources[f"output:{index}"] = {"device": output["device"], "kind": "submitted_command_output", "command": output["command"], "text": output["text"]}
+        sources[f"output:{index}"] = {"device": output["device"], "kind": "submitted_command_output",
+                                      "command": output["command"], "text": output["text"],
+                                      "complete": output.get("complete") is True}
     for index, turn in enumerate(conversation or [], 1):
         if turn.get("intent") != "analyze" and turn.get("user"):
             sources[f"message:{index}"] = {"device": f"第{index}轮追问", "kind": "user_message", "text": turn["user"]}
@@ -148,8 +152,10 @@ def prepare_investigation(payload, sources, previous=None, *, conversation=None,
             "experiment_state": safe_value(experiment_context(previous, payload, previous_materials)),
             "operation_history": {"event_count": inspect_history(sources)["event_count"], "tool": "inspect_operation_timeline"},
             "conversation": safe_value((conversation or [])[-6:])}, ensure_ascii=False)}]
-    if payload.get("interaction"):
-        messages.append({"role": "user", "content": "本次请求：" + safe_text(payload["interaction"]["message"]) + "\n以上JSON中的question是最初实验背景，conversation是历史记录。请直接回答本次请求，不重新回答最初问题。"})
+    if current := sources.get("message:current"):
+        messages.append({"role": "user", "content": json.dumps({"source_id": current["source_id"],
+            "lines": [{"line": number, "text": line} for number, line in enumerate(current["lines"], 1)]},
+            ensure_ascii=False)})
     available_tools = [tool for tool in registry.definitions() if (not active_learning or tool["function"]["name"] != "submit_hypotheses")
                        and (goal_checks or tool["function"]["name"] not in GOAL_TOOL_NAMES)]
     if active_learning:
@@ -174,7 +180,7 @@ def observed_device_commands(sources, *, previous_materials=None):
     for block in evidence_blocks(sources):
         command = normalize_check_command(block['command'])
         output = [line for line in block['lines'] if line.strip() and not prompt_info(line)]
-        if not command or not output or ROUTE_EXCERPT.search('\n'.join(output)):
+        if not command or not output or OUTPUT_EXCERPT.search('\n'.join(output)):
             continue
         if is_config_block(block) and not complete_config(block):
             continue

@@ -163,6 +163,7 @@ class RepairLabTests(unittest.TestCase):
             'preferred static route': (original + '\n192.168.20.0/24 via 10.12.0.2 dev transit proto static metric 10', 'static'),
             'malformed table': (original + '\nRTNETLINK answers: Permission denied', '输出无法核验'),
             'unknown protocol': (original.replace('proto ospf', 'proto 188'), '188'),
+            'selected linkdown': (local + '\n' + route + ' linkdown', '匹配项带 linkdown'),
         }
         for label, (linux_output, expected) in cases.items():
             with self.subTest(label=label):

@@ -19,7 +19,8 @@ from .experiment_state import experiment_context, summarize_experiment
 from .progress import emit_progress, ToolProgress
 from .experiment_goals import (GOAL_TOOL, ROUTE_TOOL, area_instruction_supports_goal, validate_goal_fields,
                                check_goals, check_route_selection, checked_frr_area_repair, complete_config, evidence_blocks,
-                               explicit_area_goals, is_config_block, pending_ospf_loopback_evidence, submitted_pings)
+                               explicit_area_goals, is_config_block, neighbor_instruction_supports_goal,
+                               pending_ospf_loopback_evidence, submitted_pings)
 from .diagnostic_planner import PLAN_TOOL, validate_plan
 from .operation_history import HISTORY_TOOL, inspect_history, model_history
 from .repair_lab import REPAIR_TOOL, compare_run, discover_runs
@@ -94,6 +95,9 @@ def _check_experiment_goals(args, payload, sources, seen, *, previous_materials=
         if goal["kind"] == "ospf_interface_area" and not area_instruction_supports_goal(
                 instruction["quote"], goal["device"], goal["target"], goal["expected"]):
             raise ValueError("区域目标的原文须同时写出设备、接口以及该接口唯一的目标区域；不要添加推测的接口或区号")
+        if goal["kind"] == "ospf_neighbor" and not neighbor_instruction_supports_goal(
+                instruction["quote"], goal["device"], goal["target"], goal["expected"]):
+            raise ValueError("邻居目标的原文须明确设备、对端 Router ID 和目标状态")
         if goal["kind"] == "reachability" and address_literal(goal["target"]) not in submitted_host_addresses(payload, sources):
             raise ValueError("材料未提供该 Ping 目的地址。请先索要目标端点实际 IP，暂不建立该目标。")
         saved.append({**goal, "instruction": instruction})
@@ -328,7 +332,10 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
     active_learning, messages, available_tools = prepare_investigation(
         payload, sources, previous, conversation=conversation, previous_materials=previous_materials,
         connected=connected, goal_checks=goal_checks, registry=tool_registry)
-    trace, metadata, seen = [], [], set()
+    trace, metadata = [], []
+    # Current follow-up lines were already supplied to the model with their source ID.
+    current_lines = sources.get("message:current", {}).get("lines", [])
+    seen = {("message:current", number) for number in range(1, len(current_lines) + 1)}
     diagnostic_context = {"criteria": (previous or {}).get("goal_assessment", {}).get("criteria", []),
                           "goal_checks_disabled": not goal_checks}
     start = time.monotonic()
@@ -336,13 +343,21 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
         return {"tool_trace": trace, "calls": metadata, "provider": public_config()["provider"], "model": public_config()["model"],
                 "elapsed_ms": round((time.monotonic() - start) * 1000),
                 "engine_state": {"goal_assessment": assess_goals(diagnostic_context, sources, seen, payload, previous_materials)}}
-    completion = completion or (lambda history: chat_completion(history, tools=available_tools, max_tokens=bounded_setting("LABAGENT_OPEN_MAX_TOKENS", 1600, 256, 2048)))
+    round_limit = 6
+    guided_followup = active_learning and payload.get("interaction", {}).get("type") == "ask"
+    submission_only = False
     calls, outcome, pending_learning, pending_item = [], None, None, None
     approved_tools = {tool["function"]["name"] for tool in available_tools}
     def select_check(turn):
-        nonlocal calls, outcome
+        nonlocal calls, outcome, submission_only
+        submission_only = guided_followup and turn == round_limit - 1
         emit_progress("analyzing", "正在分析本轮材料与问题…")
-        message = completion(messages)
+        if completion is not None:
+            message = completion(messages)
+        else:
+            choice = {"tool_choice": "required"} if submission_only else {}
+            message = chat_completion(messages, tools=[STEP_TOOL] if submission_only else available_tools,
+                                      max_tokens=bounded_setting("LABAGENT_OPEN_MAX_TOKENS", 1600, 256, 2048), **choice)
         if not isinstance(message, dict):
             raise ValueError("invalid response")
         if isinstance(message.get("_meta"), dict):
@@ -373,6 +388,8 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
                 label = "正在读取已连接实验设备的输出"
             item = ToolProgress(name if name in approved_tools else "unapproved_tool", label, turn + 1)
             try:
+                if submission_only and name != "submit_learning_step":
+                    raise ValueError("检查轮次已用完，请提交当前一步引导")
                 raw = call["function"].get("arguments", "")
                 if not isinstance(raw, str) or len(raw) > 20000:
                     raise ValueError("工具参数无效或过长")
@@ -465,7 +482,8 @@ def _run_investigator(payload, sources, previous=None, completion=None, *, conve
             raise
 
     try:
-        workflow = run_tool_workflow(select_check, execute_check, review=review_learning_step if active_learning else None)
+        workflow = run_tool_workflow(select_check, execute_check, review=review_learning_step if active_learning else None,
+                                     limit=round_limit)
         check_cancelled()
         if outcome is not None:
             outcome["tool_workflow"] = workflow

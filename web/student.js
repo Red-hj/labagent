@@ -1,6 +1,8 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const materials = new Map();
+let commandOutputs = [];
+let experimentInputs = {};
 const recordings = new Map();
 const screenshots = new Map();
 let operationHistory = null;
@@ -101,7 +103,12 @@ function receiveProgress(event, request = activeRequest) {
 async function diagnose(input) {
   const request = activeRequest;
   await window.LabWorkspace.prepareDiagnosis(input);
-  return window.LabTasks.run(input, request);
+  const result = await window.LabTasks.run(input, request);
+  if (activeRequest === request && commandOutputs.includes(null)) {
+    commandOutputs = input.command_outputs || [];
+    renderMaterials();
+  }
+  return result;
 }
 function syncWorkspaceLayout() {
   const hasOutput = materials.size || sessionId || busy || sessionProblem || !$("request-status").hidden || !$("process-section").hidden || !$("repair-section").hidden;
@@ -154,18 +161,42 @@ function materialChanged(detail) {
   syncContinuation();
   if (sessionId) setBusy(busy);
 }
+function restoreSubmittedMaterials(input) {
+  materials.clear();
+  for (const [name, text] of Object.entries(input.configs || {})) materials.set(name, text);
+  commandOutputs = (input.command_outputs || []).slice();
+  experimentInputs = Object.fromEntries(["topology", "requirements"]
+    .filter(key => Object.hasOwn(input, key)).map(key => [key, input[key]]));
+}
+function commandOutputMaterials() {
+  const names = new Set(materials.keys());
+  const entries = [];
+  for (const [index, output] of commandOutputs.entries()) {
+    if (!output) continue;
+    const base = output.device.slice(0, 96) + "-输出" + (index + 1);
+    let name = base + ".log";
+    for (let suffix = 2; names.has(name); suffix++) name = base + "-" + suffix + ".log";
+    names.add(name);
+    entries.push({index, name, text:output.command.replace(/[\r\n]+/g, " ") + "\n" + output.text});
+  }
+  return entries;
+}
 function renderMaterials() {
   syncWorkspaceLayout();
+  const outputs = commandOutputMaterials();
+  const count = materials.size + outputs.length;
   $("material-source").hidden = evidenceKind !== "demo";
-  $("material-count").textContent = materials.size ? "已添加 " + materials.size + " 份" : "";
+  $("material-count").textContent = count ? "已添加 " + count + " 份" : "";
   window.LabConversation.renderMaterials($("material-list"), {
     materials:[...materials].map(([name, text]) => {
       const screenshot = [...screenshots.values()].find(item => item.material_name === name);
       return {name, text, screenshot:screenshot ? {name:screenshot.name, imageUrl:mediaUrl(screenshot.image_url)} : undefined};
-    }), busy, scope:materialScope,
+    }).concat(outputs), busy, scope:materialScope,
     onRemove:name => {
       if (busy) return;
-      materials.delete(name);
+      const output = outputs.find(item => item.name === name);
+      if (output) commandOutputs[output.index] = null;
+      else materials.delete(name);
       for (const collection of [recordings, screenshots]) for (const [id, media] of collection) if (media.material_name === name) collection.delete(id);
       renderRecordingChoices(); renderMaterials(); materialChanged(); previewOperations();
     },
@@ -183,12 +214,32 @@ function locateCitation(citation) {
     if (turn) { turn.tabIndex = -1; turn.focus({preventScroll:true}); turn.scrollIntoView({block:"center"}); }
     return message(citation.device + "：" + citation.quote);
   }
-  const text = materials.get(citation.device);
-  if (text === undefined || text.split(/\r?\n/)[citation.line - 1] !== citation.quote) return message("当前材料已更新，请核对新结果以更新原文定位。", true);
-  const screenshot = [...screenshots.values()].find(item => item.material_name === citation.device);
+  const changed = "当前材料已更新，请核对新结果以更新原文定位。";
+  if (citation.source_id === "question:initial") {
+    const field = $("problem"), question = field.value.trim() || defaultQuestion;
+    const lines = question.split(/\r?\n/);
+    if (lines[citation.line - 1] !== citation.quote) return message(changed, true);
+    if (field.value.trim()) {
+      const previous = lines.slice(0, citation.line - 1);
+      const start = field.value.indexOf(question) + previous.reduce((offset, line) => offset + line.length + 1, 0);
+      field.focus({preventScroll:true}); field.setSelectionRange(start, start + citation.quote.length);
+      field.scrollIntoView({block:"center"});
+    }
+    return message("已定位实验要求第" + citation.line + "行。");
+  }
+  let name = citation.device, line = citation.line, text = materials.get(name);
+  const outputRef = /^output:(\d+)$/.exec(citation.source_id);
+  if (outputRef) {
+    const index = Number(outputRef[1]) - 1;
+    const output = commandOutputMaterials().find(item => item.index === index);
+    if (!output || commandOutputs[index].device !== citation.device) return message(changed, true);
+    name = output.name; text = output.text; line++;
+  }
+  if (text === undefined || text.split(/\r?\n/)[line - 1] !== citation.quote) return message(changed, true);
+  const screenshot = [...screenshots.values()].find(item => item.material_name === name);
   if (screenshot) { showScreenshot(screenshot, citation); return; }
-  window.LabConversation.locateMaterial($("material-list"), citation.device, citation.line, citation.quote);
-  message("已定位 " + citation.device + " 第" + citation.line + "行。");
+  window.LabConversation.locateMaterial($("material-list"), name, line, citation.quote);
+  message("已定位 " + name + " 第" + line + "行。");
 }
 
 function showScreenshot(screenshot, citation) {
@@ -306,6 +357,7 @@ function requestPayload() {
   const input = {diagnostic_mode:"open_network", use_llm:true, question:$("problem").value.trim() || defaultQuestion,
     configs:Object.fromEntries(materials), knowledge_scope:knowledgeScope, evidence_kind:evidenceKind,
     recordings:[...recordings.keys(), ...screenshots.keys()].filter(id => id !== "demo"),
+    ...experimentInputs, ...(commandOutputs.length ? {command_outputs:commandOutputs.filter(Boolean)} : {}),
     ...(sessionId ? {session_id:sessionId} : {})};
   return window.LabLearning?.apply(input) || input;
 }
@@ -886,7 +938,7 @@ $("new-diagnosis").addEventListener("click", () => {
   sessionProblem = false; requestFailed = false; legacySession = false;
   window.LabHistory.activate(null); window.LabHistory.setSnapshot(null);
   $("analysis-details").open = false;
-  materials.clear(); sessionId = null; evidenceKind = "user_submitted"; knowledgeScope = "default"; demoActive = false;
+  restoreSubmittedMaterials({}); sessionId = null; evidenceKind = "user_submitted"; knowledgeScope = "default"; demoActive = false;
   materialsPending = false;
   recordings.clear(); screenshots.clear(); renderRecordingChoices(); renderOperationHistory({}); renderRepairComparisons([]);
   $("demo-case").value = "network_access";
@@ -939,8 +991,8 @@ async function restoreTask() {
   const taskSession = task.session_id || task.input?.session_id || null;
   if (requestedSession && requestedSession !== taskSession) return false;
   if (task.input.room_id && task.input.room_id !== roomHeaders()["X-LabAgent-Room"]) return false;
-  materials.clear(); recordings.clear(); screenshots.clear();
-  for (const [name, text] of Object.entries(task.input.configs || {})) materials.set(name, text);
+  restoreSubmittedMaterials(task.input);
+  recordings.clear(); screenshots.clear();
   $("problem").value = task.input.question === defaultQuestion ? "" : task.input.question || "";
   knowledgeScope = task.input.knowledge_scope || "default"; evidenceKind = task.input.evidence_kind || "user_submitted";
   for (const id of task.input.recordings || []) {
@@ -1004,8 +1056,7 @@ async function start() {
       return message("这次会话已不存在。请点击“新的排查”并重新提供材料。", true);
     }
     const latest = saved.attempts[saved.attempts.length - 1];
-    for (const [name, text] of Object.entries(latest.input.configs)) materials.set(name, text);
-    for (const [index, output] of (latest.input.command_outputs || []).entries()) materials.set((output.device + "-输出" + (index + 1) + ".log").slice(0, 120), output.command + "\n" + output.text);
+    restoreSubmittedMaterials(latest.input);
     $("problem").value = latest.input.question === defaultQuestion ? "" : latest.input.question || "";
     knowledgeScope = latest.input.knowledge_scope || "default"; evidenceKind = latest.input.evidence_kind || "user_submitted";
     for (const id of latest.input.recordings || []) {
@@ -1041,7 +1092,11 @@ async function start() {
 window.LabWorkspace.init({api, element, message, materials, recordings, screenshots,
   busy:() => busy, question:() => $("problem").value, session:() => sessionId,
   apply:(room, replace = true) => {
-    if (replace) { materialScope++; materials.clear(); for (const [name, entry] of Object.entries(room.materials)) materials.set(name, entry.content); $("problem").value = room.question; }
+    if (replace) {
+      materialScope++;
+      restoreSubmittedMaterials({configs:Object.fromEntries(Object.entries(room.materials).map(([name, entry]) => [name, entry.content]))});
+      $("problem").value = room.question;
+    }
     renderMaterials(); previewOperations();
   },
   restore:async (room, isCurrent = () => true) => {

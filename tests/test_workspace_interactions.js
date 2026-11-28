@@ -71,6 +71,63 @@ async function replayChecks() {
   waits[1](); assert.equal(video.currentTime,6);
 }
 
+async function commandOutputChecks() {
+  const nodes = new Map(), notes = [], locations = [];
+  let rendered, submitted;
+  const $ = id => {
+    if (!nodes.has(id)) nodes.set(id,{value:"",focus(){},scrollIntoView(){},setSelectionRange(start,end){this.selection=[start,end];}});
+    return nodes.get(id);
+  };
+  const context = vm.createContext({$, materials:new Map(), commandOutputs:[], experimentInputs:{}, screenshots:new Map(), recordings:new Map(),
+    materialScope:0, sessionId:"saved-session", legacySession:false, busy:false, evidenceKind:"user_submitted", knowledgeScope:"default",
+    defaultQuestion:"default",activeRequest:{},syncWorkspaceLayout(){},renderRecordingChoices(){},previewOperations(){},materialChanged(){},
+    message:(text,error)=>notes.push({text,error}), window:{
+      LabWorkspace:{preview(){},prepareDiagnosis:async()=>{}}, LabTasks:{run:async input=>{submitted=input;return {llm:{status:"ok"}};}},
+      LabConversation:{renderMaterials:(element,props)=>{rendered=props;},locateMaterial:(element,name,line,quote)=>locations.push({name,line,quote})}
+    }});
+  vm.runInContext(part("function restoreSubmittedMaterials(","function showScreenshot("),context);
+  vm.runInContext(part("function requestPayload(","async function previewOperations("),context);
+  vm.runInContext(part("async function diagnose(","function syncWorkspaceLayout("),context);
+
+  const saved = {
+    configs:{"R1-输出1.log":"user material"}, topology:{links:[]}, requirements:{lab:"A"},
+    command_outputs:[
+      {device:"R1",command:"ip route show table main",text:"first line\nactual OSPF route",complete:true,config_fingerprint:"bound"},
+      {device:"R1",command:"show ip ospf neighbor",text:"Neighbor ID\n2.2.2.2 Full",complete:true,config_fingerprint:"bound"},
+    ],
+  };
+  context.saved = saved;
+  $("problem").value = "  核对 R1\n邻居必须达到 Full。  ";
+  vm.runInContext("restoreSubmittedMaterials(saved); renderMaterials();",context);
+  const input = JSON.parse(JSON.stringify(vm.runInContext("requestPayload()",context)));
+  assert.deepEqual(input.configs,saved.configs);
+  assert.deepEqual(input.command_outputs,saved.command_outputs);
+  assert.deepEqual(input.topology,saved.topology);
+  assert.deepEqual(input.requirements,saved.requirements);
+  assert.deepEqual([...rendered.materials].map(entry=>entry.name),["R1-输出1.log","R1-输出1-2.log","R1-输出2.log"]);
+
+  vm.runInContext('locateCitation({source_id:"output:1",device:"R1",line:2,quote:"actual OSPF route"});',context);
+  assert.deepEqual(locations.at(-1),{name:"R1-输出1-2.log",line:3,quote:"actual OSPF route"});
+  vm.runInContext('locateCitation({source_id:"output:2",device:"R1",line:2,quote:"wrong line"});',context);
+  assert.equal(notes.at(-1).error,true);
+  vm.runInContext('locateCitation({source_id:"question:initial",device:"实验问题与要求",line:2,quote:"邻居必须达到 Full。"});',context);
+  assert.equal($("problem").value.slice(...$("problem").selection),"邻居必须达到 Full。");
+
+  rendered.onRemove("R1-输出1-2.log");
+  assert.equal(context.materials.get("R1-输出1.log"),"user material");
+  vm.runInContext('locateCitation({source_id:"output:2",device:"R1",line:2,quote:"2.2.2.2 Full"});',context);
+  assert.equal(locations.at(-1).name,"R1-输出2.log","previous result must retain its original output numbering");
+  await vm.runInContext("diagnose(requestPayload())",context);
+  assert.deepEqual(JSON.parse(JSON.stringify(submitted.command_outputs)),[saved.command_outputs[1]]);
+  vm.runInContext('locateCitation({source_id:"output:1",device:"R1",line:2,quote:"2.2.2.2 Full"});',context);
+  assert.equal(locations.at(-1).name,"R1-输出1-2.log","new result must follow new submission numbering");
+  vm.runInContext("restoreSubmittedMaterials({configs:{fresh:'new session'}});",context);
+  const fresh=JSON.parse(JSON.stringify(vm.runInContext("requestPayload()",context)));
+  assert.equal(fresh.command_outputs,undefined);
+  assert.equal(fresh.topology,undefined);
+  assert.equal(fresh.requirements,undefined);
+}
+
 function historyChecks() {
   const nodes=new Map(), events={}, saved=new Map(), media={matches:false,addEventListener:(type,fn)=>{media.changed=fn;}};
   class Node {
@@ -99,6 +156,6 @@ function historyChecks() {
   media.matches=false; media.changed(); assert.equal($("session-sidebar").hidden,false,"mobile close must not overwrite desktop preference");
 }
 
-(async()=>{await demoChecks();await previewChecks();await replayChecks();historyChecks();
+(async()=>{await demoChecks();await previewChecks();await replayChecks();await commandOutputChecks();historyChecks();
   console.log("Workspace interactions passed: load races, partial previews, stale results, matched video seek/play and responsive Ctrl+B sidebar");
 })().catch(error=>{console.error(error);process.exitCode=1;});
