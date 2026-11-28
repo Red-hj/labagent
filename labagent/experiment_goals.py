@@ -133,8 +133,9 @@ def evidence_blocks(sources, *, include_history=False):
 
 
 def _block(source, device, command, start, end, section=""):
+    complete = source.get("complete", False) and start == 0 and end == len(source["lines"])
     return {"source_id": source["source_id"], "device": device, "material": source["device"],
-            "kind": source["kind"], "command": command, "section": section, "start": start,
+            "kind": source["kind"], "command": command, "section": section, "start": start, "complete": complete,
             "lines": [TIME.sub("", line) for line in source["lines"][start:end]],
             "raw_lines": source["lines"][start:end]}
 
@@ -312,15 +313,26 @@ def check_route_selection(device, target, blocks):
         complete = (command == "display ip routing-table" and len(public_table) == 1 and len(counts) == 1
                     and all_rows is not None and not ROUTE_EXCERPT.search(text) and not ROUTE_EXCERPT.search(block["material"])
                     and counts[0][1:] == (len({row["network"] for row in all_rows}), len(all_rows)))
+        complete_linux = (linux and linux_command and block["complete"] and bool(rows)
+                          and not ROUTE_EXCERPT.search(text) and not ROUTE_EXCERPT.search(block["material"]))
         chosen = select_route_records(rows, network if network is not None else address, lowest_metric=linux)
         if not chosen:
             result["evidence"] = [citation(block, header)]
-            if complete:
+            if complete or complete_linux:
                 subject = f"没有匹配精确网段 {target} 的已安装路由" if network else f"没有可用于转发到 {target} 的已安装路由，包括默认路由"
+                indices = {rows[0]["line"], rows[-1]["line"]} if complete_linux else {1, header, public_table[0][0], counts[0][0]}
+                table_name = "完整 Linux IPv4 主路由表" if complete_linux else "完整公用 IPv4 路由表"
                 return {**result, "status": "no_match", "request": None,
-                        "evidence": [citation(block, i) for i in sorted({1, header, public_table[0][0], counts[0][0]})],
-                        "detail": f"{device} 当前完整公用 IPv4 路由表中，{subject}。"}
+                        "evidence": [citation(block, i) for i in sorted(indices)],
+                        "detail": f"{device} 当前{table_name}中，{subject}。"}
+            if linux and rows:
+                result["detail"] = f"{device} 已提交的 Linux 主路由表文本未列出到 {target} 的匹配项。请提供完整主表确认。"
             break
+        down = [row for row in chosen if row.get("link_down")]
+        if down:
+            return {**result, "evidence": [citation(block, row["line"]) for row in down],
+                    "detail": f"{device} 到 {target} 的匹配路由带有 linkdown，需核对接口状态与实际选路。",
+                    "request": {**request, "information": "出接口当前链路状态及新采集的 IPv4 主路由表"}}
         routes = [{key: row[key] for key in ("network", "protocol", "next_hop", "interface")} for row in chosen]
         summary = "、".join(dict.fromkeys(f"{route['network']} {route['protocol'].upper()}"
                            + (f" 经 {route['next_hop']}" if route["next_hop"] else "")

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from labagent.engine import fingerprint
 from labagent.experiment_goals import check_goals
 from labagent.investigation import source_bundle, execute_tool
 from labagent.report import generate_report
@@ -112,6 +113,44 @@ class LinuxRouteTests(unittest.TestCase):
                 "192.168.20.0/24 via inet 10.12.0.3 dev transit proto ospf metric 20\n")
         result = checked_route({"R1.log": text})
         self.assertEqual([row["next_hop"] for row in result["routes"]], ["10.12.0.2", "10.12.0.3"])
+
+    def test_linkdown_is_local_to_the_matching_route(self):
+        down = "10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.1 linkdown"
+        selected = "192.168.20.0/24 nhid 17 via 10.12.0.2 dev other proto ospf metric 20"
+        current = {"R1.log": f"R1# ip -4 route show table main\n{down}\n{selected}"}
+        observed = checked_route(current)
+        self.assertEqual(observed["status"], "observed")
+        self.assertEqual(observed["evidence"][0]["quote"], selected)
+        unknown = checked_route(current, target="10.12.0.2")
+        self.assertEqual(unknown["status"], "needs_evidence")
+        self.assertIn("linkdown", unknown["detail"])
+        self.assertEqual(unknown["evidence"][0]["quote"], down)
+
+    def test_verified_complete_linux_command_distinguishes_absence_from_excerpt(self):
+        rows = ("10.12.0.0/24 dev transit proto kernel scope link src 10.12.0.1 linkdown\n"
+                "192.168.10.0/24 dev lan proto kernel scope link src 192.168.10.1")
+        for variants, expected in (
+            ({}, "no_match"),
+            ({"complete": False}, "needs_evidence"),
+            ({"command": "ip -4 route show table 100"}, "needs_evidence"),
+            ({"text": rows + "\n..."}, "needs_evidence"),
+            ({"text": rows + "\nR2# ip route\n192.168.30.0/24 dev lan proto kernel"}, "needs_evidence"),
+            ({"config_fingerprint": "old"}, "needs_evidence"),
+        ):
+            with self.subTest(variants=variants):
+                current = {"configs": {"requirements.txt": "R1 需要 OSPF 到 192.168.20.0/24。"}}
+                current["command_outputs"] = [{"device": "R1", "command": "ip -4 route show table main",
+                    "text": rows, "complete": True, "config_fingerprint": fingerprint(current), **variants}]
+                sources, _ = source_bundle(current)
+                result, _ = execute_tool("check_route_selection", {"device": "R1", "target": "192.168.20.0/24"},
+                                         current, sources, set())
+                self.assertEqual(result["status"], expected)
+                if expected == "no_match":
+                    self.assertIsNone(result["request"])
+                    self.assertEqual([item["quote"] for item in result["evidence"]], rows.splitlines())
+                    goal = {**criteria(material_payload("fault"))[2],
+                            "instruction": {"source_id": "config:1", "line": 1, "quote": current["configs"]["requirements.txt"]}}
+                    self.assertEqual(check_goals([goal], sources)["checks"][0]["status"], "failed")
 
     def test_non_main_filtered_and_configuration_commands_are_not_observations(self):
         for command in ("ip route show table 100", "ip route show proto ospf", "ip route get 192.168.20.10",

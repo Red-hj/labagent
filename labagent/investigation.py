@@ -75,6 +75,8 @@ def validate_open(payload):
     for output in outputs:
         if not isinstance(output, dict) or not all(isinstance(output.get(key), str) for key in ("device", "command", "text")) or len(output["text"]) > 100000:
             raise ValueError("运行输出须包含 device、command、text，正文不超过100KB")
+        if "complete" in output and type(output["complete"]) is not bool:
+            raise ValueError("complete 必须为布尔值")
     if payload.get("evidence_kind", "user_submitted") not in ("demo", "user_submitted"):
         raise ValueError("evidence_kind 无效")
     recordings = payload.get("recordings", [])
@@ -111,7 +113,9 @@ def source_bundle(payload, conversation=None, *, previous_materials=None):
         if output.get("config_fingerprint") != fingerprint(payload):
             warnings.append(f"运行输出{index}未绑定当前输入，未提供给模型；请采集或确认新输出并绑定后继续。")
             continue
-        sources[f"output:{index}"] = {"device": output["device"], "kind": "submitted_command_output", "command": output["command"], "text": output["text"]}
+        sources[f"output:{index}"] = {"device": output["device"], "kind": "submitted_command_output",
+                                      "command": output["command"], "text": output["text"],
+                                      "complete": output.get("complete") is True}
     for index, turn in enumerate(conversation or [], 1):
         if turn.get("intent") != "analyze" and turn.get("user"):
             sources[f"message:{index}"] = {"device": f"第{index}轮追问", "kind": "user_message", "text": turn["user"]}

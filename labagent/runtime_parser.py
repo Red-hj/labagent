@@ -126,9 +126,11 @@ def parse_linux_routes(text):
             return None
         network = str(ipaddress.IPv4Network("0.0.0.0/0" if row[1] == "default" else row[1], strict=False))
         tokens, fields, position = row[2].split(), {}, 0
+        flags = set()
         while position < len(tokens):
             key = tokens[position]
-            if key == "onlink":
+            if key in {"onlink", "linkdown"}:
+                flags.add(key)
                 position += 1
                 continue
             if key not in {"via", "dev", "proto", "scope", "src", "metric", "nhid", "table", "mtu", "advmss", "pref"} or key in fields:
@@ -151,7 +153,7 @@ def parse_linux_routes(text):
         protocol = fields.get("proto", "Unknown")
         records.append({"network": network, "protocol": LINUX_PROTOCOLS.get(protocol.lower(), protocol),
                         "next_hop": gateway, "interface": fields["dev"], "metric": int(metric),
-                        "line": number, "text": line.strip()})
+                        "link_down": "linkdown" in flags, "line": number, "text": line.strip()})
     return records
 
 
