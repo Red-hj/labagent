@@ -23,6 +23,7 @@ LINUX_PROTOCOLS = dict(kernel="Direct", static="Static", boot="Boot", ospf="OSPF
 OSPF_NEIGHBOR_STATES = frozenset(("down", "attempt", "init", "2-way", "exstart", "exchange", "loading", "full"))
 FRR_NEIGHBOR_COMMAND = "show ip ospf neighbor"
 FRR_NEIGHBOR_JSON_COMMAND = FRR_NEIGHBOR_COMMAND + " json"
+FRR_NEIGHBOR_COMMANDS = frozenset((FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_JSON_COMMAND))
 JSON_STRINGS = re.compile(r'"(?:[^"\\]|\\.)*"(?P<separator>[ \t\r\n]*:[ \t\r\n]*)?')
 FRR_NEIGHBOR_HEADER = re.compile(r"\s*Neighbor\s+ID\s+Pri\s+State\s+.*\bAddress\s+Interface\b.*", re.I)
 FRR_NEIGHBOR_ROW = re.compile(r"\s*(\d+(?:\.\d+){3})\s+\d+\s+([\w-]+)(?:/\S+)?"

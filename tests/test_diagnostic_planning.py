@@ -2,11 +2,13 @@
 from copy import deepcopy
 import json
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
 from labagent import investigation
 from labagent.diagnostic_planner import rank_checks
+from labagent.engine import fingerprint
 from labagent.investigation_context import observed_device_commands, prepare_investigation
 from labagent.investigation_verification import verify_excerpt_claims, verify_minimal_ospf_wildcard_advice
 from labagent.report import generate_report
@@ -89,6 +91,74 @@ class DiagnosticCheckPlanningTests(unittest.TestCase):
         current = cases()[0]["vrp-partial"]
         observed = observed_device_commands(investigation.source_bundle(current)[0])
         self.assertIn(("R1", "ping 10.3.3.3"), observed)
+
+    def test_original_frr_json_reuses_neighbor_table_for_either_command(self):
+        case = Path(__file__).resolve().parents[1] / "data/team_cases/lab_02/map_materials/repaired"
+        log = (case / "R1-run.log").read_text(encoding="utf-8")
+        text, json_command = "show ip ospf neighbor", "show ip ospf neighbor json"
+        current = {"configs": {"R1-run.log": log}, "question": "选择 R1 的下一项检查。"}
+        sources, seen = sources_and_seen(current)
+        proposals = [probe(command, ["a", "b", "c"]) for command in (text, json_command, "show ip ospf interface")]
+        evidence = {"source_id": "config:1", "line": 1, "quote": sources["config:1"]["lines"][0]}
+        candidates = [{**item, "evidence": [evidence]} for item in hypotheses()]
+        plan, _ = investigation.execute_tool("plan_diagnostic_checks", {"hypotheses": candidates, "tests": proposals},
+                                             current, sources, seen)
+        self.assertEqual(plan["selected"]["command"], "show ip ospf interface")
+        self.assertEqual({row["command"] for row in plan["tests"] if row["already_observed"]}, {text, json_command})
+        self.assertNotIn(("R2", text), observed_device_commands(sources))
+        route_text = ("<R2>show ip ospf neighbor\nNeighbor ID Pri State Up Time Dead Time Address Interface\n"
+                      "1.1.1.1 1 Full/- 6.070s 3.908s 10.12.0.1 transit:10.12.0.2")
+        current["configs"]["R2-run.log"] = route_text
+        observed = observed_device_commands(sources_and_seen(current)[0])
+        self.assertIn(("R2", json_command), observed)
+
+    def test_frr_neighbor_reuse_requires_current_usable_evidence_for_the_goal(self):
+        text, json_command = "show ip ospf neighbor", "show ip ospf neighbor json"
+        question = "R1 的 OSPF 邻居 2.2.2.2 应达到 Full。"
+        goal = {"id": "adjacency", "title": question, "kind": "ospf_neighbor", "device": "R1",
+                "target": "2.2.2.2", "expected": "Full",
+                "instruction": {"source_id": "question:initial", "line": 1, "quote": question}}
+        old = '{"neighbors":{"2.2.2.2":[{"nbrState":"Full/-"}]}}'
+        other = '{"neighbors":{"3.3.3.3":[{"nbrState":"Full/-"}]}}'
+        conflict = '{"neighbors":{"2.2.2.2":[{"nbrState":"Full/-"},{"nbrState":"Init/-"}]}}'
+        current = {"question": question, "configs": {"R1-old.log": f"<R1>{json_command}\n{old}"}}
+        for capture, complete, observed, status in (
+            ('{"neighbors":{}}', False, False, "needs_evidence"),
+            ('{"neighbors":{}}', True, True, "failed"),
+            (other, False, False, "needs_evidence"),
+            (other, True, True, "failed"),
+            (conflict, True, False, "needs_evidence"),
+            (old[:-1], True, False, "needs_evidence"),
+            (old, False, True, "passed"),
+        ):
+            with self.subTest(capture=capture, complete=complete):
+                current["command_outputs"] = [{"device": "R1", "command": json_command, "text": capture,
+                                               "complete": complete, "config_fingerprint": fingerprint(current)}]
+                sources, seen = sources_and_seen(current)
+                context = {}
+                review, _ = investigation.execute_tool("check_experiment_goals", {"goals": [goal]}, current, sources,
+                                                        seen, diagnostic_context=context)
+                evidence = {"source_id": "output:1", "line": 1, "quote": capture}
+                candidates = [{**item, "evidence": [evidence]} for item in hypotheses()]
+                plan, _ = investigation.execute_tool("plan_diagnostic_checks", {"hypotheses": candidates, "tests": [
+                    probe(text, ["a", "b", "c"]), probe(json_command, ["a", "b", "c"])]},
+                    current, sources, seen, diagnostic_context=context)
+                self.assertEqual(review["checks"][0]["status"], status)
+                self.assertEqual([row["already_observed"] for row in plan["tests"]], [observed, observed])
+                self.assertEqual(plan["selected"] is None, observed)
+
+    def test_frr_neighbor_reuse_expires_when_the_carried_configuration_changes(self):
+        command = "show ip ospf neighbor json"
+        text = '<R1>show ip ospf neighbor json\n{"neighbors":{"2.2.2.2":[{"nbrState":"Full/-"}]}}'
+        before = {"R1.cfg": "sysname R1\nospf 1\n area 1\nreturn", "R1-neighbor.log": text}
+        current = {"configs": {**before, "R1.cfg": before["R1.cfg"].replace("area 1", "area 0")}}
+        sources, _ = sources_and_seen(current)
+        observed = observed_device_commands(sources, previous_materials=before)
+        self.assertNotIn(("R1", command), observed)
+        sources["config:2"]["collected"] = True
+        observed = observed_device_commands(sources, previous_materials=before)
+        self.assertIn(("R1", command), observed)
+        self.assertIn(("R1", "show ip ospf neighbor"), observed)
 
     def test_changed_config_allows_retest_of_old_outputs_but_keeps_live_capture(self):
         before = {"R1.cfg":"sysname R1\nospf 1\n area 1\nreturn",

@@ -126,8 +126,8 @@ def _plan_diagnostic_checks(args, payload, sources, seen, *, previous_materials=
     context = diagnostic_context if diagnostic_context is not None else {}
     if context.get("goal_checks_disabled"):
         raise ValueError("本轮未启用主动检查选择")
-    plan = validate_plan(args, lambda value: checked_citation(value, sources, seen),
-                         observed_commands=observed_device_commands(sources, previous_materials=previous_materials))
+    observed = observed_device_commands(sources, previous_materials=previous_materials, criteria=context.get("criteria", ()))
+    plan = validate_plan(args, lambda value: checked_citation(value, sources, seen), observed_commands=observed)
     known = submitted_host_addresses(payload, sources)
     if any(ground_ping_text(test["command"], known) != test["command"] for test in plan["tests"]):
         raise ValueError("Ping 检查需要材料中的实际目标 IP。缺少地址时，请在补充证据请求里索要地址。")

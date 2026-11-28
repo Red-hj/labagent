@@ -9,7 +9,7 @@ import re
 
 from .connectivity import parse_ping_records
 from .runtime_parser import (FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_HEADER, FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
-                             FRR_NEIGHBOR_JSON_COMMAND, OSPF_NEIGHBOR_STATES,
+                             FRR_NEIGHBOR_COMMANDS, FRR_NEIGHBOR_JSON_COMMAND, OSPF_NEIGHBOR_STATES,
                              parse_frr_neighbors, parse_frr_routes, parse_linux_routes, parse_neighbors,
                              parse_routes, select_route_records)
 from .operation_history import TIME, prompt_info
@@ -542,6 +542,11 @@ def _ospf_interface_area(goal, blocks):
     return ("passed" if actual == expected else "failed"), f"{device} 的 {target} 为 OSPF Area {actual}；实验要求 Area {expected}。", refs
 
 
+def complete_frr_neighbor_table(block, command, text, table):
+    return (table is not None and table["fully_parsed"] and block["complete"]
+            and command in FRR_NEIGHBOR_COMMANDS and not OUTPUT_EXCERPT.search(text))
+
+
 def _ospf_neighbor(goal, blocks):
     device, router_id, expected = goal["device"], goal["target"], goal["expected"].strip()
     missing = f"补充 {device} 的 OSPF 邻居输出以核对 Router ID {router_id} 的状态。"
@@ -560,8 +565,7 @@ def _ospf_neighbor(goal, blocks):
         matches = [peer for peer in peers if peer["router_id"] == router_id]
         states = {peer["state"].casefold(): peer["state"] for peer in matches}
         if not states:
-            if (frr_table is not None and frr_table["fully_parsed"] and block["complete"]
-                    and command in {FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_JSON_COMMAND} and not OUTPUT_EXCERPT.search(text)):
+            if complete_frr_neighbor_table(block, command, text, frr_table):
                 lines = [frr_table["header_line"]]
                 if peers:
                     lines.extend(sorted({peers[0]["line"], peers[-1]["line"]}))
