@@ -22,6 +22,10 @@ KNOWLEDGE = DATA / 'b_knowledge'
 BENCHMARK = DATA / 'b_benchmark'
 PRIVATE = DATA / 'b_private'
 STATUSES = {'fault_found', 'needs_information', 'awaiting_verification'}
+EVALUATION_MODES = ('rules', 'model-direct', 'model-knowledge')
+MODEL_COMPARISON_KEYS = ('base_inputs_sha256', 'provider', 'model', 'max_tokens_per_call', 'temperature')
+REVIEW_OPTIONS = {'claim_review': '回复复核', 'normalize_structure': '结构校正',
+                  'check_fault_evidence': '故障证据核对', 'local_only': '仅本地复核'}
 REQUEST_FIELDS = {'question', 'configs', 'topology', 'requirements', 'hint_level', 'use_llm', 'evidence_kind'}
 LINK_EVIDENCE_CHECKS = (
     '按 parsed_links 逐条核对 topology.links 的两端。ping_targets 只用于后续连通性验证，'
@@ -490,49 +494,125 @@ def probe_model(completion=model.chat_completion):
     return {'status': 'ok', **{key: metadata.get(key) for key in ('provider', 'model', 'elapsed_ms', 'usage')}}
 
 
-def comparison(reports):
-    modes = ('rules', 'model-direct', 'model-knowledge')
-    reference = None
-    by_mode = {}
-    for report in reports:
-        mode = report['mode']
-        if mode not in modes or mode in by_mode:
-            raise ValueError(f'报告模式未知或重复：{mode}')
-        identity = tuple(report[key] for key in ('version', 'manifest_sha256', 'labels_sha256', 'candidate_count'))
-        if reference is not None and identity != reference:
-            raise ValueError('输入、标签版本或样本数量不同，不能放在同一张对照表。')
-        reference = identity
-        by_mode[mode] = report
-    if reference is None:
-        raise ValueError('至少需要一份已运行的 evaluation.json。')
-    both_models = [by_mode[mode].get('external_prediction_source') or {} for mode in modes[1:] if mode in by_mode]
-    if len(both_models) == 2 and all(meta.get('origin') == 'configured_chat_completion' for meta in both_models):
-        keys = ('base_inputs_sha256', 'provider', 'model', 'max_tokens_per_call', 'temperature')
-        evidence_modes = [meta.get('link_evidence', 'parsed' if meta.get('parsed_links') else 'none')
-                          for meta in both_models]
-        review_flags = ('claim_review', 'normalize_structure', 'check_fault_evidence', 'local_only')
-        review_modes = {tuple(bool(meta.get(flag)) for flag in review_flags) for meta in both_models}
-        if (len(set(evidence_modes)) != 1 or len(review_modes) != 1
-                or any(both_models[0].get(key) != both_models[1].get(key) for key in keys)):
-            raise ValueError('两组模型的输入子集、模型、参数或链路证据选项与复核设置不同，不能直接对照。')
+def comparison_identity(report):
+    return tuple(report[key] for key in ('version', 'manifest_sha256', 'labels_sha256', 'candidate_count'))
+
+
+def link_evidence_mode(metadata):
+    return metadata.get('link_evidence', 'parsed' if metadata.get('parsed_links') else 'none')
+
+
+def comparison_metric_rows(reports):
     fields = {'state_agreement': '状态吻合', 'strict_case_agreement': '严格匹配',
               'fault_location': '故障定位', 'normal_false_alarm': '正常误报', 'unknown_handling': '待确认处理'}
-    lines = ['# B 组离线评测对照', '', f'集合：`{reference[0]}`，共 {reference[3]} 个候选案例。', '',
-             '| 指标 | 本地规则 | 模型直接诊断 | 模型+检索资料 |', '| --- | --- | --- | --- |']
+    rows = []
     for key, label in fields.items():
-        cells = [metric_text(by_mode[mode]['metrics'][key]) if mode in by_mode else '待运行' for mode in modes]
-        lines.append('| ' + ' | '.join([label, *cells]) + ' |')
+        cells = [metric_text(report['metrics'][key]) if report is not None else '待运行' for report in reports]
+        rows.append('| ' + ' | '.join([label, *cells]) + ' |')
     for label, field in (
         ('缺预测记录', lambda row: row.get('missing_responses')),
         ('格式无效或无预测', lambda row: row.get('invalid_or_missing_predictions')),
         ('耗时中位数（毫秒）', lambda row: row.get('runtime', {}).get('median_elapsed_ms')),
         ('提供方报告的总 token', lambda row: row.get('runtime', {}).get('usage', {}).get('total_tokens', {}).get('total')),
     ):
-        values = [field(by_mode[mode]) if mode in by_mode else '待运行' for mode in modes]
-        lines.append('| ' + ' | '.join([label, *('未记录' if value is None else str(value) for value in values)]) + ' |')
+        values = [field(report) if report is not None else '待运行' for report in reports]
+        rows.append('| ' + ' | '.join([label, *('未记录' if value is None else str(value) for value in values)]) + ' |')
+    return rows
+
+
+def comparison(reports):
+    reference = None
+    by_mode = {}
+    for report in reports:
+        mode = report['mode']
+        if mode not in EVALUATION_MODES or mode in by_mode:
+            raise ValueError(f'报告模式未知或重复：{mode}')
+        identity = comparison_identity(report)
+        if reference is not None and identity != reference:
+            raise ValueError('输入、标签版本或样本数量不同，不能放在同一张对照表。')
+        reference = identity
+        by_mode[mode] = report
+    if reference is None:
+        raise ValueError('至少需要一份已运行的 evaluation.json。')
+    both_models = [by_mode[mode].get('external_prediction_source') or {}
+                   for mode in EVALUATION_MODES[1:] if mode in by_mode]
+    if len(both_models) == 2 and all(meta.get('origin') == 'configured_chat_completion' for meta in both_models):
+        evidence_modes = {link_evidence_mode(meta) for meta in both_models}
+        review_modes = {tuple(bool(meta.get(flag)) for flag in REVIEW_OPTIONS) for meta in both_models}
+        if (len(evidence_modes) != 1 or len(review_modes) != 1
+                or any(both_models[0].get(key) != both_models[1].get(key) for key in MODEL_COMPARISON_KEYS)):
+            raise ValueError('两组模型的输入子集、模型、参数或链路证据选项与复核设置不同，不能直接对照。')
+    lines = ['# B 组离线评测对照', '', f'集合：`{reference[0]}`，共 {reference[3]} 个候选案例。', '',
+             '| 指标 | 本地规则 | 模型直接诊断 | 模型+检索资料 |', '| --- | --- | --- | --- |']
+    lines += comparison_metric_rows([by_mode.get(mode) for mode in EVALUATION_MODES])
     lines += ['', '按相同的输入清单和标签对照。模型两组应使用相同模型与参数。',
               '少量预跑仅用于确认请求可用；未跑的案例仍占完整评测分母。',
               '设备实测与实际修复有效率另行记录，不用合成候选分数替代。']
+    return '\n'.join(lines) + '\n'
+
+
+def paired_records(report):
+    records = report['records']
+    indexed = {row['case_id']: row for row in records}
+    if len(indexed) != len(records) or len(indexed) != report['candidate_count']:
+        raise ValueError('逐例记录存在重复或与候选案例数量不符。')
+    return indexed
+
+
+def case_outcome(row):
+    if row['strict_match']:
+        return '严格匹配'
+    if row['actual'] is None:
+        return '无有效预测'
+    states = {'fault_found': '发现故障', 'needs_information': '待补证', 'awaiting_verification': '待复测'}
+    status = states[row['actual']['status']]
+    return f'{status}（定位或补证项不符）' if row['state_match'] else f'{status}（状态不符）'
+
+
+def paired_comparison(baseline, variant):
+    identity = comparison_identity(baseline)
+    if identity != comparison_identity(variant):
+        raise ValueError('输入、标签版本或样本数量不同，不能逐例对照。')
+    mode = baseline['mode']
+    if mode not in EVALUATION_MODES or mode != variant['mode']:
+        raise ValueError('逐例对照需要两份相同模式的报告。')
+    before, after = paired_records(baseline), paired_records(variant)
+    if before.keys() != after.keys() or any(
+        (row['case_type'], row['expected']) != (after[case_id]['case_type'], after[case_id]['expected'])
+        for case_id, row in before.items()
+    ):
+        raise ValueError('逐例记录的题号或评分标签不同，不能逐例对照。')
+
+    lines = ['# B 组离线评测逐例对照', '', f'集合：`{identity[0]}`，模式 `{mode}`，共 {identity[3]} 例。']
+    if mode != 'rules':
+        settings = [report.get('external_prediction_source') or {} for report in (baseline, variant)]
+        configured = all(meta.get('origin') == 'configured_chat_completion' for meta in settings)
+        if configured and any(settings[0].get(key) != settings[1].get(key) for key in MODEL_COMPARISON_KEYS):
+            raise ValueError('两次模型运行的输入子集、模型或调用参数不同，不能逐例对照。')
+        if not configured or any(meta.get(key) is None for meta in settings for key in MODEL_COMPARISON_KEYS):
+            lines += ['', '模型运行参数记录不完整，下方对照以两份已评分结果为准。']
+        evidence = {'none': '无', 'parsed': '解析后的链路证据', 'checked': '链路证据与核对提示'}
+        evidence_cells = [evidence.get(link_evidence_mode(meta), '未记录') if meta.get('origin') == 'configured_chat_completion'
+                          else '未记录' for meta in settings]
+        review_cells = ['、'.join(label for key, label in REVIEW_OPTIONS.items() if meta.get(key))
+                        or ('无' if meta.get('origin') == 'configured_chat_completion' else '未记录') for meta in settings]
+        lines += ['', '| 设置 | 基线 | 对照 |', '| --- | --- | --- |',
+                  '| 链路证据 | ' + ' | '.join(evidence_cells) + ' |',
+                  '| 复核 | ' + ' | '.join(review_cells) + ' |']
+    lines += ['', '| 指标 | 基线 | 对照 |', '| --- | --- | --- |', *comparison_metric_rows((baseline, variant))]
+
+    transitions = {(False, True): '由错变对', (True, False): '由对变错',
+                   (True, True): '均匹配', (False, False): '均未匹配'}
+    case_types = {'fault': '故障', 'normal': '正常', 'unknown': '待确认'}
+    counts = Counter()
+    details = []
+    for case_id, left in before.items():
+        right = after[case_id]
+        change = transitions[left['strict_match'], right['strict_match']]
+        counts[change] += 1
+        details.append(f'| {case_id} | {case_types[left["case_type"]]} | {case_outcome(left)} | {case_outcome(right)} | {change} |')
+    lines += ['', '严格匹配变化：' + '，'.join(f'{name} {counts[name]} 例' for name in transitions.values()) + '。', '',
+              '| 案例 | 类别 | 基线 | 对照 | 变化 |', '| --- | --- | --- | --- | --- |', *details]
     return '\n'.join(lines) + '\n'
 
 
@@ -540,7 +620,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('task', choices=('labs', 'benchmark', 'knowledge', 'import-knowledge', 'prepare-model', 'probe-model', 'run-model', 'compare'))
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--mode', choices=('rules', 'model-direct', 'model-knowledge'), default='rules')
+    parser.add_argument('--mode', choices=EVALUATION_MODES, default='rules')
     parser.add_argument('--predictions', type=Path)
     parser.add_argument('--benchmark-dir', type=Path, default=BENCHMARK,
                         help='benchmark / prepare-model / run-model: directory with manifest.json and inputs/')
@@ -550,12 +630,15 @@ def main():
                           help='prepare-model / run-model: include parsed endpoint configuration evidence')
     evidence.add_argument('--check-link-evidence', dest='link_evidence', action='store_const', const='checked',
                           help='prepare-model / run-model: include parsed evidence and link-by-link checks')
-    parser.add_argument('--report', type=Path, action='append', default=[], help='compare: path to evaluation.json; repeat per mode')
+    parser.add_argument('--report', type=Path, action='append', default=[], help='compare: path to evaluation.json; repeat per mode or run')
+    parser.add_argument('--paired', action='store_true', help='compare: two reports of the same mode, baseline first')
     parser.add_argument('--limit', type=int, default=2, help='run-model: number of candidate cases, from 1 to 60')
     parser.add_argument('--max-tokens', type=int, default=800, help='run-model: per-request completion budget')
     parser.add_argument('--execute', action='store_true', help='run-model: actually call the configured model; otherwise print plan only')
     parser.add_argument('--env-file', type=Path, help='probe-model / run-model --execute: use a local .env without copying it')
     args = parser.parse_args()
+    if args.paired and args.task != 'compare':
+        parser.error('--paired 仅用于 compare')
     if args.task == 'probe-model':
         try:
             load_model_settings(args.env_file)
@@ -598,10 +681,16 @@ def main():
     elif args.task == 'compare':
         if not args.report:
             parser.error('compare 需要至少一个 --report evaluation.json')
-        markdown = comparison([read(path) for path in args.report])
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        with args.output.open('x', encoding='utf-8') as file:
-            file.write(markdown)
+        if args.paired and len(args.report) != 2:
+            parser.error('compare --paired 需要两份 --report，按基线、对照的顺序提供')
+        try:
+            reports = [read(path) for path in args.report]
+            markdown = paired_comparison(*reports) if args.paired else comparison(reports)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with args.output.open('x', encoding='utf-8') as file:
+                file.write(markdown)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            parser.error(str(error))
         print(f'对照表：{args.output}')
     else:
         if args.mode == 'rules':
