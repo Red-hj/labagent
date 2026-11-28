@@ -158,12 +158,13 @@ def current_runtime_sources(sources, previous_materials):
 
 
 def mark_stale_neighbor_materials(sources, previous_materials, stale_materials):
-    """Keep carried neighbor snapshots out of retests until there is a fresh capture."""
+    """Mark carried neighbor snapshots and report whether the configuration changed."""
     if previous_materials is None:
-        return
+        return False
     fresh = current_runtime_sources(sources, previous_materials)
-    if fresh is sources and not stale_materials:
-        return
+    changed = fresh is not sources
+    if not changed and not stale_materials:
+        return False
     for block in evidence_blocks(sources):
         source_id = block["source_id"]
         source = sources[source_id]
@@ -179,6 +180,7 @@ def mark_stale_neighbor_materials(sources, previous_materials, stale_materials):
             if (OSPF_NEIGHBOR_COMMAND.fullmatch(command) or parse_frr_neighbors(text, command=command) is not None
                     or parse_neighbors(text)):
                 source["stale_neighbor"] = True
+    return changed
 
 
 def citation(block, number):
@@ -248,6 +250,10 @@ def check_goals(criteria, sources, *, include_history=False, previous_materials=
         elif goal["kind"] == "ospf_neighbor":
             current = [block for block in matching if block["source_id"] in neighbor_sources
                        and not neighbor_sources[block["source_id"]].get("stale_neighbor")]
+            # A new bound capture takes precedence over historical chat, and a
+            # capture pasted in this request is the most recent observation.
+            current.sort(key=lambda block: (block["source_id"] == "message:current",
+                                            block["kind"] == "submitted_command_output"))
             status, detail, evidence = _ospf_neighbor(goal, current)
         else:
             status, detail, evidence = _config(goal, matching)

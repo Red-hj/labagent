@@ -33,7 +33,7 @@ from .tool_registry import ToolRegistry
 from .connectivity import address_literal, ground_ping_text, host_literals
 from .investigation_context import (SENSITIVE, safe_line, safe_text, safe_value, exact_keys, short_text,
                                     validate_open, source_bundle, manifest, submitted_host_addresses,
-                                    prepare_investigation, observed_device_commands)
+                                    mark_stale_neighbor_messages, prepare_investigation, observed_device_commands)
 from .investigation_verification import (ground_investigation_targets, checked_citation, validate_submission,
                                          covered_current_route_request, assess_goals, finalize_submission,
                                          merge_investigation_state, verify_excerpt_claims,
@@ -515,9 +515,14 @@ def _repair_comparison_reply(comparisons):
 def investigate(payload, previous=None, completion=None, *, conversation=None, previous_materials=None, goal_checks=True, lab_tools=None):
     from .engine import fingerprint
     validate_open(payload)
+    started_at = datetime.now(timezone.utc).isoformat()
     sources, warnings = source_bundle(payload, conversation, previous_materials=previous_materials)
-    stale_neighbors = (previous or {}).get("experiment_state", {}).get("stale_neighbor_materials", ())
-    mark_stale_neighbor_materials(sources, previous_materials, set(stale_neighbors))
+    previous_state = (previous or {}).get("experiment_state", {})
+    stale_neighbors = previous_state.get("stale_neighbor_materials", ())
+    evidence_after = previous_state.get("neighbor_evidence_after")
+    if mark_stale_neighbor_materials(sources, previous_materials, set(stale_neighbors)):
+        evidence_after = started_at
+    mark_stale_neighbor_messages(sources, conversation, evidence_after)
     comparisons = discover_runs(sources)
     valid_run_comparison = (bool(comparisons) and all(not item.get("error") for item in comparisons)
                             and all(source["kind"] in {"repair_run", "user_question", "user_message"} for source in sources.values()))
@@ -555,9 +560,12 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
         requests = ["请启用可用模型或补充当前材料后继续开放排查。"]
     if model.get("status") == "ok":
         model["text"] = analysis["summary"]
-    if analysis or (previous or {}).get("experiment_state") or any(source.get("stale_neighbor") for source in sources.values()):
-        analysis["experiment_state"] = summarize_experiment(previous, payload, sources, analysis, previous_materials,
-                                                           succeeded=model.get("status") == "ok" or bool(comparison_reply))
+    if analysis or previous_state or evidence_after or any(source.get("stale_neighbor") for source in sources.values()):
+        state = summarize_experiment(previous, payload, sources, analysis, previous_materials,
+                                     succeeded=model.get("status") == "ok" or bool(comparison_reply))
+        if evidence_after:
+            state["neighbor_evidence_after"] = evidence_after
+        analysis["experiment_state"] = state
     interaction_checks = {item["tool"]: item["result"] for item in model["tool_trace"] if item["status"] == "ok" and item["tool"] in ("compare_materials", "check_submitted_pings")}
     route_lookups = {(item["result"]["device"].casefold(), item["result"]["target"]): item["result"] for item in model["tool_trace"]
                      if item["status"] == "ok" and item["tool"] == "check_route_selection"}

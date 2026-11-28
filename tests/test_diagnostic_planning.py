@@ -213,6 +213,53 @@ class DiagnosticCheckPlanningTests(unittest.TestCase):
             self.assertIn(row, report)
         self.assertIn('"nbrState":"Full', report)
 
+    def test_neighbor_chat_evidence_stays_with_the_configuration_when_it_was_posted(self):
+        capture = Path(__file__).resolve().parents[1] / "data/team_cases/lab_02/map_materials/repaired/R1-run.log"
+        command = "show ip ospf neighbor json"
+        body = capture.read_text(encoding="utf-8").split(f"<R1>{command}\n", 1)[1]
+        pasted = f"<R1>{command}\n{body}"
+        question = "R1 的 OSPF 邻居 2.2.2.2 应达到 Full。"
+        goal = {"id": "neighbor", "title": question, "kind": "ospf_neighbor", "device": "R1",
+                "target": "2.2.2.2", "expected": "Full",
+                "instruction": {"source_id": "question:initial", "line": 1, "quote": question}}
+        before = {"R1.cfg": "sysname R1\nospf 1\n area 0\nreturn"}
+        after = {"R1.cfg": before["R1.cfg"].replace("area 0", "area 1")}
+        payload = {"question": question, "configs": before, "interaction": {"type": "ask", "message": pasted}}
+        sources, seen = sources_and_seen(payload)
+        original, _ = investigation.execute_tool("check_experiment_goals", {"goals": [goal]}, payload, sources, seen)
+        self.assertEqual(original["checks"][0]["status"], "passed")
+        previous, previous_materials = {"goal_assessment": original}, before
+        history = [{"intent": "ask", "user": pasted, "assistant": "核对邻居", "created_at": "2000-01-01T00:00:00+00:00"}]
+
+        for message, expected, expected_source in (
+                ("已更新配置。", "needs_evidence", None),
+                ("还需要复测吗？", "needs_evidence", None),
+                (pasted, "passed", "message:current"),
+                ("可以继续分析吗？", "passed", "message:2"),
+                ("收到新的空邻居表。", "failed", "output:1")):
+            with self.subTest(expected=expected, source=expected_source):
+                payload = {"question": question, "configs": dict(after), "use_llm": False,
+                           "interaction": {"type": "ask", "message": message}}
+                empty = '{"neighbors":{}}'
+                if expected_source == "output:1":
+                    payload["command_outputs"] = [{"device": "R1", "command": command, "text": empty,
+                                                   "complete": True, "config_fingerprint": fingerprint(payload)}]
+                result = investigation.investigate(payload, previous, conversation=history, previous_materials=previous_materials)
+                previous = result["investigation"]
+                previous_materials = after
+                check, = previous["goal_assessment"]["checks"]
+                self.assertEqual(check["status"], expected)
+                self.assertNotIn("stale_neighbor_materials", previous["experiment_state"])
+                if expected_source is None:
+                    self.assertEqual(check["evidence"], [])
+                else:
+                    self.assertEqual({row["source_id"] for row in check["evidence"]}, {expected_source})
+                    lines = (empty if expected_source == "output:1" else pasted).splitlines()
+                    for ref in check["evidence"]:
+                        self.assertEqual(lines[ref["line"] - 1], ref["quote"])
+                if expected_source == "message:current":
+                    history.append({"intent": "ask", "user": pasted, "assistant": "新采集通过", "created_at": result["created_at"]})
+
     def test_changed_config_allows_retest_of_old_outputs_but_keeps_live_capture(self):
         before = {"R1.cfg":"sysname R1\nospf 1\n area 1\nreturn",
                   "R1-peer.log":"<R1>display ospf peer\nNo neighbors",

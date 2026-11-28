@@ -1,4 +1,5 @@
 """Prepare bounded, cited investigation inputs without executing tools or models."""
+from datetime import datetime
 import json
 import re
 
@@ -118,6 +119,25 @@ def source_bundle(payload, conversation=None, *, previous_materials=None):
         source["source_id"] = source_id
         source["lines"] = [safe_line(line) for line in source["text"].splitlines()]
     return sources, warnings
+
+
+def mark_stale_neighbor_messages(sources, conversation, evidence_after):
+    try:
+        cutoff = datetime.fromisoformat(evidence_after)
+    except (TypeError, ValueError):
+        return
+    if cutoff.tzinfo is None:
+        return
+    for index, turn in enumerate(conversation or [], 1):
+        source = sources.get(f"message:{index}")
+        if source is None:
+            continue
+        try:
+            posted = datetime.fromisoformat(turn.get("created_at", ""))
+        except (TypeError, ValueError):
+            posted = None
+        if posted is None or posted.tzinfo is None or posted < cutoff:
+            source["stale_neighbor"] = True
 
 
 def manifest(sources):

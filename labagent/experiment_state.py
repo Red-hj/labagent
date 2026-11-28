@@ -24,7 +24,8 @@ def summarize_experiment(previous, payload, sources, analysis, previous_material
     state = experiment_context(previous, payload, previous_materials)
     turn = state["turn_count"] + int(succeeded)
     state.update(turn_count=turn, goal=analysis.get("experiment_goal") or state["goal"])
-    stale = [source["device"] for source in sources.values() if source.get("stale_neighbor")]
+    stale = [source["device"] for source in sources.values()
+             if source.get("stale_neighbor") and source["kind"] != "user_message"]
     if stale:
         state["stale_neighbor_materials"] = stale
     else:
