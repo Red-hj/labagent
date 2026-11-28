@@ -138,6 +138,53 @@ def summarize_runtime(results):
             'timed_rows': len(times), 'calls_with_metadata': len(calls), 'usage': usage}
 
 
+def _report_code(value):
+    return '`' + value.replace('`', '\\u0060').replace('\r', ' ').replace('\n', ' ') + '`'
+
+
+def _issue_locations(items):
+    by_issue = defaultdict(list)
+    for code, link, devices in items:
+        by_issue[code, link].append(devices)
+    return by_issue
+
+
+def _device_groups(groups):
+    rendered = ['、'.join(map(_report_code, devices)) for devices in groups]
+    return rendered[0] if len(rendered) == 1 else ' / '.join(f'（{item}）' for item in rendered)
+
+
+def describe_mismatch(row, prediction):
+    if prediction is None:
+        return ['无预测记录。']
+    if row['actual'] is None:
+        error = prediction.get('request_error')
+        reason = error if isinstance(error, str) and error else row['error']
+        return [f'预测无法评分（{_report_code(reason)}）。']
+
+    expected, actual = row['expected'], row['actual']
+    details = []
+    if expected['status'] != actual['status']:
+        states = {'fault_found': '发现故障', 'needs_information': '待补证', 'awaiting_verification': '待复测'}
+        details.append(f'状态预期为{states[expected["status"]]}，实际为{states[actual["status"]]}。')
+    for field, label in (('findings', '故障'), ('unknowns', '补证项')):
+        expected_locations = _issue_locations(expected[field])
+        actual_locations = _issue_locations(actual[field])
+        for code, link in sorted(expected_locations.keys() | actual_locations.keys()):
+            expected_groups = expected_locations.get((code, link), [])
+            actual_groups = actual_locations.get((code, link), [])
+            if expected_groups == actual_groups:
+                continue
+            subject = f'{label} {_report_code(code)} · 链路 {_report_code(link)}'
+            if not actual_groups:
+                details.append(f'漏报{subject}，涉及 {_device_groups(expected_groups)}。')
+            elif not expected_groups:
+                details.append(f'多报{subject}，涉及 {_device_groups(actual_groups)}。')
+            else:
+                details.append(f'{subject} 的设备范围不符。预期 {_device_groups(expected_groups)}，实际 {_device_groups(actual_groups)}。')
+    return details
+
+
 def benchmark(output, mode, predictions=None, *, benchmark_dir=BENCHMARK, labels_path=None):
     benchmark_dir = benchmark_dir.resolve()
     original = benchmark_dir == BENCHMARK
@@ -232,7 +279,13 @@ def benchmark(output, mode, predictions=None, *, benchmark_dir=BENCHMARK, labels
                         else '判断状态错误' if not row['state_match'] else '故障项或设备／链路不一致' for row in failures)
     if breakdown:
         lines += ['错误分布：' + '；'.join(f'{reason} {count} 例' for reason, count in breakdown.items()), '']
-    lines += [f'- {row["case_id"]}：{row.get("error", "状态、定位或缺证据项不符，详见 evaluation.json")}' for row in failures] or ['无。']
+    for row in failures:
+        case_id = row['case_id']
+        lines.append(f'- {case_id}')
+        prediction = results.get(case_id, {}).get('result')
+        lines.extend(f'  - {detail}' for detail in describe_mismatch(row, prediction))
+    if not failures:
+        lines.append('无。')
     if mode == 'rules':
         lines += ['', '模型直接诊断与知识辅助可用 run-model 在配置模型后运行。']
     (output / '报告.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
