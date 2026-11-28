@@ -63,22 +63,29 @@ async function main() {
   {
     const studentSource=fs.readFileSync(require('node:path').join(__dirname,'../web/student.js'),'utf8');
     const restoreBlock=studentSource.slice(studentSource.indexOf('async function restoreTask('),studentSource.indexOf('async function start('));
+    const submissionBlock=studentSource.slice(studentSource.indexOf('function restoreSubmittedMaterials('),
+      studentSource.indexOf('function commandOutputMaterials('));
     const nodes=new Map();
     const $=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',hidden:false,className:'',setAttribute(){},replaceChildren(){},append(){}});return nodes.get(id);};
     const materials=new Map(), recordings=new Map(), screenshots=new Map();
     let watched=0, previews=0;
     const context=vm.createContext({$,URLSearchParams,location:{search:'?session='+'e'.repeat(32)},
-      materials,recordings,screenshots,defaultQuestion:'default',knowledgeScope:'default',evidenceKind:'user_submitted',
+      materials,commandOutputs:[],experimentInputs:{},recordings,screenshots,
+      defaultQuestion:'default',knowledgeScope:'default',evidenceKind:'user_submitted',
       activeRequest:null,requestTimer:null,roomHeaders:()=>({}),renderRecordingChoices(){},renderMaterials(){},previewOperations:async()=>{previews++;},
       beginRequest:()=>({}),finishRequest(){},showResult(){},message(){},setBusy(){},clearInterval(){},
       api:async path=>({id:'img1',kind:'image',material_name:'screen.txt',name:'screen.png',image_url:'/api/recordings/img1/image'}),
-      window:{LabTasks:{restore:async()=>({id,session_id:null,input:{configs:{'screen.txt':'ocr text'},recordings:['img1'],question:'check'}}),watch:async()=>{watched++;return {};}}}});
-    vm.runInContext(restoreBlock,context);
+      window:{LabTasks:{restore:async()=>({id,session_id:null,input:{configs:{'screen.txt':'ocr text'},recordings:['img1'],question:'check',
+          command_outputs:[{device:'R1',command:'ip route',text:'route data',complete:true,config_fingerprint:'bound'}]}}),watch:async()=>{watched++;return {};}}}});
+    vm.runInContext(submissionBlock + restoreBlock,context);
     assert.equal(await vm.runInContext('restoreTask()',context),false,'Selected historical session must not be overwritten by an unrelated first task');
     assert.equal(watched,0);
     context.location.search='';
     assert.equal(await vm.runInContext('restoreTask()',context),true,'First task without URL session should restore configs and media');
     assert.equal(materials.get('screen.txt'),'ocr text');
+    assert.equal(context.commandOutputs[0].text,'route data');
+    assert.equal(context.commandOutputs[0].complete,true);
+    assert.equal(materials.size,1);
     assert.equal(screenshots.get('img1').name,'screen.png');
     assert.equal(previews,1);
   }
