@@ -46,6 +46,52 @@ class ConnectivityTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(parse_ping_records(text.splitlines()), [])
 
+    def test_sourced_ping_uses_destination_and_keeps_original_command(self):
+        examples = (
+            ("<R1>ping -a 1.1.1.1 -c 5 3.3.3.3", "3.3.3.3"),
+            ("ping -a 1.1.1.1 3.3.3.3", "3.3.3.3"),
+            ("pc1$ ping -I 10.12.0.1 10.30.0.10", "10.30.0.10"),
+            ("pc1$ ping 10.30.0.10 -I10.12.0.1", "10.30.0.10"),
+            ("C:\\>ping /a 10.30.0.10", "10.30.0.10"),
+            ("ping -a 10.30.0.10", "10.30.0.10"),
+            ("PC1 (10.12.0.1) 执行ping 10.30.0.10", "10.30.0.10"),
+        )
+        for command, target in examples:
+            with self.subTest(command=command):
+                lines = [command, "5 packets transmitted, 5 received"]
+                record, = parse_ping_records(lines)
+                self.assertEqual((record["target"], record["quote"], record["passed"]), (target, command, True))
+                self.assertEqual(record["evidence"][-1]["quote"], lines[-1])
+
+    def test_missing_destination_does_not_bind_counters_to_source_or_previous_ping(self):
+        for lines in (
+            ["<R1>ping -a 1.1.1.1", "5 packets transmitted, 5 received"],
+            ["pc1$ ping -I 10.12.0.1 server.lab", "5 packets transmitted, 5 received"],
+            ["PING 10.30.0.9", "5 packets transmitted", "<R1>ping -a 1.1.1.1", "5 received"],
+        ):
+            with self.subTest(lines=lines):
+                self.assertEqual(parse_ping_records(lines), [])
+        lines = ["pc1$ ping -I 10.12.0.1 server.lab",
+                 "PING server.lab (10.30.0.10) from 10.12.0.1 eth0: 56(84) bytes of data.",
+                 "5 packets transmitted, 5 received"]
+        record, = parse_ping_records(lines)
+        self.assertEqual((record["target"], record["line"], record["quote"]), ("10.30.0.10", 2, lines[1]))
+
+    def test_sourced_ping_satisfies_only_the_destination_goal(self):
+        from labagent.experiment_goals import check_goals
+
+        payload = {"configs": {"R1.log": "<R1>ping -a 1.1.1.1 3.3.3.3\n5 packets transmitted, 5 received"},
+                   "question": "检查 R1 到 3.3.3.3 的 Ping。"}
+        sources, _ = source_bundle(payload)
+        evidence = {"source_id": "question:initial", "device": "实验问题与要求", "line": 1, "quote": payload["question"]}
+        goals = [{"id": address, "title": address, "kind": "reachability", "device": "R1", "target": address,
+                  "expected": "", "instruction": evidence} for address in ("3.3.3.3", "1.1.1.1")]
+        assessment = check_goals(goals, sources)
+        checked, _ = execute_tool("check_submitted_pings", {}, payload, sources, set())
+        self.assertEqual([check["status"] for check in assessment["checks"]], ["passed", "needs_evidence"])
+        self.assertEqual(checked["pings"][0]["target"], "3.3.3.3")
+        self.assertEqual(assessment["checks"][0]["evidence"], checked["pings"][0]["evidence"])
+
     def test_later_complete_ping_in_one_log_replaces_earlier_failure(self):
         from labagent.experiment_goals import check_goals
 

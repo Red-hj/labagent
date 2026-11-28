@@ -3,6 +3,11 @@ import ipaddress
 import re
 
 IP = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+PING_WORD = re.compile(r"(?<![a-z])ping(?:ing)?(?![a-z])", re.I)
+PING_COMMAND = re.compile(r"^\s*(?P<prompt><[^>]+>|\[[^\]]+\]|\S+[>$#])\s*ping\b", re.I)
+PING_STATISTICS = re.compile(r"\bstatistics\b|统计", re.I)
+LINUX_PING_SOURCE = re.compile(r"(?<!\S)-I[ \t]*\S+")
+VRP_PING_SOURCE = re.compile(r"(?<!\S)-a[ \t]+" + IP.pattern)
 ADDRESS_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_.])(?P<address>(?:[0-9]{1,3}\.){3}[0-9]{1,3}|(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4})"
     r"(?P<prefix>/[0-9]{1,3})?(?![0-9a-z:/]|\.[0-9])", re.I
@@ -55,11 +60,27 @@ def ground_ping_text(text, known, proposed=()):
     return revised
 
 
+def _ping_address(text, mention, command, statistics):
+    arguments = text[mention.end():]
+    if statistics:
+        return IP.search(arguments) or IP.search(text[:mention.start()])
+    arguments = LINUX_PING_SOURCE.sub("", arguments)
+    source = VRP_PING_SOURCE.search(arguments)
+    # The VRP prompt or a second address distinguishes -a from the flag in host tools.
+    if source and ((command and command["prompt"].startswith(("<", "[")))
+                   or IP.search(arguments[source.end():])):
+        arguments = arguments[:source.start()] + arguments[source.end():]
+    return IP.search(arguments)
+
+
 def parse_ping_records(lines):
     """Each output block owns its target and counters; never combine blocks."""
     records, current = [], None
     for number, text in enumerate(lines, 1):
-        address = IP.search(text) if re.search(r"(?<![a-z])ping(?![a-z])", text, re.I) else None
+        command = PING_COMMAND.match(text)
+        mention = command or PING_WORD.search(text)
+        statistics = bool(mention and not command and PING_STATISTICS.search(text))
+        address = _ping_address(text, mention, command, statistics) if mention else None
         if address:
             try:
                 target = str(ipaddress.IPv4Address(address[0]))
@@ -68,11 +89,12 @@ def parse_ping_records(lines):
                 continue
             # Repeated headings (command, response header, statistics) belong
             # to one block until its counters have been emitted.
-            command = re.search(r"^\s*(?:<[^>]+>|\[[^\]]+\]|\S+[>$#])\s*ping\b", text, re.I)
-            fresh_output = current and ("sent" in current or "received" in current) and not re.search(r"statistics|统计", text, re.I)
+            fresh_output = current and ("sent" in current or "received" in current) and not statistics
             if current is None or current["target"] != target or current.get("complete") or command or fresh_output:
                 current = {"target": target, "evidence": []}
             current["evidence"].append({"line": number, "quote": text})
+        elif mention and (command or text[mention.end():].lstrip().startswith("-")):
+            current = None
         if current is None or current.get("complete"):
             continue
         combined = WINDOWS.search(text)
