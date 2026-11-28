@@ -616,7 +616,9 @@ def _ospf_neighbor(goal, blocks):
                     lines.extend(sorted({peers[0]["line"], peers[-1]["line"]}))
                 evidence = [citation(block, number) for number in lines]
                 return "failed", f"{device} 的完整 FRRouting OSPF 邻居表中没有 Router ID {router_id}。", evidence
-            break
+            line = (frr_table["header_line"] if frr_table is not None else
+                    next((number for number, row in enumerate(block["lines"], 1) if row.strip()), None))
+            return "needs_evidence", missing, [citation(block, line)] if line is not None else []
         evidence = [citation(block, number) for number in sorted({
             peer[key] for peer in matches for key in ("line", "peer_line")
         })]

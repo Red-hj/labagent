@@ -260,6 +260,59 @@ class DiagnosticCheckPlanningTests(unittest.TestCase):
                 if expected_source == "message:current":
                     history.append({"intent": "ask", "user": pasted, "assistant": "新采集通过", "created_at": result["created_at"]})
 
+    def test_new_neighbor_evidence_updates_previously_closed_session_without_the_model(self):
+        path = Path(__file__).resolve().parents[1] / "data/team_cases/lab_02/map_materials"
+        command = "show ip ospf neighbor json"
+        def output(phase):
+            return (path / phase / "R1-run.log").read_text(encoding="utf-8").split(f"<R1>{command}\n", 1)[1]
+
+        full, empty = output("repaired"), output("fault")
+        question = "R1 的 OSPF 邻居 2.2.2.2 应达到 Full。"
+        goal = {"id": "adjacency", "title": question, "kind": "ospf_neighbor", "device": "R1",
+                "target": "2.2.2.2", "expected": "Full",
+                "instruction": {"source_id": "question:initial", "line": 1, "quote": question}}
+        configs = {"R1.cfg": "sysname R1\nospf 1\n area 0\nreturn"}
+        initial = {"configs": configs, "question": question}
+        initial["command_outputs"] = [{"device": "R1", "command": command, "text": full, "complete": True,
+                                       "config_fingerprint": fingerprint(initial)}]
+        sources, seen = sources_and_seen(initial)
+        previous_check, _ = investigation.execute_tool("check_experiment_goals", {"goals": [goal]}, initial, sources, seen)
+        self.assertEqual(previous_check["status"], "passed")
+        for outcome, closed_status in (("observations_passed", "verified_from_observations"),
+                                       ("user_reported_resolved", "resolved_by_user_report")):
+            previous = {"goal_assessment": previous_check, "outcome": outcome, "verification": {"pings": []},
+                        "summary": "上次复测已通过。"}
+            for text, complete, verdict, status in (
+                (None, False, "passed", closed_status),
+                ("\n" + full, True, "passed", closed_status),
+                (empty, True, "failed", "goals_pending"),
+                (empty, False, "needs_evidence", "goals_pending"),
+                (empty.rstrip()[:-1], True, "needs_evidence", "goals_pending"),
+            ):
+                with self.subTest(outcome=outcome, verdict=verdict, complete=complete):
+                    payload = {**initial, "use_llm": False, "command_outputs": []}
+                    if text is not None:
+                        payload["command_outputs"] = [{**initial["command_outputs"][0], "text": text, "complete": complete}]
+                    result = investigation.investigate(payload, previous, previous_materials=configs)
+                    review = result["investigation"]
+                    check, = review["goal_assessment"]["checks"]
+                    self.assertEqual(result["llm"]["status"], "not_configured")
+                    self.assertEqual((result["status"], check["status"]), (status, verdict))
+                    if text is not None:
+                        self.assertTrue(check["evidence"])
+                        for ref in check["evidence"]:
+                            self.assertEqual((ref["source_id"], ref["quote"]), ("output:1", text.splitlines()[ref["line"] - 1]))
+                    if status == "goals_pending":
+                        self.assertNotIn("verification", review)
+                        self.assertEqual(review["pending_requests"], [check["request"]])
+                        self.assertEqual(review["summary"], check["detail"])
+                        report = generate_report({"session_id": "retest", "learning_record": {"config_revisions": 0},
+                                                  "attempts": [{"result": result, "input": payload,
+                                                                "created_at": result["created_at"]}]})
+                        self.assertIn(check["detail"], report)
+                        self.assertIn(check["evidence"][0]["quote"].strip(), report)
+                    self.assertEqual(previous["goal_assessment"]["checks"][0]["status"], "passed")
+
     def test_changed_config_allows_retest_of_old_outputs_but_keeps_live_capture(self):
         before = {"R1.cfg":"sysname R1\nospf 1\n area 1\nreturn",
                   "R1-peer.log":"<R1>display ospf peer\nNo neighbors",
