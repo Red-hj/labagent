@@ -166,6 +166,23 @@ class ExperimentGoalTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "邻居目标的原文"):
                 execute_tool("check_experiment_goals", {"goals": [invalid]}, current, sources, seen)
 
+    def test_same_line_neighbor_goals_keep_their_own_required_state(self):
+        for separator in ("；", "，", "; "):
+            with self.subTest(separator=separator):
+                requirement = ("R1 的 OSPF 邻居 2.2.2.2，要求达到 2-Way" + separator
+                               + "R2 的 OSPF 邻居 3.3.3.3 应达到 Full。")
+                current = {"question": requirement, "configs": {}}
+                goal = {"id": "adjacency", "title": "R1 邻居状态", "kind": "ospf_neighbor", "device": "R1",
+                        "target": "2.2.2.2", "expected": "2-Way",
+                        "instruction": {"source_id": "question:initial", "line": 1}}
+                sources, _ = source_bundle(current)
+                seen = {("question:initial", 1)}
+                result, _ = execute_tool("check_experiment_goals", {"goals": [goal]}, current, sources, seen)
+                self.assertEqual(result["checks"][0]["status"], "needs_evidence")
+                with self.assertRaisesRegex(ValueError, "邻居目标的原文"):
+                    execute_tool("check_experiment_goals", {"goals": [{**goal, "expected": "Full"}]},
+                                 current, sources, seen)
+
     def test_complete_public_table_proves_absence_but_partial_or_filtered_tables_do_not(self):
         public = ("<R1>display ip routing-table\nRouting Table : Public\nDestinations : 1 Routes : 1\n"
                   "Destination/Mask Proto Pre Cost Flags NextHop Interface\n"
