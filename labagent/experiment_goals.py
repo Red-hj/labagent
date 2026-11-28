@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 
 from .connectivity import parse_ping_records
-from .runtime_parser import (FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_HEADER, FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
+from .runtime_parser import (FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_HEADER, FRR_NEIGHBOR_JSON_COMMAND, FRR_ROUTE_LEGEND,
+                             LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
                              OSPF_NEIGHBOR_STATES,
                              parse_frr_neighbors, parse_frr_routes, parse_linux_routes, parse_neighbors,
                              parse_routes, select_route_records)
@@ -35,7 +36,7 @@ VRP_TABLE_COUNTS = re.compile(r"\s*Destinations\s*:\s*(\d{1,10})\s+Routes\s*:\s*
 OUTPUT_EXCERPT = re.compile(r"节选|摘录|片段|截断|未显示|\b(?:excerpt|truncated|partial)\b|^\s*(?:\.{3,}|…+)|-{2,}\s*More\s*-{2,}", re.I | re.M)
 
 
-OSPF_NEIGHBOR_COMMAND = re.compile(rf"(?:{FRR_NEIGHBOR_COMMAND}|display ospf(?:\s+\d+)? peer)", re.I)
+OSPF_NEIGHBOR_COMMAND = re.compile(rf"(?:{FRR_NEIGHBOR_COMMAND}(?: json)?|display ospf(?:\s+\d+)? peer)", re.I)
 OSPF_NEIGHBOR_WORDS = r"邻居|邻接|\b(?:neighbou?r|peer|adjacency)\b"
 OSPF_NEIGHBOR_CLAUSE_BOUNDARY = re.compile(
     rf"[;；。!?！？]|\.(?=\s|$)|[,，](?=[^,，;；。!?！？]*(?:{OSPF_NEIGHBOR_WORDS}))", re.I)
@@ -548,8 +549,11 @@ def _ospf_neighbor(goal, blocks):
     for block in reversed(blocks):
         text = "\n".join(block["lines"])
         command = " ".join(block["command"].lower().split())
-        frr_table = parse_frr_neighbors(text)
-        peers = frr_table["rows"] if frr_table is not None else parse_neighbors(text)
+        frr_table = parse_frr_neighbors(text, command=command)
+        if frr_table is not None:
+            peers = frr_table["rows"]
+        else:
+            peers = [] if command == FRR_NEIGHBOR_JSON_COMMAND else parse_neighbors(text)
         if frr_table is None and not peers and not OSPF_NEIGHBOR_COMMAND.fullmatch(command):
             continue
         # Use the latest recognized output for this device. An older Full row
@@ -558,7 +562,7 @@ def _ospf_neighbor(goal, blocks):
         states = {peer["state"].casefold(): peer["state"] for peer in matches}
         if not states:
             if (frr_table is not None and frr_table["fully_parsed"] and block["complete"]
-                    and command == FRR_NEIGHBOR_COMMAND and not OUTPUT_EXCERPT.search(text)):
+                    and command in {FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_JSON_COMMAND} and not OUTPUT_EXCERPT.search(text)):
                 lines = [frr_table["header_line"]]
                 if peers:
                     lines.extend(sorted({peers[0]["line"], peers[-1]["line"]}))

@@ -131,6 +131,70 @@ class ExperimentGoalTests(unittest.TestCase):
         self.assertEqual(check["status"], "failed")
         self.assertEqual(check["evidence"][0]["source_id"], "output:1")
 
+    def test_frr_neighbor_json_replays_original_fault_and_repair_logs(self):
+        captures = ROOT / "data/team_cases/lab_02/map_materials"
+        command = "show ip ospf neighbor json"
+        for device, router_id in (("R1", "2.2.2.2"), ("R2", "1.1.1.1")):
+            question = f"{device} 的 OSPF 邻居 {router_id} 应达到 Full。"
+            goal = {"id": "neighbor", "title": question, "kind": "ospf_neighbor", "device": device,
+                    "target": router_id, "expected": "Full",
+                    "instruction": {"source_id": "question:initial", "line": 1, "quote": question}}
+            for phase in ("fault", "repaired"):
+                with self.subTest(device=device, phase=phase):
+                    log = (captures / phase / f"{device}-run.log").read_text(encoding="utf-8")
+                    current = {"question": question, "configs": {f"{device}-run.log": log}}
+                    body = log.split(f"<{device}>{command}\n", 1)[1]
+                    for bound in (False, True):
+                        if bound:
+                            current["command_outputs"] = [{"device": device, "command": command, "text": body,
+                                                            "complete": True, "config_fingerprint": fingerprint(current)}]
+                        sources, _ = source_bundle(current)
+                        result, _ = execute_tool("check_experiment_goals", {"goals": [goal]}, current, sources,
+                                                 {("question:initial", 1)})
+                        check, = result["checks"]
+                        expected = "passed" if phase == "repaired" else "failed" if bound else "needs_evidence"
+                        self.assertEqual(check["status"], expected)
+                        if phase == "repaired":
+                            self.assertEqual(len(check["evidence"]), 2)
+                            self.assertIn(router_id, check["evidence"][0]["quote"])
+                            self.assertIn('"nbrState":"Full', check["evidence"][1]["quote"])
+                        elif bound:
+                            self.assertEqual([ref["quote"].strip() for ref in check["evidence"]], ['"neighbors":{}'])
+                        for ref in check["evidence"]:
+                            self.assertEqual(ref["source_id"], "output:1" if bound else "config:1")
+                            self.assertEqual(sources[ref["source_id"]]["lines"][ref["line"] - 1], ref["quote"])
+
+    def test_latest_frr_neighbor_json_handles_incomplete_and_conflicting_evidence(self):
+        question = "R1 的 OSPF 邻居 2.2.2.2 应达到 Full。"
+        goal = {"id": "neighbor", "title": question, "kind": "ospf_neighbor", "device": "R1", "target": "2.2.2.2",
+                "expected": "Full", "instruction": {"source_id": "question:initial", "line": 1, "quote": question}}
+        old = ('<R1>show ip ospf neighbor\nNeighbor ID Pri State Up Time Dead Time Address Interface\n'
+               '2.2.2.2 1 Full/- 6.070s 3.908s 10.12.0.2 transit:10.12.0.1')
+        current = {"question": question, "configs": {"R1-old.log": old}}
+        command = "show ip ospf neighbor json"
+        prefix = '{"neighbors":{"2.2.2.2":['
+        init = '{"metadata":{"nbrState":"Full"},"nbrState":\n"Init/-"}'
+        for text, complete, status in (
+            ('{"neighbors":{}}', False, "needs_evidence"),
+            ('{"neighbors":{}}', True, "failed"),
+            ('{"neighbors":{}', True, "needs_evidence"),
+            ('{"neighbors":{},"neighbors":{}}', True, "needs_evidence"),
+            ('{"default":{"neighbors":{}}}', True, "needs_evidence"),
+            (prefix + init + ']}}', True, "failed"),
+            (prefix + init + ',{"nbrState":"Full/-"}]}}', True, "needs_evidence"),
+        ):
+            with self.subTest(text=text, complete=complete):
+                current["command_outputs"] = [{"device": "R1", "command": command, "text": text, "complete": complete,
+                                               "config_fingerprint": fingerprint(current)}]
+                sources, _ = source_bundle(current)
+                result, _ = execute_tool("check_experiment_goals", {"goals": [goal]}, current, sources,
+                                         {("question:initial", 1)})
+                check, = result["checks"]
+                self.assertEqual(check["status"], status)
+                self.assertTrue(all(ref["source_id"] == "output:1" for ref in check["evidence"]))
+                if init in text and status == "failed":
+                    self.assertEqual(check["evidence"][-1]["quote"], '"Init/-"}]}}')
+
     def test_promptless_neighbor_table_does_not_hide_the_current_linux_route(self):
         route = "192.168.20.0/24 nhid 17 via 10.12.0.2 dev transit proto ospf metric 20"
         current = {"configs": {

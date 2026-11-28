@@ -1,6 +1,8 @@
 """Bounded VRP, FRRouting and Linux output parsing from submitted evidence."""
+from bisect import bisect_right
 from copy import deepcopy
 import ipaddress
+import json
 import re
 
 from .engine import fingerprint
@@ -20,13 +22,82 @@ LINUX_PROTOCOLS = dict(kernel="Direct", static="Static", boot="Boot", ospf="OSPF
 
 OSPF_NEIGHBOR_STATES = frozenset(("down", "attempt", "init", "2-way", "exstart", "exchange", "loading", "full"))
 FRR_NEIGHBOR_COMMAND = "show ip ospf neighbor"
+FRR_NEIGHBOR_JSON_COMMAND = FRR_NEIGHBOR_COMMAND + " json"
+JSON_STRINGS = re.compile(r'"(?:[^"\\]|\\.)*"(?P<separator>[ \t\r\n]*:[ \t\r\n]*)?')
 FRR_NEIGHBOR_HEADER = re.compile(r"\s*Neighbor\s+ID\s+Pri\s+State\s+.*\bAddress\s+Interface\b.*", re.I)
 FRR_NEIGHBOR_ROW = re.compile(r"\s*(\d+(?:\.\d+){3})\s+\d+\s+([\w-]+)(?:/\S+)?"
                              r"\s+(?:\S+\s+){1,2}(\d+(?:\.\d+){3})\s+\S+(?:\s+.*)?", re.I)
 
 
-def parse_frr_neighbors(text):
-    """Return the last FRR table without treating partial parsing as coverage."""
+def _unique_json_fields(pairs):
+    fields = dict(pairs)
+    if len(fields) != len(pairs):
+        raise ValueError("Duplicate JSON field")
+    return fields
+
+
+def _json_member_lines(document, text, line_offset):
+    """Match parsed object members to the original JSON field names in source order."""
+    breaks = [match.start() for match in re.finditer("\n", text)]
+    def original_line(position):
+        return line_offset + 1 + bisect_right(breaks, position)
+
+    fields = ((original_line(match.start()), original_line(match.end()))
+              for match in JSON_STRINGS.finditer(text) if match["separator"])
+    locations = {}
+
+    def visit(value):
+        if isinstance(value, dict):
+            lines = locations[id(value)] = {}
+            for name, child in value.items():
+                lines[name] = next(fields)
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(document)
+    return locations
+
+
+def _parse_frr_neighbor_json(text):
+    lines = text.splitlines()
+    start = next((index for index, line in enumerate(lines) if line.strip()), len(lines))
+    if start < len(lines) and (echo := prompt_info(lines[start])):
+        if " ".join(echo[3].lower().split()) != FRR_NEIGHBOR_JSON_COMMAND:
+            return None
+        start += 1
+    contents = "\n".join(lines[start:])
+    if not contents.lstrip().startswith("{"):
+        return None
+    try:
+        document = json.loads(contents, object_pairs_hook=_unique_json_fields)
+        neighbors = document.get("neighbors")
+        if not isinstance(neighbors, dict) or document.keys() - {"neighbors", "ospfInstance"}:
+            return None
+        locations = _json_member_lines(document, contents, start)
+        rows = []
+        for router_id, entries in neighbors.items():
+            ipaddress.IPv4Address(router_id)
+            if not isinstance(entries, list) or not entries:
+                return None
+            for entry in entries:
+                state = entry.get("nbrState") if isinstance(entry, dict) else None
+                if not isinstance(state, str) or (state := state.partition("/")[0]).casefold() not in OSPF_NEIGHBOR_STATES:
+                    return None
+                rows.append({"router_id": router_id, "state": state, "line": locations[id(entry)]["nbrState"][1],
+                             "peer_line": locations[id(neighbors)][router_id][0]})
+    except (ValueError, RecursionError, StopIteration):
+        return None
+    return {"header_line": locations[id(document)]["neighbors"][0], "rows": rows, "fully_parsed": True}
+
+
+def parse_frr_neighbors(text, *, command=""):
+    """Read the default FRR neighbor table, retaining the original lines."""
+    if command == FRR_NEIGHBOR_JSON_COMMAND:
+        return _parse_frr_neighbor_json(text)
+    if not command and (table := _parse_frr_neighbor_json(text)) is not None:
+        return table
     lines = text.splitlines()
     header = next((index for index in range(len(lines) - 1, -1, -1)
                    if FRR_NEIGHBOR_HEADER.fullmatch(lines[index])), None)
