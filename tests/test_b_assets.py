@@ -173,6 +173,30 @@ class BEvaluationTests(unittest.TestCase):
         extra = {**expected, 'findings': expected['findings'] + [{**expected['findings'][0], 'link_id': 'L2'}]}
         self.assertFalse(b.assess(expected, extra)['strict_match'])
 
+    def test_mismatch_details_distinguish_status_and_issue_locations(self):
+        expected = {'status': 'needs_information', 'findings': [
+                        {'code': 'SUBNET_MISMATCH', 'link_id': 'L1', 'devices': ['R2', 'R1']},
+                        {'code': 'AREA_POLICY_VIOLATION', 'link_id': 'L2', 'devices': ['R1']},
+                        {'code': 'AREA_POLICY_VIOLATION', 'link_id': 'L2', 'devices': ['R2']}],
+                    'unknowns': [{'code': 'MISSING_IP', 'link_id': 'L3', 'devices': ['R3']}]}
+        actual = {'status': 'fault_found', 'findings': [
+                      {**expected['findings'][0], 'devices': ['R2']},
+                      {**expected['findings'][1], 'devices': ['R1', 'R2']},
+                      {'code': 'INTERFACE_SHUTDOWN', 'link_id': 'L4', 'devices': ['R4']}],
+                  'unknowns': []}
+        details = b.describe_mismatch(b.assess(expected, actual), actual)
+        self.assertEqual(details, [
+            '状态预期为待补证，实际为发现故障。',
+            '故障 `AREA_POLICY_VIOLATION` · 链路 `L2` 的设备范围不符。预期 （`R1`） / （`R2`），实际 `R1`、`R2`。',
+            '多报故障 `INTERFACE_SHUTDOWN` · 链路 `L4`，涉及 `R4`。',
+            '故障 `SUBNET_MISMATCH` · 链路 `L1` 的设备范围不符。预期 `R1`、`R2`，实际 `R2`。',
+            '漏报补证项 `MISSING_IP` · 链路 `L3`，涉及 `R3`。',
+        ])
+        self.assertEqual(b.describe_mismatch(b.assess(expected, None), None), ['无预测记录。'])
+        invalid = {'request_error': 'invalid_json_or_case_id'}
+        self.assertEqual(b.describe_mismatch(b.assess(expected, invalid), invalid),
+                         ['预测无法评分（`invalid_json_or_case_id`）。'])
+
     def test_first_five_and_repaired_configs(self):
         folders = sorted((b.DATA / 'team_cases').glob('lab_*'))
         self.assertEqual(len(folders), 5)
