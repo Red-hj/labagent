@@ -6,8 +6,8 @@ from .knowledge import validate_scope, validate_course_documents
 from .personal import validate_memory_context
 from .learning import policy as learning_policy, STEP_TOOL
 from .experiment_state import experiment_context
-from .experiment_goals import (OUTPUT_EXCERPT, complete_config, complete_frr_neighbor_table,
-                               evidence_blocks, is_config_block, submitted_pings)
+from .experiment_goals import (OSPF_NEIGHBOR_COMMAND, OUTPUT_EXCERPT, complete_config, complete_frr_neighbor_table,
+                               current_runtime_sources, evidence_blocks, is_config_block, submitted_pings)
 from .investigation_prompts import system_instructions, GOAL_TOOL_NAMES
 from .operation_history import inspect_history, prompt_info
 from .connectivity import host_literals
@@ -179,15 +179,7 @@ def _usable_frr_neighbors(block, command, text, table, targets):
 
 def observed_device_commands(sources, *, previous_materials=None, criteria=()):
     """Reuse current observations, but allow retests after a configuration changes."""
-    config_changed = previous_materials is not None and any(
-        is_config_block(block) and previous_materials.get(sources[block['source_id']]['device']) != sources[block['source_id']]['text']
-        for block in evidence_blocks(sources))
-    if config_changed:
-        # Carried output describes the previous configuration. A live tool capture
-        # is fresh even when its text happens to be identical to the previous run.
-        sources = {key: source for key, source in sources.items()
-                   if source.get('collected') or source['kind'] == 'user_message'
-                   or previous_materials.get(source['device']) != source['text']}
+    sources = current_runtime_sources(sources, previous_materials)
     required_neighbors = {}
     for goal in criteria:
         if goal["kind"] == "ospf_neighbor":
@@ -196,6 +188,8 @@ def observed_device_commands(sources, *, previous_materials=None, criteria=()):
     commands, neighbor_devices = set(), set()
     for block in reversed(evidence_blocks(sources)):
         command = normalize_check_command(block['command'])
+        if sources[block["source_id"]].get("stale_neighbor") and (not command or OSPF_NEIGHBOR_COMMAND.fullmatch(command)):
+            continue
         if not command or command in FRR_NEIGHBOR_COMMANDS:
             text = "\n".join(block["lines"])
             table = parse_frr_neighbors(text, command=command)

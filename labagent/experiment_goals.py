@@ -146,6 +146,41 @@ def _block(source, device, command, start, end, section=""):
             "raw_lines": source["lines"][start:end]}
 
 
+def current_runtime_sources(sources, previous_materials):
+    if previous_materials is None or not any(
+            is_config_block(block)
+            and previous_materials.get(sources[block["source_id"]]["device"]) != sources[block["source_id"]]["text"]
+            for block in evidence_blocks(sources)):
+        return sources
+    return {key: source for key, source in sources.items()
+            if source.get("collected") or source["kind"] in {"user_message", "submitted_command_output"}
+            or previous_materials.get(source["device"]) != source["text"]}
+
+
+def mark_stale_neighbor_materials(sources, previous_materials, stale_materials):
+    """Keep carried neighbor snapshots out of retests until there is a fresh capture."""
+    if previous_materials is None:
+        return
+    fresh = current_runtime_sources(sources, previous_materials)
+    if fresh is sources and not stale_materials:
+        return
+    for block in evidence_blocks(sources):
+        source_id = block["source_id"]
+        source = sources[source_id]
+        name = source["device"]
+        if (source["kind"] not in {"submitted_material", "screenshot_ocr"} or source.get("collected")
+                or previous_materials.get(name) != source["text"]):
+            continue
+        if name in stale_materials:
+            source["stale_neighbor"] = True
+        elif source_id not in fresh:
+            command = " ".join(block["command"].lower().split())
+            text = "\n".join(block["lines"])
+            if (OSPF_NEIGHBOR_COMMAND.fullmatch(command) or parse_frr_neighbors(text, command=command) is not None
+                    or parse_neighbors(text)):
+                source["stale_neighbor"] = True
+
+
 def citation(block, number):
     return {"source_id": block["source_id"], "device": block["material"],
             "line": block["start"] + number, "quote": block["raw_lines"][number - 1]}
@@ -179,7 +214,7 @@ def submitted_pings(sources):
     return active, reported, [item for item in observations if item not in active]
 
 
-def check_goals(criteria, sources, *, include_history=False):
+def check_goals(criteria, sources, *, include_history=False, previous_materials=None):
     # A different upload order can renumber a source while its quoted instruction stays the same.
     by_name = {source["device"]: source for source in sources.values()}
     rebound = []
@@ -191,6 +226,8 @@ def check_goals(criteria, sources, *, include_history=False):
             goal = {**goal, "instruction": {**ref, "source_id": source["source_id"]}}
         rebound.append(goal)
     criteria = rebound
+    neighbor_sources = (current_runtime_sources(sources, previous_materials)
+                        if any(goal["kind"] == "ospf_neighbor" for goal in criteria) else sources)
     blocks = evidence_blocks(sources, include_history=include_history)
     explicit = explicit_area_goals(sources)
     area_lines = {(g["instruction"]["source_id"], g["instruction"]["line"]) for g in explicit}
@@ -209,7 +246,9 @@ def check_goals(criteria, sources, *, include_history=False):
         elif goal["kind"] == "ospf_interface_area":
             status, detail, evidence = _ospf_interface_area(goal, matching)
         elif goal["kind"] == "ospf_neighbor":
-            status, detail, evidence = _ospf_neighbor(goal, matching)
+            current = [block for block in matching if block["source_id"] in neighbor_sources
+                       and not neighbor_sources[block["source_id"]].get("stale_neighbor")]
+            status, detail, evidence = _ospf_neighbor(goal, current)
         else:
             status, detail, evidence = _config(goal, matching)
         checks.append({"id": goal["id"], "title": goal["title"], "kind": goal["kind"],

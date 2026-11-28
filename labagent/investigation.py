@@ -19,7 +19,7 @@ from .experiment_state import experiment_context, summarize_experiment
 from .progress import emit_progress, ToolProgress
 from .experiment_goals import (GOAL_TOOL, ROUTE_TOOL, area_instruction_supports_goal, validate_goal_fields,
                                check_goals, check_route_selection, checked_frr_area_repair, complete_config, evidence_blocks,
-                               explicit_area_goals, is_config_block, neighbor_instruction_supports_goal,
+                               explicit_area_goals, is_config_block, mark_stale_neighbor_materials, neighbor_instruction_supports_goal,
                                pending_ospf_loopback_evidence, submitted_pings)
 from .diagnostic_planner import PLAN_TOOL, validate_plan
 from .operation_history import HISTORY_TOOL, inspect_history, model_history
@@ -516,6 +516,8 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
     from .engine import fingerprint
     validate_open(payload)
     sources, warnings = source_bundle(payload, conversation, previous_materials=previous_materials)
+    stale_neighbors = (previous or {}).get("experiment_state", {}).get("stale_neighbor_materials", ())
+    mark_stale_neighbor_materials(sources, previous_materials, set(stale_neighbors))
     comparisons = discover_runs(sources)
     valid_run_comparison = (bool(comparisons) and all(not item.get("error") for item in comparisons)
                             and all(source["kind"] in {"repair_run", "user_question", "user_message"} for source in sources.values()))
@@ -553,7 +555,7 @@ def investigate(payload, previous=None, completion=None, *, conversation=None, p
         requests = ["请启用可用模型或补充当前材料后继续开放排查。"]
     if model.get("status") == "ok":
         model["text"] = analysis["summary"]
-    if analysis or (previous or {}).get("experiment_state"):
+    if analysis or (previous or {}).get("experiment_state") or any(source.get("stale_neighbor") for source in sources.values()):
         analysis["experiment_state"] = summarize_experiment(previous, payload, sources, analysis, previous_materials,
                                                            succeeded=model.get("status") == "ok" or bool(comparison_reply))
     interaction_checks = {item["tool"]: item["result"] for item in model["tool_trace"] if item["status"] == "ok" and item["tool"] in ("compare_materials", "check_submitted_pings")}

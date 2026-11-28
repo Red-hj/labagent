@@ -9,6 +9,7 @@ from unittest.mock import patch
 from labagent import investigation
 from labagent.diagnostic_planner import rank_checks
 from labagent.engine import fingerprint
+from labagent.experiment_goals import mark_stale_neighbor_materials
 from labagent.investigation_context import observed_device_commands, prepare_investigation
 from labagent.investigation_verification import verify_excerpt_claims, verify_minimal_ospf_wildcard_advice
 from labagent.report import generate_report
@@ -159,6 +160,58 @@ class DiagnosticCheckPlanningTests(unittest.TestCase):
         observed = observed_device_commands(sources, previous_materials=before)
         self.assertIn(("R1", command), observed)
         self.assertIn(("R1", "show ip ospf neighbor"), observed)
+
+    def test_neighbor_approval_waits_for_fresh_capture_across_rounds_and_report(self):
+        log_path = Path(__file__).resolve().parents[1] / "data/team_cases/lab_02/map_materials/repaired/R1-run.log"
+        command = "show ip ospf neighbor json"
+        body = log_path.read_text(encoding="utf-8").split(f"<R1>{command}\n", 1)[1]
+        material = "R1-neighbors.log"
+        before = {"R1.cfg": "sysname R1\nospf 1\n area 0\nreturn", material: f"<R1>{command}\n{body}"}
+        after = {**before, "R1.cfg": before["R1.cfg"].replace("area 0", "area 1")}
+        question = "R1 的 OSPF 邻居 2.2.2.2 应达到 Full。"
+        goal = {"id": "neighbor", "title": question, "kind": "ospf_neighbor", "device": "R1",
+                "target": "2.2.2.2", "expected": "Full",
+                "instruction": {"source_id": "question:initial", "line": 1, "quote": question}}
+        original = {"configs": before, "question": question}
+        sources, seen = sources_and_seen(original)
+        first, _ = investigation.execute_tool("check_experiment_goals", {"goals": [goal]}, original, sources, seen)
+        previous, previous_materials = {"goal_assessment": first}, None
+        attempts = []
+        for number, (configs, fresh, status) in enumerate((
+                (before, False, "passed"), (after, False, "needs_evidence"),
+                (after, False, "needs_evidence"), (after, True, "passed")), 1):
+            payload = {"configs": dict(configs), "question": question, "use_llm": False}
+            if number == 3:
+                payload["interaction"] = {"type": "ask", "message": "还需要复测邻居吗？"}
+            if fresh:
+                payload["command_outputs"] = [{"device": "R1", "command": command, "text": body, "complete": True,
+                                               "config_fingerprint": fingerprint(payload)}]
+            result = investigation.investigate(payload, previous, previous_materials=previous_materials)
+            analysis = result["investigation"]
+            check, = analysis["goal_assessment"]["checks"]
+            self.assertEqual(check["status"], status)
+            if number > 1:
+                self.assertEqual(analysis["experiment_state"]["stale_neighbor_materials"], [material])
+            if status == "needs_evidence":
+                self.assertEqual(check["evidence"], [])
+            if fresh:
+                self.assertEqual([ref["source_id"] for ref in check["evidence"]], ["output:1", "output:1"])
+                for ref in check["evidence"]:
+                    self.assertEqual(ref["quote"], body.splitlines()[ref["line"] - 1])
+
+            sources, _ = sources_and_seen(payload)
+            stale = set(previous.get("experiment_state", {}).get("stale_neighbor_materials", []))
+            mark_stale_neighbor_materials(sources, previous_materials, stale)
+            observed = observed_device_commands(sources, previous_materials=previous_materials, criteria=[goal])
+            self.assertEqual(("R1", command) in observed, status == "passed")
+            attempts.append({"input": payload, "result": result, "created_at": f"2026-11-28T08:00:0{number}+00:00"})
+            previous, previous_materials = analysis, configs
+
+        report = generate_report({"session_id": "neighbor-retest", "attempts": attempts,
+                                  "learning_record": {"config_revisions": 1}})
+        for row in ("| 1 | 1/1 | 0 | 0 |", "| 2 | 0/1 | 0 | 1 |", "| 3 | 0/1 | 0 | 1 |", "| 4 | 1/1 | 0 | 0 |"):
+            self.assertIn(row, report)
+        self.assertIn('"nbrState":"Full', report)
 
     def test_changed_config_allows_retest_of_old_outputs_but_keeps_live_capture(self):
         before = {"R1.cfg":"sysname R1\nospf 1\n area 1\nreturn",

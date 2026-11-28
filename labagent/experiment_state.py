@@ -24,6 +24,11 @@ def summarize_experiment(previous, payload, sources, analysis, previous_material
     state = experiment_context(previous, payload, previous_materials)
     turn = state["turn_count"] + int(succeeded)
     state.update(turn_count=turn, goal=analysis.get("experiment_goal") or state["goal"])
+    stale = [source["device"] for source in sources.values() if source.get("stale_neighbor")]
+    if stale:
+        state["stale_neighbor_materials"] = stale
+    else:
+        state.pop("stale_neighbor_materials", None)
     if not succeeded:
         return state
     state["current_step"] = {key: analysis["learning"][key] for key in

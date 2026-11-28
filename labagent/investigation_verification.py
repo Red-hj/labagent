@@ -155,7 +155,8 @@ def assess_goals(context, sources, seen, payload, previous_materials):
     if context.get("goal_checks_disabled") or not (context.get("criteria") or explicit_area_goals(sources)):
         return {}
     same_materials = payload["configs"] == previous_materials
-    assessment = check_goals(context.get("criteria", []), sources, include_history=same_materials)
+    assessment = check_goals(context.get("criteria", []), sources, include_history=same_materials,
+                             previous_materials=previous_materials)
     for check in assessment["checks"]:
         seen.update((item["source_id"], item["line"]) for item in check["evidence"])
     return assessment
@@ -167,8 +168,10 @@ def merge_investigation_state(analysis, model, payload, sources, previous, previ
     if not analysis and previous_closed and same_materials and not payload.get("learning"):
         analysis = dict(previous)
     saved_criteria = (previous or {}).get("goal_assessment", {}).get("criteria", [])
-    saved_assessment = engine_state.get("goal_assessment") or (check_goals(saved_criteria, sources, include_history=same_materials)
-                                                              if goal_checks and saved_criteria else {})
+    saved_assessment = engine_state.get("goal_assessment")
+    if not saved_assessment and goal_checks and saved_criteria:
+        saved_assessment = check_goals(saved_criteria, sources, include_history=same_materials,
+                                       previous_materials=previous_materials)
     if not analysis and saved_assessment:
         analysis = {"goal_assessment": saved_assessment, "experiment_goal": (previous or {}).get("experiment_goal", ""),
                     "verification_targets": (previous or {}).get("verification_targets", []),
