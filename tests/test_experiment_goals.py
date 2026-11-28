@@ -533,6 +533,45 @@ class ExperimentGoalTests(unittest.TestCase):
         self.assertTrue(terminal)
         self.assertEqual(result["evidence_requests"][0]["information"], "display ospf peer")
 
+    def test_report_uses_each_rounds_command_output_and_marks_missing_checks(self):
+        requirement = {"source_id": "question:initial", "device": "实验问题与要求", "line": 1, "quote": "核对 R1 的目标。"}
+        failed_route = "192.168.20.0/24 via 10.12.0.2 dev transit proto static"
+        restored_neighbor = "2.2.2.2 1 Full/- 6.070s 3.908s 10.12.0.2 transit:10.12.0.1"
+
+        def attempt(status, checks, command="", output=""):
+            sources = [{"source_id": "output:1", "device": "R1", "kind": "submitted_command_output", "command": command}]
+            return {"created_at": "2026-11-28T02:00:00+00:00",
+                    "input": {"question": requirement["quote"], "command_outputs": [{"device": "R1", "text": output}]},
+                    "result": {"mode": "open_network", "status": status, "source_manifest": sources,
+                               "llm": {"status": "cancelled" if status == "cancelled" else "ok"},
+                               "investigation": {"goal_assessment": {"checks": checks}}}}
+
+        def check(title, status, quote):
+            refs = [{"source_id": "output:1", "device": "R1", "line": 1, "quote": quote}] if quote else []
+            return {"title": title, "status": status, "detail": title, "instruction": requirement, "evidence": refs}
+
+        attempts = [
+            attempt("needs_information", [check("OSPF 路由", "failed", failed_route)], "ip route show table main", failed_route),
+            attempt("cancelled", []),
+            attempt("needs_information", [check("OSPF 邻居", "passed", restored_neighbor),
+                                          check("OSPF 路由", "needs_evidence", failed_route)],
+                    "show ip ospf neighbor", restored_neighbor),
+        ]
+        history = {"session_id": "report-test", "attempts": attempts, "learning_record": {"config_revisions": 0}}
+        report = generate_report(history)
+        self.assertIn("| 1 | 0/1 | 1 | 0 |", report)
+        self.assertIn("| 2 | 本轮无核对记录 | — | — |", report)
+        self.assertIn("| 3 | 1/2 | 0 | 1 |", report)
+        self.assertNotIn("### 第2轮", report)
+        first, third = report.split("### 第1轮", 1)[1].split("### 第3轮", 1)
+        self.assertIn("R1（ip route show table main） 第1行：" + failed_route, first)
+        self.assertIn("R1（show ip ospf neighbor） 第1行：" + restored_neighbor, third)
+        self.assertIn("R1（命令输出 1） 第1行：" + failed_route, third)
+        self.assertNotIn("R1（show ip ospf neighbor） 第1行：" + failed_route, third)
+        single = generate_report({**history, "attempts": attempts[:1]})
+        self.assertIn("## 实验目标逐项核对", single)
+        self.assertNotIn("已满足 / 总目标", single)
+
     @unittest.skipUnless(available(), "Install workflow dependencies")
     def test_goals_survive_workflow_reopen_and_report_matches_final_checks(self):
         folder = ROOT / "runtime/tests"; folder.mkdir(parents=True, exist_ok=True)
