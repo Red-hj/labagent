@@ -417,8 +417,14 @@ function renderRepairComparisons(comparisons) {
 function renderRecordingChoices() {
   const select = $("replay-recording"), selected = select.value;
   select.replaceChildren();
+  const nameCounts = new Map();
   for (const [id, recording] of recordings) {
-    const option = element("option", recording.name); option.value = id; select.append(option);
+    const count = (nameCounts.get(recording.name) || 0) + 1;
+    nameCounts.set(recording.name, count);
+    const label = count === 1 ? recording.name : recording.name + "（" + count + "）";
+    const option = element("option", label);
+    option.value = id;
+    select.append(option);
   }
   if (recordings.has(selected)) select.value = selected;
   $("recording-label").hidden = select.hidden = !recordings.size;
@@ -491,9 +497,14 @@ async function waitForRecording(id) {
     requestState("pending", status.message + (status.progress ? " · " + status.progress + "%" : ""));
     if (status.status === "error") throw new Error(status.message);
     if (status.status === "ready") {
-      const collection = status.kind === "image" ? screenshots : recordings;
-      if (materials.size >= 20 && !materials.has(status.material_name) && ![...collection.values()].some(item => item.name === status.name)) throw new Error("材料已达20份，请移除部分材料后重新添加。");
-      for (const [oldId, old] of collection) if (old.name === status.name && oldId !== id) { materials.delete(old.material_name); collection.delete(oldId); }
+      const isScreenshot = status.kind === "image";
+      const collection = isScreenshot ? screenshots : recordings;
+      const replaced = isScreenshot ? [...screenshots].filter(([oldId, old]) => oldId !== id && old.name === status.name) : [];
+      if (materials.size >= 20 && !materials.has(status.material_name) && !replaced.length) throw new Error("材料已达20份，请移除部分材料后重新添加。");
+      for (const [oldId, old] of replaced) {
+        materials.delete(old.material_name);
+        screenshots.delete(oldId);
+      }
       collection.set(id, status); materials.set(status.material_name, status.transcript);
       renderMaterials(); renderRecordingChoices(); await previewOperations();
       requestState("success", status.kind === "image" ? "截图已识别，可查看原图和修正文字。" : "录屏文字已提取，操作时间线已更新。");
@@ -508,8 +519,9 @@ async function uploadRecording(file) {
   if (!videoReady) throw new Error("请先安装requirements-replay.txt中的文字识别组件。");
   if (file.size > (image ? 20 : 80) * 1024 * 1024) throw new Error("单份" + label + "请保持在" + (image ? "20" : "80") + "MB以内。");
   const collection = image ? screenshots : recordings;
-  if (collection.size >= (image ? 10 : 5) && ![...collection.values()].some(item => item.name === file.name)) throw new Error("一次排查最多添加10份截图、5份录屏。");
-  if (materials.size >= 20 && ![...collection.values()].some(item => item.name === file.name)) throw new Error("一次诊断最多添加20份材料。");
+  const replacesScreenshot = image && [...screenshots.values()].some(item => item.name === file.name);
+  if (collection.size >= (image ? 10 : 5) && !replacesScreenshot) throw new Error("一次排查最多添加10份截图、5份录屏。");
+  if (materials.size >= 20 && !replacesScreenshot) throw new Error("一次诊断最多添加20份材料。");
   requestState("pending", "正在上传" + label + "…");
   try {
     const status = await new Promise((resolve, reject) => {

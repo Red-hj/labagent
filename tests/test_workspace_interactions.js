@@ -71,6 +71,51 @@ async function replayChecks() {
   waits[1](); assert.equal(video.currentTime,6);
 }
 
+async function sameNameReplayChecks() {
+  const statuses = new Map(), nodes = new Map();
+  const $ = id => {
+    if (!nodes.has(id)) nodes.set(id,{value:""});
+    return nodes.get(id);
+  };
+  const select = $("replay-recording");
+  select.options = [];
+  select.replaceChildren = function() { this.options = []; this.value = ""; };
+  select.append = function(option) { this.options.push(option); this.value ||= option.value; };
+  const video = $("replay-video");
+  video.pause = video.load = () => {};
+  video.getAttribute = () => video.src;
+  video.removeAttribute = () => { video.src = undefined; };
+  const context = vm.createContext({$, URL, window:{location:{href:"http://localhost/"}, history:{replaceState(){}}},
+    recordings:new Map(), screenshots:new Map(), materials:new Map(), videoReady:true, replaySeek:0, operationHistory:null,
+    mediaUrl:value=>value, syncWorkspaceLayout(){},requestState(){},renderMaterials(){},previewOperations:async()=>{},
+    element:(tag,text)=>({tag,text}), api:async route=>statuses.get(route.split("/").at(-1))});
+  vm.runInContext(part("function renderRecordingChoices(","function locateOperation("),context);
+  vm.runInContext(part("async function waitForRecording(","function requestState("),context);
+  const add = async (id,kind,name) => {
+    statuses.set(id,{id, kind, name, status:"ready", material_name:id+".log", transcript:id, video_url:"/video/"+id});
+    await vm.runInContext("waitForRecording("+JSON.stringify(id)+")",context);
+  };
+  await add("first","video","terminal.webm");
+  await add("second","video","terminal.webm");
+  assert.deepEqual([...context.materials.keys()],["first.log","second.log"]);
+  assert.deepEqual(select.options.map(option=>[option.value,option.text]),[
+    ["first","terminal.webm"],["second","terminal.webm（2）"],
+  ]);
+  await vm.runInContext('waitForRecording("first")',context);
+  assert.equal(context.recordings.size,2,"reopening an existing recording remains idempotent");
+
+  await add("screen1","image","terminal.png");
+  while (context.materials.size < 20) context.materials.set("extra-"+context.materials.size,"text");
+  await add("screen2","image","terminal.png");
+  assert.equal(context.materials.size,20);
+  assert.equal(context.materials.has("screen1.log"),false);
+  assert.deepEqual([...context.screenshots.keys()],["screen2"]);
+  await assert.rejects(vm.runInContext('uploadRecording({name:"terminal.webm",size:1})',context),/最多添加20份/);
+  context.materials.clear();
+  for (const id of ["third","fourth","fifth"]) await add(id,"video","terminal.webm");
+  await assert.rejects(vm.runInContext('uploadRecording({name:"terminal.webm",size:1})',context),/最多添加10份截图、5份录屏/);
+}
+
 async function commandOutputChecks() {
   const nodes = new Map(), notes = [], locations = [];
   let rendered, submitted;
@@ -156,6 +201,6 @@ function historyChecks() {
   media.matches=false; media.changed(); assert.equal($("session-sidebar").hidden,false,"mobile close must not overwrite desktop preference");
 }
 
-(async()=>{await demoChecks();await previewChecks();await replayChecks();await commandOutputChecks();historyChecks();
+(async()=>{await demoChecks();await previewChecks();await replayChecks();await sameNameReplayChecks();await commandOutputChecks();historyChecks();
   console.log("Workspace interactions passed: load races, partial previews, stale results, matched video seek/play and responsive Ctrl+B sidebar");
 })().catch(error=>{console.error(error);process.exitCode=1;});
