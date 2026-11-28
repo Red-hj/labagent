@@ -58,6 +58,7 @@ function fixture(){
   $("analyze").events.click=()=>submissions++;
   vm.runInContext(section("function receiveProgress(","async function diagnose("),context);
   vm.runInContext(section("function pendingTurn(","function renderChecks("),context);
+  vm.runInContext(section("function renderGoalsAndPlan(","function showResult("),context);
   return {$,context,run:code=>vm.runInContext(code,context),advance(ms){now+=ms;for(const fn of intervals.values())fn();},
     get messages(){return messages;},get submissions(){return submissions;},get timers(){return intervals.size;}};
 }
@@ -144,6 +145,25 @@ async function main(){
     assert.equal(p.context.activeRequest,current,"old completion must not clear current request state");
     assert.equal(p.context.busy,true);
   }
-  console.log("Chat requests passed: first-message feedback, acknowledgements, heartbeat waits, inline retry, preserved drafts and review scroll position");
+  {
+    const p=fixture();
+    const plan={selected:null,reason:"所列检查在当前材料中已有观测记录，无需重复采集。",hypotheses:[],tests:[
+      {device:"R1",command:"display ospf peer",pair_count:1,cost:1,already_observed:true,predictions:[]}]};
+    p.context.analysis={diagnostic_plan:plan,outcome:"investigating"};
+    p.run('renderGoalsAndPlan(analysis,"needs_information")');
+    assert.equal(p.$("plan-section").hidden,false);
+    assert.match(p.$("diagnostic-plan").textContent,/无需重复采集/);
+    assert.match(p.$("diagnostic-plan").textContent,/已提供输出/);
+    plan.selected={device:"R2",command:"display ospf interface",purpose:"区分下一项原因"};
+    p.run('renderGoalsAndPlan(analysis,"needs_information")');
+    assert.match(p.$("diagnostic-plan").textContent,/display ospf interface/);
+    for(const [outcome,status] of [["ready_for_retest","needs_information"],["investigating","cancelled"],["observations_passed","verified_from_observations"]]){
+      p.context.analysis={diagnostic_plan:plan,outcome};p.context.resultStatus=status;
+      p.run('renderGoalsAndPlan(analysis,resultStatus)');
+      assert.equal(p.$("plan-section").hidden,true);
+      assert.equal(p.$("diagnostic-plan").textContent,"");
+    }
+  }
+  console.log("Chat requests passed: requests, preserved drafts and planning presentation without obsolete recommendations");
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

@@ -391,12 +391,13 @@ def complete_config(block):
 
 
 def pending_ospf_loopback_evidence(sources, assessment):
-    """Separate observed loss from a missing OSPF stanza in an explicit VRP excerpt."""
+    """Separate observed loss from a missing OSPF stanza in an explicit device excerpt."""
     pings, _, _ = submitted_pings(sources)
-    if len(pings) != 1 or pings[0]["passed"]:
+    failed_pings = [row for row in pings if not row["passed"]]
+    if len(failed_pings) != 1 or len(pings) != 1:
         return None
-    # The goal must be OSPF-related; a failed ping to an arbitrary loopback is not enough.
-    target = pings[0]["target"]
+    # The goal must be OSPF-related; a failed ping to an arbitrary address is not enough.
+    target = failed_pings[0]["target"]
     goal_source = any(re.search(r"(?<![A-Za-z0-9_])OSPF(?![A-Za-z0-9_])", line, re.I)
                       and re.search(r"(?<![\d.])" + re.escape(target) + r"(?![\d.])", line)
                       for key, source in sources.items()
@@ -408,7 +409,7 @@ def pending_ospf_loopback_evidence(sources, assessment):
     for check in assessment.get("checks", []):
         if check["status"] != "failed" or check["kind"] == "reachability":
             continue
-        if (check["kind"] != "route_protocol" or check["device"].casefold() != pings[0]["test_device"].casefold()
+        if (check["kind"] != "route_protocol" or check["device"].casefold() != failed_pings[0]["test_device"].casefold()
                 or ipaddress.IPv4Address(target) not in ipaddress.IPv4Network(check["target"], strict=False)
                 or check_route_selection(check["device"], check["target"], blocks)["status"] != "no_match"):
             return None
@@ -420,11 +421,11 @@ def pending_ospf_loopback_evidence(sources, assessment):
             continue
         device = parse_config(block["device"], text)
         owners.extend((block, device, port) for port in device.interfaces.values()
-                      if port.address == target and interface_id(port.name).startswith("loopback"))
+                      if port.address == target or (port.network and ipaddress.IPv4Address(target) in port.network))
     if len(owners) != 1:
         return None
     block, device, port = owners[0]
-    if (device.name.casefold() == pings[0]["test_device"].casefold() or port.shutdown
+    if (device.name.casefold() == failed_pings[0]["test_device"].casefold() or port.shutdown
             or ospf_bindings(device, port) or complete_config(block)
             or not any(PARTIAL_CONFIG.search(value) for value in (block["material"], "\n".join(block["lines"])))):
         return None
@@ -435,7 +436,7 @@ def pending_ospf_loopback_evidence(sources, assessment):
                or re.search(r"(?<![\d.])" + re.escape(target) + r"(?![\d.])", line)
                for line in output["lines"] if not prompt_info(line)):
             return None  # Let the normal workflow interpret the newly supplied operational evidence.
-    fact = f"{pings[0]['test_device']} 到 {target} 的 Ping 发 {pings[0]['sent']} 收 {pings[0]['received']}，连通性未达标。"
+    fact = f"{failed_pings[0]['test_device']} 到 {target} 的 Ping 发 {failed_pings[0]['sent']} 收 {failed_pings[0]['received']}，连通性未达标。"
     detail = (f"{device.name} 只提供了配置摘录，无法判断 {port.name} 是否已加入 OSPF。"
               f"请补 {device.name} 的完整 OSPF 配置，或该接口的 display ospf interface 输出，再确定改法。")
     return {"summary": fact, "reply": fact + detail, "steps": [], "hypotheses": [], "outcome": "investigating",

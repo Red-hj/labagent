@@ -71,10 +71,8 @@ def cases(frr_capture=None, *, complete_vrp_table=False):
 def bare_prompt(messages):
     """Remove feature instructions alongside their tools, retaining the rest of the workflow."""
     system, *history = messages
-    paragraphs = system['content'].split(' 读取实验说明后，', 1)
-    first, features = paragraphs
-    _, tail = features.split(' 用户询问通信路径、', 1)
-    prompt = first + ' 用户询问通信路径、' + tail
+    lines = [line for line in system['content'].splitlines() if not any(name in line for name in GOAL_TOOLS)]
+    prompt = '\n'.join(lines)
     if any(name in prompt for name in GOAL_TOOLS):
         raise ValueError('工具组提示仍包含已排除的工具')
     return [{**system, 'content': prompt}, *history]
