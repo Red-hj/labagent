@@ -174,8 +174,10 @@ def prepare_investigation(payload, sources, previous=None, *, conversation=None,
             "experiment_state": safe_value(experiment_context(previous, payload, previous_materials)),
             "operation_history": {"event_count": inspect_history(sources)["event_count"], "tool": "inspect_operation_timeline"},
             "conversation": safe_value((conversation or [])[-6:])}, ensure_ascii=False)}]
-    if payload.get("interaction"):
-        messages.append({"role": "user", "content": "本次请求：" + safe_text(payload["interaction"]["message"]) + "\n以上JSON中的question是最初实验背景，conversation是历史记录。请直接回答本次请求，不重新回答最初问题。"})
+    if current := sources.get("message:current"):
+        messages.append({"role": "user", "content": json.dumps({"source_id": current["source_id"],
+            "lines": [{"line": number, "text": line} for number, line in enumerate(current["lines"], 1)]},
+            ensure_ascii=False)})
     available_tools = [tool for tool in registry.definitions() if (not active_learning or tool["function"]["name"] != "submit_hypotheses")
                        and (goal_checks or tool["function"]["name"] not in GOAL_TOOL_NAMES)]
     if active_learning:
