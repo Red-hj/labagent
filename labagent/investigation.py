@@ -19,7 +19,8 @@ from .experiment_state import experiment_context, summarize_experiment
 from .progress import emit_progress, ToolProgress
 from .experiment_goals import (GOAL_TOOL, ROUTE_TOOL, area_instruction_supports_goal, validate_goal_fields,
                                check_goals, check_route_selection, checked_frr_area_repair, complete_config, evidence_blocks,
-                               explicit_area_goals, is_config_block, pending_ospf_loopback_evidence, submitted_pings)
+                               explicit_area_goals, is_config_block, neighbor_instruction_supports_goal,
+                               pending_ospf_loopback_evidence, submitted_pings)
 from .diagnostic_planner import PLAN_TOOL, validate_plan
 from .operation_history import HISTORY_TOOL, inspect_history, model_history
 from .repair_lab import REPAIR_TOOL, compare_run, discover_runs
@@ -94,6 +95,9 @@ def _check_experiment_goals(args, payload, sources, seen, *, previous_materials=
         if goal["kind"] == "ospf_interface_area" and not area_instruction_supports_goal(
                 instruction["quote"], goal["device"], goal["target"], goal["expected"]):
             raise ValueError("区域目标的原文须同时写出设备、接口以及该接口唯一的目标区域；不要添加推测的接口或区号")
+        if goal["kind"] == "ospf_neighbor" and not neighbor_instruction_supports_goal(
+                instruction["quote"], goal["device"], goal["target"], goal["expected"]):
+            raise ValueError("邻居目标的原文须明确设备、对端 Router ID 和目标状态")
         if goal["kind"] == "reachability" and address_literal(goal["target"]) not in submitted_host_addresses(payload, sources):
             raise ValueError("材料未提供该 Ping 目的地址。请先索要目标端点实际 IP，暂不建立该目标。")
         saved.append({**goal, "instruction": instruction})
