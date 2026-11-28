@@ -4,7 +4,9 @@ import re
 
 IP = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 PING_WORD = re.compile(r"(?<![a-z])ping(?:ing)?(?![a-z])", re.I)
-PING_COMMAND = re.compile(r"^\s*(?P<prompt><[^>]+>|\[[^\]]+\]|\S+[>$#])\s*ping\b", re.I)
+CLI_PROMPT = r"^\s*(?P<prompt><[^>]+>|\[[^\]]+\]|\S+[>$#])"
+PING_COMMAND = re.compile(CLI_PROMPT + r"\s*ping\b", re.I)
+PING_INVOCATION = re.compile(r"^[ \t]*ping(?=[ \t]|$)", re.I)
 PING_STATISTICS = re.compile(r"\bstatistics\b|统计", re.I)
 LINUX_PING_SOURCE = re.compile(r"(?<!\S)-I[ \t]*(?P<value>\S+)")
 VRP_PING_SOURCE = re.compile(r"(?<!\S)-a[ \t]+(?P<value>" + IP.pattern + r")")
@@ -79,14 +81,38 @@ def _ping_endpoints(text, mention, command, statistics):
     return IP.search(arguments), address_literal(source_address) if source_address else None
 
 
-def parse_ping_records(lines):
-    """Each output block owns its target and counters; never combine blocks."""
-    records, current = [], None
+def _ping_command_context(command):
+    invocation = PING_INVOCATION.match(command)
+    if not invocation or re.search(r"[;&|<>\r\n]", command):
+        return None
+    arguments = LINUX_PING_SOURCE.sub("", command[invocation.end():]).split()
+    if not arguments or not IP.fullmatch(arguments[-1]):
+        return None
+    # Without a prompt, option values (including an ambiguous -a operand) do not establish a destination.
+    if len(arguments) > 1 and arguments[-2] in {"-a", "-S", "-j", "-k", "-nexthop"}:
+        return None
+    address, source_address = _ping_endpoints(command, invocation, None, False)
+    target = address_literal(arguments[-1]) if address and address[0] == arguments[-1] else None
+    if target is None:
+        return None
+    current = {"target": target, "evidence": []}
+    if source_address:
+        current["source_address"] = source_address
+    return current
+
+
+def parse_ping_records(lines, *, command=""):
+    """Read counters and evidence from output, using its separate command for missing endpoints."""
+    records = []
+    command_context = current = _ping_command_context(command)
     for number, text in enumerate(lines, 1):
-        command = PING_COMMAND.match(text)
-        mention = command or PING_WORD.search(text)
-        statistics = bool(mention and not command and PING_STATISTICS.search(text))
-        address, source_address = _ping_endpoints(text, mention, command, statistics) if mention else (None, None)
+        echo = PING_COMMAND.match(text)
+        if current is not None and current is command_context and not echo and re.match(CLI_PROMPT, text):
+            current = None
+            continue
+        mention = echo or PING_WORD.search(text)
+        statistics = bool(mention and not echo and PING_STATISTICS.search(text))
+        address, source_address = _ping_endpoints(text, mention, echo, statistics) if mention else (None, None)
         if address:
             try:
                 target = str(ipaddress.IPv4Address(address[0]))
@@ -97,12 +123,12 @@ def parse_ping_records(lines):
             # to one block until its counters have been emitted.
             fresh_output = current and ("sent" in current or "received" in current) and not statistics
             changed_source = current and source_address and current.get("source_address", source_address) != source_address
-            if current is None or current["target"] != target or current.get("complete") or command or fresh_output or changed_source:
+            if current is None or current["target"] != target or current.get("complete") or echo or fresh_output or changed_source:
                 current = {"target": target, "evidence": []}
             if source_address:
                 current["source_address"] = source_address
             current["evidence"].append({"line": number, "quote": text})
-        elif mention and (command or text[mention.end():].lstrip().startswith("-")):
+        elif mention and (echo or text[mention.end():].lstrip().startswith("-")):
             current = None
         if current is None or current.get("complete"):
             continue

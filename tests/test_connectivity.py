@@ -1,8 +1,9 @@
 import unittest
 
 from labagent.connectivity import parse_ping_records
+from labagent.engine import fingerprint
 from labagent.investigation import execute_tool, source_bundle, validate_submission
-from labagent.runtime_parser import parse_ping
+from labagent.runtime_parser import normalize_outputs, parse_ping
 
 
 class ConnectivityTests(unittest.TestCase):
@@ -76,6 +77,63 @@ class ConnectivityTests(unittest.TestCase):
                  "5 packets transmitted, 5 received"]
         record, = parse_ping_records(lines)
         self.assertEqual((record["target"], record["line"], record["quote"]), ("10.30.0.10", 2, lines[1]))
+
+    def test_separate_ping_command_binds_only_complete_stats_from_its_output(self):
+        counters = "5 packets transmitted, 5 received"
+        for command, lines in (
+            ("", [counters]),
+            ("display ip routing-table 3.3.3.3", [counters]),
+            ("ping -a 1.1.1.1", [counters]),
+            ("ping -I 1.1.1.1 server.lab", [counters]),
+            ("ping server.lab && ping 3.3.3.3", [counters]),
+            ("ping 3.3.3.3", ["5 packets transmitted"]),
+            ("ping 3.3.3.3", ["<R2>display interface", counters]),
+        ):
+            with self.subTest(command=command, lines=lines):
+                self.assertEqual(parse_ping_records(lines, command=command), [])
+
+        header = "PING 4.4.4.4 (4.4.4.4) from 2.2.2.2 eth0: 56(84) bytes of data."
+        row, = parse_ping_records([header, counters], command="ping -I 1.1.1.1 3.3.3.3")
+        self.assertEqual((row["target"], row["source_address"]), ("4.4.4.4", "2.2.2.2"))
+        self.assertEqual([item["quote"] for item in row["evidence"]], [header, counters])
+
+    def test_bound_ping_stats_and_collected_material_keep_original_citations(self):
+        from labagent.experiment_goals import check_goals
+
+        target, source_address = "3.3.3.3", "1.1.1.1"
+        for structured in (True, False):
+            with self.subTest(structured=structured):
+                payload = {"configs": {"R1": "sysname R1\nreturn"}, "question": f"检查 R1 到 {target} 的 Ping。"}
+                if structured:
+                    stats = ["  5 packet(s) transmitted", "  5 packet(s) received"]
+                    observations = {"device": "R1", "command": f"ping -a {source_address} {target}",
+                                    "text": "\n".join(stats), "config_fingerprint": fingerprint(payload)}
+                    payload["command_outputs"] = [{**observations, "config_fingerprint": "stale"}, observations]
+                    prepared, parsed = normalize_outputs(payload)
+                    self.assertEqual(len(parsed["warnings"]), 1)
+                    self.assertEqual([(ping["target"], ping["received"]) for ping in prepared["observations"]["pings"]],
+                                     [(target, 5)])
+                    citation_id, first_line = "output:2", 1
+                else:
+                    stats = ["5 packets transmitted, 5 received"]
+                    payload["configs"]["collection.log"] = "\n".join(
+                        ["设备：R1", f"命令：ping {target} -I{source_address}", *stats])
+                    citation_id, first_line = "config:2", 3
+
+                sources, _ = source_bundle(payload)
+                self.assertNotIn("output:1", sources)
+                goal = {"id": "ping", "title": "检查连通性", "kind": "reachability", "device": "R1",
+                        "target": target, "expected": "", "instruction": {"source_id": "question:initial",
+                        "device": "实验问题与要求", "line": 1, "quote": payload["question"]}}
+                review = check_goals([goal], sources)
+                checked, _ = execute_tool("check_submitted_pings", {}, payload, sources, set())
+                row, = checked["pings"]
+                self.assertEqual((row["target"], row["source_address"], row["test_device"], row["passed"]),
+                                 (target, source_address, "R1", True))
+                self.assertEqual([(item["source_id"], item["line"], item["quote"]) for item in row["evidence"]],
+                                 [(citation_id, line, quote) for line, quote in enumerate(stats, first_line)])
+                self.assertEqual(review["checks"][0]["status"], "passed")
+                self.assertEqual(review["checks"][0]["evidence"], row["evidence"])
 
     def test_sourced_ping_satisfies_only_the_destination_goal(self):
         from labagent.experiment_goals import check_goals

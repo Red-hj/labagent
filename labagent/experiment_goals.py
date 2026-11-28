@@ -136,7 +136,7 @@ def _ping_observations(blocks):
     """Use the latest complete observation for each device, source address and destination."""
     current, reported, observations = {}, [], []
     for block in blocks:
-        for row in parse_ping_records(block["lines"]):
+        for row in parse_ping_records(block["lines"], command=block["command"]):
             device = ping_device(block, row)
             evidence = [citation(block, item["line"]) for item in row["evidence"]]
             item = {**row, "source_id": block["source_id"], "device": block["material"], "test_device": device,
