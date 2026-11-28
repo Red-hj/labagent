@@ -90,6 +90,39 @@ class DiagnosticCheckPlanningTests(unittest.TestCase):
         observed = observed_device_commands(investigation.source_bundle(current)[0])
         self.assertIn(("R1", "ping 10.3.3.3"), observed)
 
+    def test_changed_config_allows_retest_of_old_outputs_but_keeps_live_capture(self):
+        before = {"R1.cfg":"sysname R1\nospf 1\n area 1\nreturn",
+                  "R1-peer.log":"<R1>display ospf peer\nNo neighbors",
+                  "R1-ping.log":"<R1>ping 10.3.3.3\n5 packets transmitted, 0 received",
+                  "R2-peer.log":"<R2>display ospf peer\nNo neighbors"}
+        current = {"configs":{**before, "R1.cfg":before["R1.cfg"].replace("area 1", "area 0"),
+                              "R2-peer.log":"<R2>display ospf peer\nFull"}, "question":"核对修改后的新状态"}
+        sources, _ = sources_and_seen(current)
+        observed = observed_device_commands(sources, previous_materials=before)
+        self.assertNotIn(("R1", "display ospf peer"), observed)
+        self.assertNotIn(("R1", "ping 10.3.3.3"), observed)
+        self.assertIn(("R2", "display ospf peer"), observed)
+        next(source for source in sources.values() if source["device"] == "R1-peer.log")["collected"] = True
+        self.assertIn(("R1", "display ospf peer"), observed_device_commands(sources, previous_materials=before))
+
+    def test_unchanged_config_still_reuses_uploaded_outputs(self):
+        configs = {"R1.cfg":"sysname R1\nospf 1\n area 0\nreturn",
+                   "R1.log":"<R1>display ospf peer\nFull"}
+        sources, _ = sources_and_seen({"configs":configs})
+        self.assertIn(("R1", "display ospf peer"), observed_device_commands(sources, previous_materials=configs))
+
+    def test_planning_can_select_a_previously_observed_command_after_configuration_change(self):
+        before = {"R1.cfg":"sysname R1\nospf 1\n area 1\nreturn", "R1.log":"<R1>display ospf peer\nNo neighbors"}
+        current = {"configs":{**before, "R1.cfg":before["R1.cfg"].replace("area 1", "area 0")}, "question":"复测"}
+        sources, seen = sources_and_seen(current)
+        candidates = hypotheses()
+        for item in candidates:
+            item["evidence"] = [{"source_id":"config:2", "line":2, "quote":"No neighbors"}]
+        plan, _ = investigation.execute_tool("plan_diagnostic_checks", {"hypotheses":candidates,
+            "tests":[probe("display ospf peer", ["a", "b", "c"])]}, current, sources, seen, previous_materials=before)
+        self.assertEqual(plan["selected"]["command"], "display ospf peer")
+        self.assertFalse(plan["selected"]["already_observed"])
+
     def test_planning_tool_uses_observations_and_keeps_the_plan(self):
         current = {"configs": {"R1.log": "<R1>display ospf peer\nFull"}, "question": "下一项检查"}
         sources, seen = sources_and_seen(current)

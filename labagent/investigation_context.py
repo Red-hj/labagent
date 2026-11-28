@@ -159,8 +159,17 @@ def prepare_investigation(payload, sources, previous=None, *, conversation=None,
     return active_learning, messages, available_tools
 
 
-def observed_device_commands(sources):
-    """Only current output blocks count; a partial configuration is not a full read."""
+def observed_device_commands(sources, *, previous_materials=None):
+    """Reuse current observations, but allow retests after a configuration changes."""
+    config_changed = previous_materials is not None and any(
+        is_config_block(block) and previous_materials.get(sources[block['source_id']]['device']) != sources[block['source_id']]['text']
+        for block in evidence_blocks(sources))
+    if config_changed:
+        # Carried output describes the previous configuration. A live tool capture
+        # is fresh even when its text happens to be identical to the previous run.
+        sources = {key: source for key, source in sources.items()
+                   if source.get('collected') or source['kind'] == 'user_message'
+                   or previous_materials.get(source['device']) != source['text']}
     commands = set()
     for block in evidence_blocks(sources):
         command = normalize_check_command(block['command'])
