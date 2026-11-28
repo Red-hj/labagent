@@ -9,12 +9,23 @@ from unittest.mock import patch
 from labagent.investigation import source_bundle, validate_open, execute_tool
 from labagent.operation_history import inspect_history
 from labagent.recordings import Recordings, MAX_IMAGE_BYTES
-from scripts.extract_recording import image_regions, extract_image
+from scripts.extract_recording import create_ocr, image_regions, extract_image
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class ScreenshotTests(unittest.TestCase):
+    def test_ocr_disables_platform_telemetry_before_creating_sessions(self):
+        events = []
+        runtime = SimpleNamespace(disable_telemetry_events=lambda: events.append("disable"))
+        def constructor(**kwargs):
+            events.append("create")
+            self.assertEqual(kwargs["params"]["Global.model_root_dir"], str(ROOT / "runtime/ocr-models"))
+            return "ocr"
+        with patch.dict("sys.modules", {"onnxruntime": runtime, "rapidocr": SimpleNamespace(RapidOCR=constructor)}):
+            self.assertEqual(create_ocr(), "ocr")
+        self.assertEqual(events, ["disable", "create"])
+
     def test_new_retest_screenshot_replaces_the_same_devices_old_failure(self):
         old = "<R1>ping 10.0.0.2\n5 packets transmitted, 0 received\n<R1>"
         new = "<R1>ping 10.0.0.2\n5 packets transmitted, 5 received\n<R1>"

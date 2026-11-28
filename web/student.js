@@ -596,11 +596,14 @@ function renderGoalsAndPlan(analysis, status) {
   }
   const plan = analysis.diagnostic_plan;
   const selected = plan?.selected;
-  $("plan-section").hidden = !selected || ["resolved_by_user_report", "verified_from_observations"].includes(status);
+  $("plan-section").hidden = !plan || analysis.outcome === "ready_for_retest" ||
+    ["resolved_by_user_report", "verified_from_observations", "cancelled"].includes(status);
   $("diagnostic-plan").replaceChildren();
-  if (!selected) return;
+  if ($("plan-section").hidden) return;
   const container = $("diagnostic-plan");
-  container.append(element("strong", selected.device), element("pre", selected.command), element("p", selected.purpose), element("p", plan.reason, "section-note"));
+  if (selected) container.append(element("strong", selected.device), element("pre", selected.command), element("p", selected.purpose));
+  else container.append(element("strong", "检查规划结果"));
+  container.append(element("p", plan.reason, "section-note"));
   for (const hypothesis of plan.hypotheses) {
     container.append(element("p", {active:"待检查", supported:"已有依据", ruled_out:"已排除"}[hypothesis.state] + " · " + hypothesis.title, "plan-hypothesis " + hypothesis.state));
   }
@@ -608,6 +611,7 @@ function renderGoalsAndPlan(analysis, status) {
   for (const test of plan.tests) {
     const row = element("div", undefined, "plan-alternative");
     row.append(element("strong", test.device + " · " + test.command), element("p", "可区分 " + test.pair_count + " 组原因 · 采集成本 " + test.cost));
+    if (test.already_observed) row.append(element("span", "已提供输出", "tag"));
     for (const prediction of test.predictions) {
       const hypothesis = plan.hypotheses.find(item => item.id === prediction.hypothesis_id);
       row.append(element("p", (hypothesis?.title || prediction.hypothesis_id) + " → 预期 " + prediction.result));

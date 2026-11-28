@@ -55,7 +55,8 @@ def rank_checks(hypotheses, tests, *, observed_commands=None):
     for item in ranked:
         item.pop("_uniform", None)
     selected = next((item for item in ranked if not item["already_observed"]), None)
-    reason = "当前原因均已排除，等待新的排查方向。"
+    reason = ("当前检查的预期结果不足以选择下一步，请补充能区分原因的检查。" if active
+              else "当前原因均已排除，等待新的排查方向。")
     if ranked and selected is None:
         reason = "所列检查在当前材料中已有观测记录，无需重复采集。"
     elif selected:

@@ -9,6 +9,7 @@ from labagent import investigation
 from labagent.diagnostic_planner import rank_checks
 from labagent.investigation_context import observed_device_commands, prepare_investigation
 from labagent.investigation_verification import verify_excerpt_claims, verify_minimal_ospf_wildcard_advice
+from labagent.report import generate_report
 from scripts.evaluate_diagnostic_workflow import bare_prompt, cases
 from test_investigation import ENV
 
@@ -33,6 +34,30 @@ def sources_and_seen(current):
 
 
 class DiagnosticCheckPlanningTests(unittest.TestCase):
+    def test_unknown_predictions_do_not_claim_the_causes_are_ruled_out(self):
+        result = rank_checks(hypotheses(), [probe("display ospf peer", ["unknown"] * 3)])
+        self.assertIsNone(result["selected"])
+        self.assertIn("预期结果不足", result["reason"])
+        self.assertNotIn("均已排除", result["reason"])
+
+    def test_report_shows_all_observed_reason_but_not_an_obsolete_recommendation(self):
+        plan = rank_checks(hypotheses(), [probe("display ospf peer", ["a", "b", "c"])],
+                           observed_commands={("R1", "display ospf peer")})
+        result = {"mode":"open_network", "status":"needs_information", "llm":{"status":"ok"},
+                  "investigation":{"experiment_goal":"核对实验", "summary":"已核对当前材料", "outcome":"investigating", "diagnostic_plan":plan}}
+        history = {"session_id":"a"*32, "attempts":[{"created_at":"2026-11-28T00:00:00+00:00",
+                   "input":{"question":"核对实验"}, "result":result}], "learning_record":{"config_revisions":1}}
+        report = generate_report(history)
+        self.assertIn("无需重复采集", report)
+        self.assertIn("已提供输出：R1 · display ospf peer", report)
+        plan["selected"] = {"device":"R2", "command":"display ospf interface"}
+        for outcome, status in (("ready_for_retest","needs_information"), ("investigating","cancelled"),
+                                ("observations_passed","verified_from_observations")):
+            with self.subTest(outcome=outcome, status=status):
+                result["status"] = status
+                result["investigation"]["outcome"] = outcome
+                self.assertNotIn("display ospf interface", generate_report(history))
+
     def test_observed_device_command_yields_to_a_new_discriminating_check(self):
         tests = [probe("DISPLAY   OSPF PEER", ["a", "b", "c"]), probe("display ospf interface", ["a", "b", "b"])]
         result = rank_checks(hypotheses(), tests, observed_commands={("r1", "display ospf peer")})
