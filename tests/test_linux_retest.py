@@ -279,7 +279,13 @@ class LinuxRouteTests(unittest.TestCase):
             report = generate_report(store.history(first["session_id"]))
             self.assertIn("OSPF", report)
             self.assertIn("192.168.20.0/24", report)
-            self.assertNotIn("待补 R1 当前路由表", report)
+            goal_section = report.split("## 实验目标逐项核对", 1)[1].split("\n## ", 1)[0]
+            initial_checks, final_checks = goal_section.split("### 第2轮", 1)
+            self.assertIn("| 1 | 0/4 | 2 | 2 |", initial_checks)
+            self.assertIn("| 2 | 4/4 | 0 | 0 |", initial_checks)
+            self.assertIn("| R1到192.168.20.0/24必须使用OSPF路由。 | 待补充输出 |", initial_checks)
+            self.assertIn("| R1到192.168.20.0/24必须使用OSPF路由。 | 已满足 |", final_checks)
+            self.assertNotIn("| 待补充输出 |", final_checks)
 
 
 if __name__ == "__main__":
