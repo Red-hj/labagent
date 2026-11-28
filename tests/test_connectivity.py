@@ -46,6 +46,24 @@ class ConnectivityTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(parse_ping_records(text.splitlines()), [])
 
+    def test_later_complete_ping_in_one_log_replaces_earlier_failure(self):
+        from labagent.experiment_goals import check_goals
+
+        text = ("PING 10.30.0.10 (10.30.0.10) 56 data bytes\n4 packets transmitted, 0 received\n\n"
+                "PING 10.30.0.10 (10.30.0.10) 56 data bytes\n4 packets transmitted, 4 received")
+        payload = {"configs": {"PC1-run.log": text}, "question": "PC1到10.30.0.10的Ping无丢包"}
+        sources, _ = source_bundle(payload)
+        checked, _ = execute_tool("check_submitted_pings", {}, payload, sources, set())
+        newest, = checked["pings"]
+        replaced, = checked["superseded_pings"]
+        self.assertEqual((newest["line"], newest["received"], replaced["line"], replaced["received"]), (4, 4, 1, 0))
+        goal = {"id": "ping", "title": payload["question"], "device": "PC1", "kind": "reachability",
+                "target": "10.30.0.10", "expected": "", "instruction": {"source_id": "question:initial",
+                    "device": "实验问题与要求", "line": 1, "quote": payload["question"]}}
+        assessment = check_goals([goal], sources)
+        self.assertEqual(assessment["checks"][0]["status"], "passed")
+        self.assertEqual(assessment["checks"][0]["evidence"], newest["evidence"])
+
     def test_multiline_counters_can_be_cited_in_model_submission(self):
         payload = {"configs": {"R1": "PING 10.30.0.10:\n5 packet(s) transmitted\n0 packet(s) received"}}
         sources, _ = source_bundle(payload)

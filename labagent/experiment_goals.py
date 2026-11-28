@@ -3,6 +3,7 @@
 Criteria describe successful experiments, rather than enumerating fault types.
 Device prompts delimit mixed files; source lines are preserved in every check.
 """
+from collections import Counter
 import ipaddress
 from pathlib import Path
 import re
@@ -131,27 +132,37 @@ def ping_device(block, row):
     return (named[1] or named[2]) if named else block["device"]
 
 
-def submitted_pings(sources):
-    """Newest device/target block is current; older captures remain traceable."""
+def _ping_observations(blocks):
+    """Use the latest complete observation for each device and destination."""
     current, reported, observations = {}, [], []
-    for block in evidence_blocks(sources):
-        grouped = {}
+    for block in blocks:
         for row in parse_ping_records(block["lines"]):
             device = ping_device(block, row)
             evidence = [citation(block, item["line"]) for item in row["evidence"]]
-            item = {**row, "source_id":block["source_id"], "device":block["material"], "test_device":device,
-                    "line":evidence[0]["line"], "line_end":evidence[-1]["line"], "quote":evidence[0]["quote"], "evidence":evidence}
+            item = {**row, "source_id": block["source_id"], "device": block["material"], "test_device": device,
+                    "line": evidence[0]["line"], "line_end": evidence[-1]["line"], "quote": evidence[0]["quote"],
+                    "evidence": evidence}
             if block["kind"] == "user_message" and row["line_end"] == row["line"]:
                 reported.append(item)
             else:
                 observations.append(item)
-                grouped.setdefault((device.casefold(), row["target"]), []).append(item)
-        current.update(grouped)
-    active = [item for items in current.values() for item in items]
-    # Current raw output pasted in chat replaces the same target's older upload.
-    targets = {item["target"] for item in active if item["source_id"] == "message:current"}
-    active = [item for item in active if item["source_id"] == "message:current" or item["target"] not in targets]
-    return active, reported, [item for item in observations if item not in active]
+                current[(device.casefold(), row["target"])] = item
+    active = list(current.values())
+    from_message = [item for item in active if item["source_id"] == "message:current"]
+    unnamed_targets = {item["target"] for item in from_message if item["test_device"] == item["device"]}
+    named_targets = {item["target"] for item in from_message if item["test_device"] != item["device"]}
+    earlier_counts = Counter(item["target"] for item in active if item["source_id"] != "message:current")
+    # Preserve the single-source retest flow when a pasted result has no device label.
+    replaced_targets = {target for target in unnamed_targets - named_targets if earlier_counts[target] == 1}
+    active = [item for item in active if item["source_id"] == "message:current" or item["target"] not in replaced_targets]
+    active_refs = {(item["source_id"], item["line"]) for item in active}
+    superseded = [item for item in observations if (item["source_id"], item["line"]) not in active_refs]
+    return active, reported, superseded
+
+
+def submitted_pings(sources):
+    """Return current, reported and superseded Ping results with their evidence."""
+    return _ping_observations(evidence_blocks(sources))
 
 
 def check_goals(criteria, sources, *, include_history=False):
@@ -174,11 +185,12 @@ def check_goals(criteria, sources, *, include_history=False):
         (g["kind"] == "ospf_interface_area" and (g["device"].casefold(), interface_id(g["target"]), area_id(g["expected"].strip())) in area_keys)
         or (g["kind"] == "config_contains" and g["target"].strip().lower().startswith("interface ")
             and (g["instruction"]["source_id"], g["instruction"]["line"]) in area_lines))] + explicit
+    pings = _ping_observations(blocks)[0] if any(goal["kind"] == "reachability" for goal in active) else []
     checks = []
     for goal in active:
         matching = [block for block in blocks if not goal["device"] or block["device"].casefold() == goal["device"].casefold()]
         if goal["kind"] == "reachability":
-            status, detail, evidence = _ping(goal, blocks)
+            status, detail, evidence = _ping(goal, pings)
         elif goal["kind"] == "route_protocol":
             status, detail, evidence = _route(goal, matching)
         elif goal["kind"] == "ospf_interface_area":
@@ -216,26 +228,14 @@ def explicit_area_goals(sources):
     return list(goals.values())
 
 
-def _ping(goal, blocks):
-    records = []
-    for block in blocks:
-        rows = [row for row in parse_ping_records(block["lines"]) if row["target"] == goal["target"]]
-        # A sentence in chat is a report; a multi-line output is an observation.
-        rows = [row for row in rows if block["kind"] != "user_message" or row["line_end"] > row["line"]]
-        grouped = {}
-        for row in rows:
-            device = ping_device(block, row)
-            if not goal["device"] or goal["device"].casefold() == device.casefold():
-                grouped.setdefault(device.casefold(), []).append(row)
-        records.extend((device, block, items) for device, items in grouped.items())
-    if not records:
+def _ping(goal, pings):
+    device = goal["device"].casefold()
+    matching = [row for row in pings if row["target"] == goal["target"]
+                and (not device or row["test_device"].casefold() == device)]
+    if not matching:
         return "needs_evidence", f"补充{goal['device'] or '源设备'}到{goal['target']}的Ping收发统计。", []
-    # Newer blocks replace the same device's older test, not other devices' tests.
-    latest = {device: (block, rows) for device, block, rows in records}
-    evidence, passed = [], True
-    for block, rows in latest.values():
-        passed &= all(row["passed"] for row in rows)
-        evidence += [citation(block, item["line"]) for row in rows for item in row["evidence"]]
+    passed = all(row["passed"] for row in matching)
+    evidence = [ref for row in matching for ref in row["evidence"]]
     return ("passed" if passed else "failed"), f"到{goal['target']}的Ping{'全部通过' if passed else '仍有丢包'}。", evidence
 
 
