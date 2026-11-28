@@ -3,6 +3,14 @@ import ipaddress
 import re
 
 IP = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+PING_WORD = re.compile(r"(?<![a-z])ping(?:ing)?(?![a-z])", re.I)
+CLI_PROMPT = r"^\s*(?P<prompt><[^>]+>|\[[^\]]+\]|\S+[>$#])"
+PING_COMMAND = re.compile(CLI_PROMPT + r"\s*ping\b", re.I)
+PING_INVOCATION = re.compile(r"^[ \t]*ping(?=[ \t]|$)", re.I)
+PING_STATISTICS = re.compile(r"\bstatistics\b|统计", re.I)
+LINUX_PING_SOURCE = re.compile(r"(?<!\S)-I[ \t]*(?P<value>\S+)")
+VRP_PING_SOURCE = re.compile(r"(?<!\S)-a[ \t]+(?P<value>" + IP.pattern + r")")
+PING_RESPONSE_SOURCE = re.compile(r"\bfrom[ \t]+(" + IP.pattern + r")", re.I)
 ADDRESS_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_.])(?P<address>(?:[0-9]{1,3}\.){3}[0-9]{1,3}|(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4})"
     r"(?P<prefix>/[0-9]{1,3})?(?![0-9a-z:/]|\.[0-9])", re.I
@@ -55,11 +63,56 @@ def ground_ping_text(text, known, proposed=()):
     return revised
 
 
-def parse_ping_records(lines):
-    """Each output block owns its target and counters; never combine blocks."""
-    records, current = [], None
+def _ping_endpoints(text, mention, command, statistics):
+    arguments = text[mention.end():]
+    if statistics:
+        return IP.search(arguments) or IP.search(text[:mention.start()]), None
+    linux_source = LINUX_PING_SOURCE.search(arguments)
+    source_address = linux_source["value"] if linux_source and IP.fullmatch(linux_source["value"]) else None
+    arguments = LINUX_PING_SOURCE.sub("", arguments)
+    vrp_source = VRP_PING_SOURCE.search(arguments)
+    # The VRP prompt or a second address distinguishes -a from the flag in host tools.
+    if vrp_source and ((command and command["prompt"].startswith(("<", "[")))
+                       or IP.search(arguments[vrp_source.end():])):
+        source_address = vrp_source["value"]
+        arguments = arguments[:vrp_source.start()] + arguments[vrp_source.end():]
+    if not command and text.lstrip().startswith("PING ") and (response := PING_RESPONSE_SOURCE.search(arguments)):
+        source_address = response[1]
+    return IP.search(arguments), address_literal(source_address) if source_address else None
+
+
+def _ping_command_context(command):
+    invocation = PING_INVOCATION.match(command)
+    if not invocation or re.search(r"[;&|<>\r\n]", command):
+        return None
+    arguments = LINUX_PING_SOURCE.sub("", command[invocation.end():]).split()
+    if not arguments or not IP.fullmatch(arguments[-1]):
+        return None
+    # Without a prompt, option values (including an ambiguous -a operand) do not establish a destination.
+    if len(arguments) > 1 and arguments[-2] in {"-a", "-S", "-j", "-k", "-nexthop"}:
+        return None
+    address, source_address = _ping_endpoints(command, invocation, None, False)
+    target = address_literal(arguments[-1]) if address and address[0] == arguments[-1] else None
+    if target is None:
+        return None
+    current = {"target": target, "evidence": []}
+    if source_address:
+        current["source_address"] = source_address
+    return current
+
+
+def parse_ping_records(lines, *, command=""):
+    """Read counters and evidence from output, using its separate command for missing endpoints."""
+    records = []
+    command_context = current = _ping_command_context(command)
     for number, text in enumerate(lines, 1):
-        address = IP.search(text) if re.search(r"(?<![a-z])ping(?![a-z])", text, re.I) else None
+        echo = PING_COMMAND.match(text)
+        if current is not None and current is command_context and not echo and re.match(CLI_PROMPT, text):
+            current = None
+            continue
+        mention = echo or PING_WORD.search(text)
+        statistics = bool(mention and not echo and PING_STATISTICS.search(text))
+        address, source_address = _ping_endpoints(text, mention, echo, statistics) if mention else (None, None)
         if address:
             try:
                 target = str(ipaddress.IPv4Address(address[0]))
@@ -68,11 +121,15 @@ def parse_ping_records(lines):
                 continue
             # Repeated headings (command, response header, statistics) belong
             # to one block until its counters have been emitted.
-            command = re.search(r"^\s*(?:<[^>]+>|\[[^\]]+\]|\S+[>$#])\s*ping\b", text, re.I)
-            fresh_output = current and ("sent" in current or "received" in current) and not re.search(r"statistics|统计", text, re.I)
-            if current is None or current["target"] != target or current.get("complete") or command or fresh_output:
+            fresh_output = current and ("sent" in current or "received" in current) and not statistics
+            changed_source = current and source_address and current.get("source_address", source_address) != source_address
+            if current is None or current["target"] != target or current.get("complete") or echo or fresh_output or changed_source:
                 current = {"target": target, "evidence": []}
+            if source_address:
+                current["source_address"] = source_address
             current["evidence"].append({"line": number, "quote": text})
+        elif mention and (echo or text[mention.end():].lstrip().startswith("-")):
+            current = None
         if current is None or current.get("complete"):
             continue
         combined = WINDOWS.search(text)
@@ -95,5 +152,6 @@ def parse_ping_records(lines):
         evidence = current["evidence"]
         records.append({"target": current["target"], "sent": sent_count, "received": received_count,
                         "passed": sent_count == received_count, "line": evidence[0]["line"],
-                        "quote": evidence[0]["quote"], "line_end": evidence[-1]["line"], "evidence": evidence})
+                        "quote": evidence[0]["quote"], "line_end": evidence[-1]["line"], "evidence": evidence,
+                        **({"source_address": current["source_address"]} if "source_address" in current else {})})
     return records

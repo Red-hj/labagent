@@ -58,11 +58,28 @@ function fixture(){
   $("analyze").events.click=()=>submissions++;
   vm.runInContext(section("function receiveProgress(","async function diagnose("),context);
   vm.runInContext(section("function pendingTurn(","function renderChecks("),context);
+  vm.runInContext(section("function renderChecks(","function renderGoalsAndPlan("),context);
   vm.runInContext(section("function renderGoalsAndPlan(","function showResult("),context);
   return {$,context,run:code=>vm.runInContext(code,context),advance(ms){now+=ms;for(const fn of intervals.values())fn();},
     get messages(){return messages;},get submissions(){return submissions;},get timers(){return intervals.size;}};
 }
 async function main(){
+  {
+    const p = fixture();
+    const common = {device: "combined.log", target: "192.168.20.10"};
+    p.context.verification = {check_submitted_pings: {pings: [
+      {...common, test_device: "edge-west", sent: 1, received: 0, passed: false},
+      {...common, test_device: "edge-east", source_address: "192.168.10.12", sent: 5, received: 5, passed: true},
+      {...common, sent: 5, received: 5, passed: true},
+    ]}};
+    p.run("renderChecks(verification)");
+    const [, west, east, legacy] = p.$("verification-checks").children;
+    assert.match(west.textContent, /^edge-west · combined\.log → 192\.168\.20\.10/);
+    assert.match(east.textContent, /^edge-east · combined\.log（源 192\.168\.10\.12）/);
+    assert.match(legacy.textContent, /^combined\.log →/);
+    assert.equal(west.className, "check-fail");
+    assert.equal(east.className, "check-pass");
+  }
   {
     const p=fixture();p.run('beginRequest("analyze","请检查我上传的材料")');
     assert.equal(p.$("analysis-result").hidden,false,"first diagnosis must immediately appear as a conversation");

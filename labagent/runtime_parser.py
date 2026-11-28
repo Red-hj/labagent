@@ -75,8 +75,8 @@ def parse_neighbors(text):
     return records
 
 
-def parse_ping(text):
-    records = parse_ping_records(text.splitlines())
+def parse_ping(text, *, command=""):
+    records = parse_ping_records(text.splitlines(), command=command)
     if len(records) != 1:
         return None
     return {key: records[0][key] for key in ("target", "sent", "received")}
@@ -241,7 +241,7 @@ def normalize_outputs(payload):
                 if not mapped:
                     warnings.append(f"命令输出 {index} 未找到可映射到互联接口的邻居记录；不能据此确认邻居正常。")
             elif command.startswith("ping "):
-                row = parse_ping(output["text"])
+                row = parse_ping(output["text"], command=output["command"])
                 if row:
                     observations.setdefault("pings", []).append({**row, "source": output["device"], "evidence": evidence})
                     trace.append({**evidence, "parsed_rows": 1})

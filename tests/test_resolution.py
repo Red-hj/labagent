@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from labagent.experiment_goals import check_goals
 from labagent.investigation import investigate, source_bundle, execute_tool, validate_submission
 from labagent.report import generate_report
 from labagent.store import Store
@@ -60,6 +61,46 @@ class ResolutionTests(unittest.TestCase):
         args = {"summary": "目标测试通过", "hypotheses": [], "evidence_requests": [], "outcome": "observations_passed", "verification_targets": ["10.30.0.10"]}
         result = validate_submission(args, sources, seen, conversational=True, verifying=True, checked_pings=checked, required_targets=["10.30.0.10"])
         self.assertEqual(result["outcome"], "observations_passed")
+
+    def test_followup_ping_only_replaces_the_matching_devices_observation(self):
+        payload = deepcopy(self.payload)
+        target = "10.30.0.10"
+        failed = f"PING {target} ({target}) 56 data bytes\n4 packets transmitted, 0 received"
+        passed = f"PING {target} ({target}) 56 data bytes\n4 packets transmitted, 4 received"
+        payload["configs"] = {"PC1.log": failed, "PC2.log": failed}
+        payload["question"] = f"PC1和PC2到{target}的Ping均需无丢包。"
+        args = {"summary": "目标测试通过", "hypotheses": [], "evidence_requests": [],
+                "outcome": "observations_passed", "verification_targets": [target]}
+
+        for heading, expected, replaced in (
+            ("PC1最新输出：\n", {"PC1": True, "PC2": False}, ["PC1"]),
+            ("", {"PC1": False, "PC2": False, "本轮追问": True}, []),
+        ):
+            with self.subTest(heading=heading):
+                payload["interaction"] = {"type": "verify", "message": heading + passed}
+                sources, _ = source_bundle(payload)
+                seen = set()
+                checked, _ = execute_tool("check_submitted_pings", {}, payload, sources, seen)
+                self.assertEqual({row["test_device"]: row["passed"] for row in checked["pings"]}, expected)
+                self.assertEqual([row["test_device"] for row in checked["superseded_pings"]], replaced)
+                for row in checked["pings"]:
+                    for ref in row["evidence"]:
+                        self.assertEqual(ref["quote"], sources[ref["source_id"]]["lines"][ref["line"] - 1])
+                with self.assertRaisesRegex(ValueError, "仍有失败记录"):
+                    validate_submission(args, sources, seen, conversational=True, verifying=True,
+                                        checked_pings=checked, required_targets=[target])
+
+        payload["interaction"]["message"] = "PC1最新输出：\n" + passed + "\n\nPC2最新输出：\n" + passed
+        sources, _ = source_bundle(payload)
+        checked, _ = execute_tool("check_submitted_pings", {}, payload, sources, set())
+        self.assertEqual({row["test_device"]: row["passed"] for row in checked["pings"]}, {"PC1": True, "PC2": True})
+        self.assertEqual([row["test_device"] for row in checked["superseded_pings"]], ["PC1", "PC2"])
+        instruction = {"source_id": "question:initial", "device": "实验问题与要求", "line": 1, "quote": payload["question"]}
+        criteria = [{"id": device, "title": device, "kind": "reachability", "device": device, "target": target,
+                     "expected": "", "instruction": instruction} for device in ("PC1", "PC2")]
+        assessment = check_goals(criteria, sources)
+        self.assertEqual([item["status"] for item in assessment["checks"]], ["passed", "passed"])
+        self.assertEqual([item["evidence"] for item in assessment["checks"]], [row["evidence"] for row in checked["pings"]])
 
     def test_conversational_counts_remain_a_user_report(self):
         payload = deepcopy(self.payload)

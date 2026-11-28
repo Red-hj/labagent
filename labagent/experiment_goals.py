@@ -3,11 +3,12 @@
 Criteria describe successful experiments, rather than enumerating fault types.
 Device prompts delimit mixed files; source lines are preserved in every check.
 """
+from collections import Counter
 import ipaddress
 from pathlib import Path
 import re
 
-from .connectivity import parse_ping_records
+from .connectivity import IP, parse_ping_records
 from .runtime_parser import (FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_HEADER, FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
                              OSPF_NEIGHBOR_STATES,
                              parse_frr_neighbors, parse_frr_routes, parse_linux_routes, parse_neighbors,
@@ -24,6 +25,9 @@ DEVICE_SECTION = re.compile(r"^\s*" + SECTION_NUMBER + r"([A-Za-z][A-Za-z0-9_.-]
 DOCUMENT_SECTION = re.compile(r"^\s*(?:[一二三四五六七八九十百]+[、．.]|\d+[、．.]\s+)\s*\S.{0,65}$")
 OBSERVATION_DEVICE = re.compile(r"设备[：:]\s*([\w][\w.-]{0,119})\s*")
 OBSERVATION_COMMAND = re.compile(r"命令[：:]\s*(\S.{0,499}?)\s*")
+PING_ORIGIN = re.compile(
+    r"\s*([A-Za-z][\w.-]*)(?:\s*[（(]\s*" + IP.pattern + r"\s*[）)])?(?:\s*执行\s*|\s+)ping\b", re.I
+)
 PARTIAL_CONFIG = re.compile(r"节选|摘录|片段|配置未提供|配置待补充|尚未提供|\b(?:excerpt|truncated|partial)\b|^\s*(?:\.{3}|…+)(?:\s|$)", re.I | re.M)
 AREA_REQUIREMENT = re.compile(
     r"(?P<devices>[A-Z][\w.-]*(?:\s*[、,，]\s*[A-Z][\w.-]*)*)\s*的\s*"
@@ -99,10 +103,12 @@ def evidence_blocks(sources, *, include_history=False):
         if source["kind"] == "user_message" and source_id != "message:current" and not include_history:
             continue
         lines = [TIME.sub("", line) for line in source["lines"]]
-        # A filename is only a fallback. Explicit device prompts take precedence.
-        device = re.split(r"[-_\s]", Path(source["device"]).stem)[0]
-        if source["kind"] == "screenshot_ocr" and not re.fullmatch(r"(?:R|SW|PC|AR|LSW|FW|SRV)\d+", device, re.I):
-            device = source["device"]
+        # Only infer a device from filenames; structured output already names its device.
+        device = source["device"]
+        if source["kind"] != "submitted_command_output":
+            device = re.split(r"[-_\s]", Path(device).stem)[0]
+            if source["kind"] == "screenshot_ocr" and not re.fullmatch(r"(?:R|SW|PC|AR|LSW|FW|SRV)\d+", device, re.I):
+                device = source["device"]
         sysname = next((match for line in lines if (match := re.fullmatch(r"\s*sysname\s+(\S+)\s*", line, re.I))), None)
         if sysname:
             device = sysname[1]
@@ -152,31 +158,41 @@ def citation(block, number):
 
 
 def ping_device(block, row):
-    named = re.match(r"\s*([A-Za-z][\w.-]*)\s*(?:执行)?\s+ping\b|\s*([A-Za-z][\w.-]*)执行ping\b", row["quote"], re.I)
-    return (named[1] or named[2]) if named else block["device"]
+    named = PING_ORIGIN.match(row["quote"])
+    return named[1] if named else block["device"]
 
 
-def submitted_pings(sources):
-    """Newest device/target block is current; older captures remain traceable."""
+def _ping_observations(blocks):
+    """Use the latest complete observation for each device, source address and destination."""
     current, reported, observations = {}, [], []
-    for block in evidence_blocks(sources):
-        grouped = {}
-        for row in parse_ping_records(block["lines"]):
+    for block in blocks:
+        for row in parse_ping_records(block["lines"], command=block["command"]):
             device = ping_device(block, row)
             evidence = [citation(block, item["line"]) for item in row["evidence"]]
-            item = {**row, "source_id":block["source_id"], "device":block["material"], "test_device":device,
-                    "line":evidence[0]["line"], "line_end":evidence[-1]["line"], "quote":evidence[0]["quote"], "evidence":evidence}
+            item = {**row, "source_id": block["source_id"], "device": block["material"], "test_device": device,
+                    "line": evidence[0]["line"], "line_end": evidence[-1]["line"], "quote": evidence[0]["quote"],
+                    "evidence": evidence}
             if block["kind"] == "user_message" and row["line_end"] == row["line"]:
                 reported.append(item)
             else:
                 observations.append(item)
-                grouped.setdefault((device.casefold(), row["target"]), []).append(item)
-        current.update(grouped)
-    active = [item for items in current.values() for item in items]
-    # Current raw output pasted in chat replaces the same target's older upload.
-    targets = {item["target"] for item in active if item["source_id"] == "message:current"}
-    active = [item for item in active if item["source_id"] == "message:current" or item["target"] not in targets]
-    return active, reported, [item for item in observations if item not in active]
+                current[(device.casefold(), (row["target"], row.get("source_address")))] = item
+    from_message = [(path, item) for (_, path), item in current.items() if item["source_id"] == "message:current"]
+    unnamed_paths = {path for path, item in from_message if item["test_device"] == item["device"]}
+    named_paths = {path for path, item in from_message if item["test_device"] != item["device"]}
+    earlier_counts = Counter(path for (_, path), item in current.items() if item["source_id"] != "message:current")
+    # Preserve an unlabeled retest only when its source address and target have a single earlier origin.
+    replaced_paths = {path for path in unnamed_paths - named_paths if earlier_counts[path] == 1}
+    active = [item for (_, path), item in current.items()
+              if item["source_id"] == "message:current" or path not in replaced_paths]
+    active_refs = {(item["source_id"], item["line"]) for item in active}
+    superseded = [item for item in observations if (item["source_id"], item["line"]) not in active_refs]
+    return active, reported, superseded
+
+
+def submitted_pings(sources):
+    """Return current, reported and superseded Ping results with their evidence."""
+    return _ping_observations(evidence_blocks(sources))
 
 
 def check_goals(criteria, sources, *, include_history=False):
@@ -199,11 +215,12 @@ def check_goals(criteria, sources, *, include_history=False):
         (g["kind"] == "ospf_interface_area" and (g["device"].casefold(), interface_id(g["target"]), area_id(g["expected"].strip())) in area_keys)
         or (g["kind"] == "config_contains" and g["target"].strip().lower().startswith("interface ")
             and (g["instruction"]["source_id"], g["instruction"]["line"]) in area_lines))] + explicit
+    pings = _ping_observations(blocks)[0] if any(goal["kind"] == "reachability" for goal in active) else []
     checks = []
     for goal in active:
         matching = [block for block in blocks if not goal["device"] or block["device"].casefold() == goal["device"].casefold()]
         if goal["kind"] == "reachability":
-            status, detail, evidence = _ping(goal, blocks)
+            status, detail, evidence = _ping(goal, pings)
         elif goal["kind"] == "route_protocol":
             status, detail, evidence = _route(goal, matching)
         elif goal["kind"] == "ospf_interface_area":
@@ -243,26 +260,14 @@ def explicit_area_goals(sources):
     return list(goals.values())
 
 
-def _ping(goal, blocks):
-    records = []
-    for block in blocks:
-        rows = [row for row in parse_ping_records(block["lines"]) if row["target"] == goal["target"]]
-        # A sentence in chat is a report; a multi-line output is an observation.
-        rows = [row for row in rows if block["kind"] != "user_message" or row["line_end"] > row["line"]]
-        grouped = {}
-        for row in rows:
-            device = ping_device(block, row)
-            if not goal["device"] or goal["device"].casefold() == device.casefold():
-                grouped.setdefault(device.casefold(), []).append(row)
-        records.extend((device, block, items) for device, items in grouped.items())
-    if not records:
+def _ping(goal, pings):
+    device = goal["device"].casefold()
+    matching = [row for row in pings if row["target"] == goal["target"]
+                and (not device or row["test_device"].casefold() == device)]
+    if not matching:
         return "needs_evidence", f"补充{goal['device'] or '源设备'}到{goal['target']}的Ping收发统计。", []
-    # Newer blocks replace the same device's older test, not other devices' tests.
-    latest = {device: (block, rows) for device, block, rows in records}
-    evidence, passed = [], True
-    for block, rows in latest.values():
-        passed &= all(row["passed"] for row in rows)
-        evidence += [citation(block, item["line"]) for row in rows for item in row["evidence"]]
+    passed = all(row["passed"] for row in matching)
+    evidence = [ref for row in matching for ref in row["evidence"]]
     return ("passed" if passed else "failed"), f"到{goal['target']}的Ping{'全部通过' if passed else '仍有丢包'}。", evidence
 
 

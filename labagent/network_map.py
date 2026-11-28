@@ -168,9 +168,18 @@ def explain_path(network, source, target):
         steps.append({"device": device, "title": title, "status": status, "detail": detail, "evidence": list(refs)})
 
     observed = [p for p in network["pings"] if p["test_device"].casefold() == source.casefold() and p["target"] == target]
-    observation = observed[-1] if observed else None
-    if observation and observation["passed"]:
-        step(source, "端到端测试通过", "passed", f"{source} → {target}：{observation['sent']}发{observation['received']}收。", observation["evidence"])
+    ping_passed = bool(observed) and all(row["passed"] for row in observed)
+
+    def add_ping_steps(passed):
+        for row in observed:
+            if row["passed"] != passed:
+                continue
+            origin = source + (f"（源 {row['source_address']}）" if row.get("source_address") else "")
+            step(source, "端到端测试通过" if passed else "端到端测试失败",
+                 "passed" if passed else "failed",
+                 f"{origin} → {target}：{row['sent']}发{row['received']}收。", row["evidence"])
+
+    add_ping_steps(True)
     current = nodes[source]
     for _ in range(len(nodes) + 1):
         name = current["id"]
@@ -196,7 +205,7 @@ def explain_path(network, source, target):
         else:
             matching = [r for r in current["routes"] if destination in ipaddress.IPv4Network(r["network"], strict=False)]
             if not matching:
-                if observation and observation["passed"]:
+                if ping_passed:
                     step(name, "路径细节", "unmapped", f"端到端Ping已通过；当前材料尚未展开{name}的具体下一跳。")
                 else:
                     step(name, "检查目标路由", "failed" if current["route_table"] else "needs_evidence",
@@ -209,13 +218,13 @@ def explain_path(network, source, target):
                 hop = target
             step(name, "最长前缀路由匹配", "observed", f"{route['network']} · {route['protocol']} · 下一跳{hop}", route["evidence"])
         incomplete = next((a for a in reversed(network["arps"]) if a["device"] == name and a["address"] == hop), None)
-        if incomplete and not (observation and observation["passed"]):
+        if incomplete and not ping_passed:
             step(name, "下一跳地址解析失败", "failed", f"{hop}的ARP状态为Incomplete，数据包停在下一跳解析。", incomplete["evidence"])
             break
         peers = [n for n in nodes.values() if n["id"] != name and any(i["address"] == hop for i in n["interfaces"])]
         if len(peers) != 1:
-            step(name, "定位下一跳设备", "unmapped" if observation and observation["passed"] else "needs_evidence",
-                 f"端到端Ping已通过；材料中尚未对应下一跳{hop}的设备信息。" if observation and observation["passed"] else f"补充地址{hop}所属设备的接口或ARP输出。")
+            step(name, "定位下一跳设备", "unmapped" if ping_passed else "needs_evidence",
+                 f"端到端Ping已通过；材料中尚未对应下一跳{hop}的设备信息。" if ping_passed else f"补充地址{hop}所属设备的接口或ARP输出。")
             break
         peer = peers[0]
         if peer["id"] in path:
@@ -234,7 +243,6 @@ def explain_path(network, source, target):
                 if other and other not in visited and (other == peer["id"] or re.match(r"(?:SW|LSW)\d", other, re.I)):
                     visited.add(other); queue.append((other, chain + [other]))
         path.extend(physical[1:] if physical else [peer["id"]]); current = peer
-    if observation and not observation["passed"]:
-        step(source, "端到端测试失败", "failed", f"{source} → {target}：{observation['sent']}发{observation['received']}收。", observation["evidence"])
-    status = "passed" if observation and observation["passed"] else "failed" if any(s["status"] == "failed" for s in steps) else "needs_evidence"
+    add_ping_steps(False)
+    status = "passed" if ping_passed else "failed" if any(s["status"] == "failed" for s in steps) else "needs_evidence"
     return {"source": source, "target": target, "status": status, "path": path, "steps": steps}
