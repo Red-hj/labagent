@@ -480,12 +480,31 @@ function locateOperation(event) {
     if (video.readyState >= 1) seek(); else video.addEventListener("loadedmetadata", seek, {once:true});
   } else locateCitation(event.evidence[0]);
 }
+function linkedOperationButton(event, label, labels) {
+  const location = operationLocation(event, labels);
+  const button = element("button", label + " " + location.label + " ↗", "text-button operation-linked");
+  button.type = "button";
+  button.setAttribute("aria-label", (location.playable ? "播放" + label : "定位" + label + "原文")
+    + " " + location.label + " · " + location.source);
+  button.addEventListener("click", () => locateOperation(event));
+  return button;
+}
 function renderOperationHistory(history) {
   operationHistory = history;
   $("process-section").hidden = !history.event_count && !recordings.size;
   syncWorkspaceLayout();
   $("operation-count").textContent = history.event_count ? history.event_count + " 步 · " + history.error_count + " 处报错" : "正在准备操作时间线";
-  const focus = (history.events || []).find(item => item.id === (history.focus_id || history.first_issue_id));
+  const events = history.events || [];
+  const byId = new Map(events.map(event => [event.id, event]));
+  const retries = new Map(), earlierErrors = new Map();
+  for (const error of events) {
+    const retry = byId.get(error.retry_event_id);
+    if (error.status !== "error" || retry?.status !== "returned") continue;
+    retries.set(error.id, retry);
+    if (!earlierErrors.has(retry.id)) earlierErrors.set(retry.id, []);
+    earlierErrors.get(retry.id).push(error);
+  }
+  const focus = byId.get(history.focus_id || history.first_issue_id);
   const container = $("operation-focus"); container.replaceChildren(); container.hidden = !focus;
   const labels = recordingLabels();
   if (focus) {
@@ -503,10 +522,13 @@ function renderOperationHistory(history) {
       if (sessionId) performInteraction("ask", text);
       else { $("problem").value = text; $("analyze").click(); }
     });
-    container.append(jump, ask);
+    container.append(jump);
+    const retry = retries.get(focus.id);
+    if (retry) container.append(linkedOperationButton(retry, "重试", labels));
+    container.append(ask);
   }
   $("operation-timeline").replaceChildren();
-  for (const event of history.events || []) {
+  for (const event of events) {
     const row = element("li", undefined, "operation-event " + event.status + (event.recovered ? " recovered" : ""));
     const location = operationLocation(event, labels);
     const jump = element("button", location.label, "text-button operation-time"); jump.type = "button";
@@ -516,6 +538,16 @@ function renderOperationHistory(history) {
       element("span", event.recovered ? "后续已重试" : {error:"命令报错",returned:"终端已返回",issued:"命令已输入"}[event.status], "tag"),
       element("p", location.source, "operation-source"), element("pre", event.command));
     if (event.error) row.append(element("p", event.error, "operation-error-text"));
+    const retry = retries.get(event.id);
+    if (retry) row.append(linkedOperationButton(retry, "重试", labels));
+    const errors = earlierErrors.get(event.id) || [];
+    if (errors.length === 1) row.append(linkedOperationButton(errors[0], "报错", labels));
+    if (errors.length > 1) {
+      const details = element("details", undefined, "operation-linked-errors");
+      details.append(element("summary", "此前报错（" + errors.length + "）"));
+      for (const error of errors) details.append(linkedOperationButton(error, "报错", labels));
+      row.append(details);
+    }
     $("operation-timeline").append(row);
   }
   $("operation-details").hidden = !history.event_count;

@@ -996,6 +996,9 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-code)
 .operation-error-text { color: var(--accent-rose); overflow-wrap: anywhere; font-size: 12px; }
 .operation-time { font-variant-numeric: tabular-nums; color: var(--accent-primary); font-weight: 600; }
 .operation-focus .operation-source, .operation-event .operation-source { margin: 4px 0; color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.operation-linked { margin: 2px 8px 2px 0; }
+.operation-linked-errors { margin-top: 4px; }
+.operation-linked-errors > summary { cursor: pointer; }
 #operation-details { font-size: 13px; color: var(--text-secondary); }
 .records-help { margin: 0 0 16px; color: var(--text-muted); font-size: 12px; }
 .records-help summary { cursor: pointer; }

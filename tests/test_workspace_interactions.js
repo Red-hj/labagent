@@ -74,6 +74,43 @@ async function replayChecks() {
   waits[1](); assert.equal(video.currentTime,6);
 }
 
+function replayLinkChecks() {
+  const nodes = new Map(), visited = [];
+  const element = (tag,text,className) => ({
+    tag,text,className,children:[],append(...items){this.children.push(...items);},
+    replaceChildren(){this.children=[];},setAttribute(key,value){this[key]=value;},
+    addEventListener(name,handler){this[name]=handler;},
+  });
+  const $ = id => {
+    if (!nodes.has(id)) nodes.set(id,element("div"));
+    return nodes.get(id);
+  };
+  const context = vm.createContext({$,element,recordings:new Map(),operationHistory:null,
+    recordingLabels:()=>new Map(),syncWorkspaceLayout(){},locateOperation:event=>visited.push(event.id)});
+  vm.runInContext(part("function recordingForOperation(","function locateOperation("),context);
+  vm.runInContext(part("function linkedOperationButton(","async function waitForRecording("),context);
+  const base={material:"terminal.log",device:"R2",view_label:"配置视图",command:"router ospf",seconds:null};
+  context.history={event_count:4,error_count:3,first_issue_id:"op1",events:[
+    {...base,id:"op1",line:1,status:"error",retry_event_id:"op3",recovered:true},
+    {...base,id:"op2",line:3,status:"error",retry_event_id:"op3",recovered:true},
+    {...base,id:"op3",line:5,status:"returned"},
+    {...base,id:"op4",line:7,status:"error",retry_event_id:"unavailable",recovered:true},
+  ]};
+  vm.runInContext("renderOperationHistory(history)",context);
+  const [first, second, retry, missing] = $("operation-timeline").children;
+  const findLink = node => node.children.find(child=>child.className==="text-button operation-linked");
+  assert.equal(findLink($("operation-focus")).text,"重试 第5行 ↗");
+  findLink(first).click();
+  findLink(second).click();
+  assert.equal(findLink(missing),undefined);
+  const details = retry.children.find(child=>child.tag==="details");
+  assert.equal(details.children[0].text,"此前报错（2）");
+  assert.equal(details.children[1]["aria-label"],"定位报错原文 第1行 · terminal.log");
+  details.children[1].click();
+  details.children[2].click();
+  assert.deepEqual(visited,["op3","op3","op1","op2"]);
+}
+
 async function sameNameReplayChecks() {
   const statuses = new Map(), nodes = new Map();
   const $ = id => {
@@ -214,6 +251,6 @@ function historyChecks() {
   media.matches=false; media.changed(); assert.equal($("session-sidebar").hidden,false,"mobile close must not overwrite desktop preference");
 }
 
-(async()=>{await demoChecks();await previewChecks();await replayChecks();await sameNameReplayChecks();await commandOutputChecks();historyChecks();
+(async()=>{await demoChecks();await previewChecks();await replayChecks();replayLinkChecks();await sameNameReplayChecks();await commandOutputChecks();historyChecks();
   console.log("Workspace interactions passed: load races, partial previews, stale results, matched video seek/play and responsive Ctrl+B sidebar");
 })().catch(error=>{console.error(error);process.exitCode=1;});
