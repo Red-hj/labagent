@@ -106,6 +106,44 @@ class MCPLearningTests(unittest.TestCase):
         self.assertEqual(result["investigation"]["learning"]["current_step"], "先找到接口状态")
         self.assertEqual(result["investigation"]["hypotheses"], [])
 
+    def test_text_followup_ends_with_guidance_in_the_existing_round_budget(self):
+        report = "  R1 完整路由表只有 10.12.0.0/24 直连路由。"
+        payload = {"configs": {"R1.log": "<R1>display ip routing-table\n表项摘录"},
+                   "question": "排查到 10.3.3.3 的访问", "use_llm": True, "learning": {"level": 1},
+                   "interaction": {"type": "ask", "message": report + "\n下一项检查是什么？"}}
+
+        def model(messages, *, tools, tool_choice="auto", max_tokens):
+            names = [tool["function"]["name"] for tool in tools]
+            if "check_route_selection" in names:
+                return call("check_route_selection", {"device": "R1", "target": "10.3.3.3"})
+            self.assertEqual(names, ["submit_learning_step"])
+            self.assertEqual(tool_choice, "required")
+            current = next(json.loads(message["content"]) for message in messages
+                           if message["role"] == "user" and message["content"].startswith('{"source_id":'))
+            self.assertEqual(current["source_id"], "message:current")
+            self.assertEqual(current["lines"][0], {"line": 1, "text": report})
+            return call("submit_learning_step", step(
+                current_step="查看 R2 的 OSPF 数据库", explanation="按你的描述，R1 表里没有目标路由。",
+                action="在 R2 执行 display ospf lsdb。",
+                evidence=[{"source_id": "message:current", "line": 1, "quote": report}]))
+
+        with patch("labagent.investigation.chat_completion", side_effect=model) as complete:
+            result = investigate(payload, previous_materials=payload["configs"].copy())
+        self.assertEqual(complete.call_count, 6)
+        self.assertEqual(result["llm"]["status"], "ok")
+        self.assertEqual(result["investigation"]["learning"]["evidence"][0]["quote"], report)
+        self.assertEqual(result["status"], "needs_information")
+
+    def test_text_followup_rejects_a_quote_that_changes_the_report(self):
+        report = "我在 R1 看到连接 R2 的接口是 up。"
+        payload = {"configs": {}, "question": "查看接口状态", "use_llm": True, "learning": {"level": 1},
+                   "interaction": {"type": "ask", "message": report}}
+        replies = iter(call("submit_learning_step", step(evidence=[{"source_id": "message:current", "line": 1, "quote": quote}]))
+                       for quote in (report.replace("up", "down"), report))
+        result = investigate(payload, completion=lambda _: next(replies))
+        self.assertEqual([item["status"] for item in result["llm"]["tool_trace"]], ["rejected", "ok"])
+        self.assertEqual(result["investigation"]["learning"]["evidence"][0]["quote"], report)
+
     def test_level_one_rejects_direct_repair_and_plain_diagnosis_submission(self):
         payload = {"configs": {}, "question": "直接给我答案", "use_llm": True, "learning": {"level": 1}}
         for name, args in (("submit_learning_step", step(action="ip address 10.12.0.1 255.255.255.0")),
