@@ -111,17 +111,44 @@ def parse_source(source):
                 pending["explanation"] = "这条命令收到终端报错，后续操作应先处理该报错。"
         elif pending and text.strip() and len(pending["response_evidence"]) < 6 and text.strip() != "^":
             pending["response_evidence"].append(quote)
-    for index, event in enumerate(events):
-        if event["status"] == "error":
-            retried = next((later for later in events[index + 1:] if later["device"] == event["device"] and
-                            " ".join(later["command"].lower().split()) == " ".join(event["command"].lower().split()) and later["status"] == "returned"), None)
-            if retried:
-                event["recovered"] = True
-                event["retry_event_id"] = retried["id"]
+    later_returns = {}
+    for event in reversed(events):
+        if event["status"] == "issued":
+            continue
+        command_key = event["device"], " ".join(event["command"].lower().split())
+        if event["status"] == "returned":
+            later_returns[command_key] = event["id"]
+        elif command_key in later_returns:
+            event["recovered"] = True
+            event["retry_event_id"] = later_returns[command_key]
     return events
 
 
-def inspect_history(sources):
+def _timeline_events(events, errors, focus):
+    limit = 400
+    if len(events) <= limit:
+        return events
+
+    selected = set()
+    # Keep the focus and include each recovered error with its supporting retry.
+    for event in [focus, *errors] if focus else []:
+        group = {event["id"]}
+        if retry := event.get("retry_event_id"):
+            group.add(retry)
+        if len(group - selected) <= limit - len(selected):
+            selected.update(group)
+        if len(selected) == limit:
+            break
+
+    for event in reversed(events):
+        if len(selected) == limit:
+            break
+        if event["status"] != "error":
+            selected.add(event["id"])
+    return [event for event in events if event["id"] in selected]
+
+
+def inspect_history(sources, *, full=False):
     events = []
     for source in sources.values():
         if source["kind"] in {"user_question", "user_message"} and source["source_id"] != "message:current":
@@ -137,7 +164,8 @@ def inspect_history(sources):
     focus = next(iter(unresolved or errors), None)
     changes = [effect for event in events if event["status"] == "returned" and (effect := _effect(event))]
     latest_changes = {change["key"]: change for change in changes}
-    return {"events": events[:400], "event_count": len(events), "error_count": len(errors),
+    return {"events": events if full else _timeline_events(events, errors, focus),
+            "event_count": len(events), "error_count": len(errors),
             "unresolved_error_count": len(unresolved), "first_issue_id": focus["id"] if focus else None,
             "devices": list(dict.fromkeys(event["device"] for event in events)), "changes": changes,
             "latest_changes": list(latest_changes.values()), "source": "terminal_history"}
@@ -151,6 +179,9 @@ HISTORY_TOOL = {"type": "function", "function": {"name": "inspect_operation_time
 def model_history(history):
     events = history["events"]
     errors = [event for event in events if event["status"] == "error"][:8]
+    focus = next((event for event in events if event["id"] == history["first_issue_id"]), None)
+    if focus and focus not in errors:
+        errors = errors[:7] + [focus]
     retry_ids = {event["retry_event_id"] for event in errors if event.get("retry_event_id")}
     retries = [event for event in events if event["id"] in retry_ids]
     other_operations = [event for event in events if event["status"] != "error" and event["id"] not in retry_ids]
