@@ -9,6 +9,7 @@ import os
 import re
 from statistics import median
 import sys
+from tempfile import TemporaryDirectory
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -227,7 +228,7 @@ def describe_mismatch(row, prediction):
     return details
 
 
-def benchmark(output, mode, predictions=None, *, benchmark_dir=BENCHMARK, labels_path=None):
+def benchmark(output, mode, predictions=None, *, benchmark_dir=BENCHMARK, labels_path=None, quiet=False):
     benchmark_dir = benchmark_dir.resolve()
     original = benchmark_dir == BENCHMARK
     if labels_path is None:
@@ -336,7 +337,9 @@ def benchmark(output, mode, predictions=None, *, benchmark_dir=BENCHMARK, labels
     if mode == 'rules':
         lines += ['', '模型直接诊断与知识辅助可用 run-model 在配置模型后运行。']
     (output / '报告.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
-    print(f'{mode}: {metric_text(metrics["strict_case_agreement"])} -> {output}')
+    if not quiet:
+        print(f'{mode}: {metric_text(metrics["strict_case_agreement"])} -> {output}')
+    return report
 
 
 def labs(output):
@@ -651,6 +654,28 @@ def comparison(reports):
     return '\n'.join(lines) + '\n'
 
 
+def reproduce(output, direct_predictions, knowledge_predictions, *, benchmark_dir=BENCHMARK, labels_path=None):
+    """Re-score stored predictions and rules with one set of inputs and labels."""
+    output = output.resolve()
+    runtime = (ROOT / 'runtime').resolve()
+    if output == runtime or not output.is_relative_to(runtime):
+        raise ValueError('复现输出目录须位于项目 runtime/ 下。')
+    if output.exists():
+        raise FileExistsError(f'复现报告目录已存在：{output}')
+    if direct_predictions.resolve() == knowledge_predictions.resolve():
+        raise ValueError('纯模型和知识增强须分别指定各自的预测文件。')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    predictions = (None, direct_predictions, knowledge_predictions)
+    with TemporaryDirectory(prefix='.b-reproduce-', dir=output.parent) as directory:
+        staged = Path(directory) / 'reports'
+        reports = [benchmark(staged / mode, mode, source, benchmark_dir=benchmark_dir, labels_path=labels_path, quiet=True)
+                   for mode, source in zip(EVALUATION_MODES, predictions)]
+        markdown = comparison(reports)
+        (staged / '对照表.md').write_text(markdown, encoding='utf-8')
+        staged.rename(output)
+    return output / '对照表.md'
+
+
 def paired_records(report):
     records = report['records']
     indexed = {row['case_id']: row for row in records}
@@ -718,10 +743,12 @@ def paired_comparison(baseline, variant):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('task', choices=('labs', 'benchmark', 'knowledge', 'import-knowledge', 'prepare-model', 'probe-model', 'run-model', 'compare'))
+    parser.add_argument('task', choices=('labs', 'benchmark', 'knowledge', 'import-knowledge', 'prepare-model', 'probe-model', 'run-model', 'compare', 'reproduce'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--mode', choices=EVALUATION_MODES, default='rules')
     parser.add_argument('--predictions', type=Path)
+    parser.add_argument('--direct-predictions', type=Path, help='reproduce: saved direct-model JSONL')
+    parser.add_argument('--knowledge-predictions', type=Path, help='reproduce: saved retrieval-augmented JSONL')
     parser.add_argument('--benchmark-dir', type=Path, default=BENCHMARK,
                         help='benchmark / prepare-model / run-model: directory with manifest.json and inputs/')
     parser.add_argument('--labels', type=Path, help='benchmark: reference labels JSON for an independent dataset')
@@ -776,6 +803,17 @@ def main():
                       benchmark_dir=args.benchmark_dir, labels_path=args.labels)
         except (OSError, ValueError) as error:
             parser.error(str(error))
+    elif args.task == 'reproduce':
+        if args.direct_predictions is None or args.knowledge_predictions is None:
+            parser.error('reproduce 需要 --direct-predictions 和 --knowledge-predictions')
+        if args.execute or args.env_file:
+            parser.error('reproduce 读取存档，不使用 --execute 或 --env-file')
+        try:
+            summary = reproduce(args.output, args.direct_predictions, args.knowledge_predictions,
+                                benchmark_dir=args.benchmark_dir, labels_path=args.labels)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            parser.error(str(error))
+        print(f'复现对照表：{summary}')
     elif args.task == 'knowledge':
         retrieval(args.output)
     elif args.task == 'compare':

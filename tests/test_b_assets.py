@@ -201,6 +201,25 @@ class BEvaluationTests(unittest.TestCase):
             self.assertEqual(report['device_endpoint_counts']['findings'], dict.fromkeys(b.ENDPOINT_LABELS, 0))
             self.assertIn('| 故障 · 设备端点命中 | 0 |', (output / '报告.md').read_text(encoding='utf8'))
 
+            predictions = json.dumps({'case_id': 'b001', **label}) + '\n'
+            direct, knowledge = folder / 'direct.jsonl', folder / 'knowledge.jsonl'
+            direct.write_text(predictions, encoding='utf-8')
+            knowledge.write_text(predictions, encoding='utf-8')
+            reproduced = folder / 'reproduced'
+            with patch.object(b.model, 'chat_completion', side_effect=AssertionError('unexpected model call')):
+                summary = b.reproduce(reproduced, direct, knowledge, benchmark_dir=pack, labels_path=labels)
+            self.assertIn('共 1 个候选案例', summary.read_text(encoding='utf-8'))
+            self.assertEqual({b.read(reproduced / mode / 'evaluation.json')['labels_sha256'] for mode in b.EVALUATION_MODES},
+                             {b.digest(labels)})
+            with self.assertRaises(FileExistsError):
+                b.reproduce(reproduced, direct, knowledge, benchmark_dir=pack, labels_path=labels)
+
+            knowledge.write_text(predictions * 2, encoding='utf-8')
+            incomplete = folder / 'incomplete'
+            with self.assertRaisesRegex(ValueError, '重复编号'):
+                b.reproduce(incomplete, direct, knowledge, benchmark_dir=pack, labels_path=labels)
+            self.assertFalse(incomplete.exists())
+
     def test_strict_judgment_detects_wrong_side_missing_answer_and_extra_finding(self):
         expected = {'status': 'fault_found', 'findings': [{'code': 'AREA_POLICY_VIOLATION', 'link_id': 'L1', 'devices': ['R2']}], 'unknowns': []}
         bad = {**expected, 'findings': [{**expected['findings'][0], 'devices': ['R1']}]}
