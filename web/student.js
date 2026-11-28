@@ -414,11 +414,25 @@ function renderRepairComparisons(comparisons) {
     }
   }
 }
+function listedSourceLabels(sources) {
+  const counts = new Map(), labels = new Map();
+  for (const [id, name] of sources) {
+    const count = (counts.get(name) || 0) + 1;
+    counts.set(name, count);
+    labels.set(id, count === 1 ? name : name + "（" + count + "）");
+  }
+  return labels;
+}
+function recordingLabels() {
+  return listedSourceLabels([...recordings].map(([id, recording]) => [id, recording.name]));
+}
 function renderRecordingChoices() {
   const select = $("replay-recording"), selected = select.value;
   select.replaceChildren();
-  for (const [id, recording] of recordings) {
-    const option = element("option", recording.name); option.value = id; select.append(option);
+  for (const [id, label] of recordingLabels()) {
+    const option = element("option", label);
+    option.value = id;
+    select.append(option);
   }
   if (recordings.has(selected)) select.value = selected;
   $("recording-label").hidden = select.hidden = !recordings.size;
@@ -434,11 +448,32 @@ function renderRecordingChoices() {
   $("process-section").hidden = !recordings.size && !operationHistory?.event_count;
   syncWorkspaceLayout();
 }
+function recordingForOperation(event) {
+  return [...recordings.values()].find(item => item.material_name === event.material || item.id === "demo" && event.material === "终端操作.log");
+}
+function operationTime(seconds) {
+  const totalMs = Math.round(seconds * 1000);
+  const minute = String(Math.floor(totalMs / 60000)).padStart(2,"0");
+  const second = String(Math.floor(totalMs / 1000) % 60).padStart(2,"0");
+  const fraction = String(totalMs % 1000).padStart(3,"0").replace(/0+$/,"");
+  return minute + ":" + second + (fraction ? "." + fraction : "");
+}
+function operationSourceName(event, labels, recording = recordingForOperation(event)) {
+  return labels.get(recording?.id) || event.material;
+}
+function operationLocation(event, labels) {
+  const recording = recordingForOperation(event);
+  const timed = Number.isFinite(event.seconds);
+  const material = operationSourceName(event, labels, recording);
+  const line = "第" + event.line + "行";
+  return {label:timed ? operationTime(event.seconds) : line,
+    source:timed ? material + " · " + line : material, playable:timed && Boolean(recording)};
+}
 function locateOperation(event) {
-  const recording = [...recordings.values()].find(item => item.material_name === event.material || item.id === "demo" && event.material === "终端操作.log");
+  const recording = recordingForOperation(event);
   if (recording) { $("replay-recording").value = recording.id; renderRecordingChoices(); }
   const video = $("replay-video");
-  if (event.seconds !== null && recording) {
+  if (Number.isFinite(event.seconds) && recording) {
     const seekNumber = ++replaySeek;
     const seek = () => {
       if (seekNumber !== replaySeek) return;
@@ -446,42 +481,116 @@ function locateOperation(event) {
       video.currentTime = event.seconds;
       video.play().catch(() => { $("replay-status").textContent = "已定位到对应画面，点击“播放回放”继续。"; });
       video.scrollIntoView({block:"center"});
-      message("已跳到 " + event.time_label + " 的画面。");
+      message("已跳到 " + operationTime(event.seconds) + " 的画面。");
     };
     if (video.readyState >= 1) seek(); else video.addEventListener("loadedmetadata", seek, {once:true});
   } else locateCitation(event.evidence[0]);
+}
+function filterOperationTimeline() {
+  const source = $("operation-source-filter").value;
+  const issuesOnly = $("operation-issues-filter").checked;
+  const list = $("operation-timeline");
+  let shown = 0;
+  for (const row of list.children) {
+    const matchesSource = !source || row.dataset.source === source;
+    const matchesIssue = !issuesOnly || row.dataset.issue === "true";
+    row.hidden = !(matchesSource && matchesIssue);
+    if (!row.hidden) shown++;
+  }
+  const total = operationHistory?.event_count || list.children.length;
+  const count = $("operation-filter-count");
+  count.hidden = !total || (!source && !issuesOnly && shown === total);
+  count.textContent = shown ? "显示 " + shown + " / " + total + " 步" : "没有符合筛选条件的操作。";
+}
+function renderOperationSources(sources) {
+  const select = $("operation-source-filter"), selected = select.value;
+  const all = element("option", "全部材料"); all.value = "";
+  select.replaceChildren(all);
+  for (const [key, label] of listedSourceLabels(sources)) {
+    const option = element("option", label); option.value = key; select.append(option);
+  }
+  const multiple = sources.size > 1;
+  select.value = multiple && sources.has(selected) ? selected : "";
+  $("operation-source-control").hidden = !multiple;
+  if (!sources.size) $("operation-issues-filter").checked = false;
+}
+function linkedOperationButton(event, label, labels) {
+  const location = operationLocation(event, labels);
+  const button = element("button", label + " " + location.label + " ↗", "text-button operation-linked");
+  button.type = "button";
+  button.setAttribute("aria-label", (location.playable ? "播放" + label : "定位" + label + "原文")
+    + " " + location.label + " · " + location.source);
+  button.addEventListener("click", () => locateOperation(event));
+  return button;
 }
 function renderOperationHistory(history) {
   operationHistory = history;
   $("process-section").hidden = !history.event_count && !recordings.size;
   syncWorkspaceLayout();
   $("operation-count").textContent = history.event_count ? history.event_count + " 步 · " + history.error_count + " 处报错" : "正在准备操作时间线";
-  const focus = (history.events || []).find(item => item.id === (history.focus_id || history.first_issue_id));
+  const events = history.events || [];
+  const byId = new Map(events.map(event => [event.id, event]));
+  const retries = new Map(), earlierErrors = new Map();
+  for (const error of events) {
+    const retry = byId.get(error.retry_event_id);
+    if (error.status !== "error" || retry?.status !== "returned") continue;
+    retries.set(error.id, retry);
+    if (!earlierErrors.has(retry.id)) earlierErrors.set(retry.id, []);
+    earlierErrors.get(retry.id).push(error);
+  }
+  const focus = byId.get(history.focus_id || history.first_issue_id);
   const container = $("operation-focus"); container.replaceChildren(); container.hidden = !focus;
+  const labels = recordingLabels();
   if (focus) {
+    const location = operationLocation(focus, labels);
     container.append(element("span", focus.recovered ? "报错后已重新输入" : "关键操作", "eyebrow"),
-      element("h4", (focus.seconds === null ? "第" + focus.line + "行" : focus.time_label) + " · " + focus.device + " · " + focus.view_label),
+      element("h4", location.label + " · " + focus.device + " · " + focus.view_label),
+      element("p", location.source, "operation-source"),
       element("pre", focus.command), element("p", focus.explanation || "结合当前配置与实验目标核对这一步的影响。"));
     if (focus.error) container.append(element("p", focus.error, "operation-error-text"));
-    const jump = element("button", recordings.size && focus.seconds !== null ? "查看这个时间点 ↗" : "定位操作原文 ↗", "secondary-button"); jump.type = "button";
+    const jump = element("button", location.playable ? "查看这个时间点 ↗" : "定位操作原文 ↗", "secondary-button"); jump.type = "button";
     jump.addEventListener("click", () => locateOperation(focus));
     const ask = element("button", "分析这一步", "text-button operation-analyze"); ask.type = "button";
     ask.addEventListener("click", () => {
-      const text = "请分析" + focus.material + "中" + (focus.seconds === null ? "第" + focus.line + "行" : focus.time_label) + "、" + focus.device + "执行“" + focus.command + "”这一步的影响，结合后续操作和当前配置给出继续步骤。";
+      const text = "请分析" + focus.material + "中" + location.label + "、" + focus.device + "执行“" + focus.command + "”这一步的影响，结合后续操作和当前配置给出继续步骤。";
       if (sessionId) performInteraction("ask", text);
       else { $("problem").value = text; $("analyze").click(); }
     });
-    container.append(jump, ask);
+    container.append(jump);
+    const retry = retries.get(focus.id);
+    if (retry) container.append(linkedOperationButton(retry, "重试", labels));
+    container.append(ask);
   }
   $("operation-timeline").replaceChildren();
-  for (const event of history.events || []) {
+  const sources = new Map();
+  for (const event of events) {
     const row = element("li", undefined, "operation-event " + event.status + (event.recovered ? " recovered" : ""));
-    const jump = element("button", event.seconds === null ? "第" + event.line + "行" : event.time_label, "text-button operation-time"); jump.type = "button";
+    const source = JSON.stringify([event.source_id || "", event.material]);
+    if (!sources.has(source)) sources.set(source, operationSourceName(event, labels));
+    row.dataset.source = source;
+    row.dataset.issue = String(event.status === "error" || earlierErrors.has(event.id));
+    const location = operationLocation(event, labels);
+    const jump = element("button", location.label, "text-button operation-time"); jump.type = "button";
+    jump.setAttribute("aria-label", (location.playable ? "播放 " : "定位原文 ") + location.label + " · " + location.source);
     jump.addEventListener("click", () => locateOperation(event));
-    row.append(jump, element("strong", event.device + " · " + event.view_label), element("span", event.recovered ? "后续已重试" : {error:"命令报错",returned:"终端已返回",issued:"命令已输入"}[event.status], "tag"), element("pre", event.command));
+    row.append(jump, element("strong", event.device + " · " + event.view_label),
+      element("span", event.recovered ? "后续已重试" : {error:"命令报错",returned:"终端已返回",issued:"命令已输入"}[event.status], "tag"),
+      element("p", location.source, "operation-source"), element("pre", event.command));
     if (event.error) row.append(element("p", event.error, "operation-error-text"));
+    const retry = retries.get(event.id);
+    if (retry) row.append(linkedOperationButton(retry, "重试", labels));
+    const errors = earlierErrors.get(event.id) || [];
+    if (errors.length === 1) row.append(linkedOperationButton(errors[0], "报错", labels));
+    if (errors.length > 1) {
+      const details = element("details", undefined, "operation-linked-errors");
+      details.append(element("summary", "此前报错（" + errors.length + "）"));
+      for (const error of errors) details.append(linkedOperationButton(error, "报错", labels));
+      row.append(details);
+    }
     $("operation-timeline").append(row);
   }
+  renderOperationSources(sources);
+  filterOperationTimeline();
   $("operation-details").hidden = !history.event_count;
 }
 async function waitForRecording(id) {
@@ -491,9 +600,14 @@ async function waitForRecording(id) {
     requestState("pending", status.message + (status.progress ? " · " + status.progress + "%" : ""));
     if (status.status === "error") throw new Error(status.message);
     if (status.status === "ready") {
-      const collection = status.kind === "image" ? screenshots : recordings;
-      if (materials.size >= 20 && !materials.has(status.material_name) && ![...collection.values()].some(item => item.name === status.name)) throw new Error("材料已达20份，请移除部分材料后重新添加。");
-      for (const [oldId, old] of collection) if (old.name === status.name && oldId !== id) { materials.delete(old.material_name); collection.delete(oldId); }
+      const isScreenshot = status.kind === "image";
+      const collection = isScreenshot ? screenshots : recordings;
+      const replaced = isScreenshot ? [...screenshots].filter(([oldId, old]) => oldId !== id && old.name === status.name) : [];
+      if (materials.size >= 20 && !materials.has(status.material_name) && !replaced.length) throw new Error("材料已达20份，请移除部分材料后重新添加。");
+      for (const [oldId, old] of replaced) {
+        materials.delete(old.material_name);
+        screenshots.delete(oldId);
+      }
       collection.set(id, status); materials.set(status.material_name, status.transcript);
       renderMaterials(); renderRecordingChoices(); await previewOperations();
       requestState("success", status.kind === "image" ? "截图已识别，可查看原图和修正文字。" : "录屏文字已提取，操作时间线已更新。");
@@ -508,8 +622,9 @@ async function uploadRecording(file) {
   if (!videoReady) throw new Error("请先安装requirements-replay.txt中的文字识别组件。");
   if (file.size > (image ? 20 : 80) * 1024 * 1024) throw new Error("单份" + label + "请保持在" + (image ? "20" : "80") + "MB以内。");
   const collection = image ? screenshots : recordings;
-  if (collection.size >= (image ? 10 : 5) && ![...collection.values()].some(item => item.name === file.name)) throw new Error("一次排查最多添加10份截图、5份录屏。");
-  if (materials.size >= 20 && ![...collection.values()].some(item => item.name === file.name)) throw new Error("一次诊断最多添加20份材料。");
+  const replacesScreenshot = image && [...screenshots.values()].some(item => item.name === file.name);
+  if (collection.size >= (image ? 10 : 5) && !replacesScreenshot) throw new Error("一次排查最多添加10份截图、5份录屏。");
+  if (materials.size >= 20 && !replacesScreenshot) throw new Error("一次诊断最多添加20份材料。");
   requestState("pending", "正在上传" + label + "…");
   try {
     const status = await new Promise((resolve, reject) => {
@@ -855,6 +970,8 @@ for (const button of document.querySelectorAll("[data-demo-preset]")) button.add
 $("load-demo-repair").addEventListener("click", () => loadDemo(true));
 $("load-demo-final").addEventListener("click", () => loadDemo(true, true));
 $("replay-recording").addEventListener("change", renderRecordingChoices);
+$("operation-source-filter").addEventListener("change", filterOperationTimeline);
+$("operation-issues-filter").addEventListener("change", filterOperationTimeline);
 $("play-replay").addEventListener("click", () => {
   const video = $("replay-video");
   if (video.error) video.load();

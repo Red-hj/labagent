@@ -57,7 +57,10 @@ async function replayChecks() {
   const $=id=>id==="replay-video"?video:(nodes.has(id)?nodes.get(id):(nodes.set(id,{}),nodes.get(id)));
   const context=vm.createContext({$,replaySeek:0, recordings:new Map([["demo",{id:"demo",video_url:"/demo"}]]),
     renderRecordingChoices(){},message(){},locateCitation:()=>located++});
-  vm.runInContext(part("function locateOperation(","function renderOperationHistory("),context);
+  vm.runInContext(part("function recordingForOperation(","function renderOperationHistory("),context);
+  assert.equal(vm.runInContext("operationTime(2.5)",context),"00:02.5");
+  assert.equal(vm.runInContext("operationTime(62.501)",context),"01:02.501");
+  assert.equal(vm.runInContext("operationTime(62)",context),"01:02");
   vm.runInContext('locateOperation({material:"终端操作.log",seconds:3,time_label:"00:03"})',context);
   assert.equal(video.currentTime,3); assert.equal(played,1,"clicking an operation should start playback");
   vm.runInContext('locateOperation({material:"another-device.log",seconds:8,evidence:[{}]})',context);
@@ -69,6 +72,117 @@ async function replayChecks() {
   vm.runInContext('locateOperation({material:"终端操作.log",seconds:6,time_label:"00:06"})',context);
   waits[0](); assert.equal(video.currentTime,3,"stale pending seek must not move a newly selected position");
   waits[1](); assert.equal(video.currentTime,6);
+}
+
+function replayLinkChecks() {
+  const nodes = new Map(), visited = [];
+  const element = (tag,text,className) => ({
+    tag,text,className,value:"",dataset:{},children:[],append(...items){this.children.push(...items);},
+    replaceChildren(...items){this.children=items;},setAttribute(key,value){this[key]=value;},
+    addEventListener(name,handler){this[name]=handler;},
+  });
+  const $ = id => {
+    if (!nodes.has(id)) nodes.set(id,element("div"));
+    return nodes.get(id);
+  };
+  const context = vm.createContext({$,element,recordings:new Map(),operationHistory:null,
+    recordingLabels:()=>new Map(),syncWorkspaceLayout(){},locateOperation:event=>visited.push(event.id)});
+  vm.runInContext(part("function recordingForOperation(","function locateOperation("),context);
+  vm.runInContext(part("function listedSourceLabels(","function recordingLabels("),context);
+  vm.runInContext(part("function filterOperationTimeline(","async function waitForRecording("),context);
+  const base={material:"terminal.log",device:"R2",view_label:"配置视图",command:"router ospf",seconds:null};
+  context.history={event_count:6,error_count:3,first_issue_id:"op1",events:[
+    {...base,id:"op1",line:1,status:"error",retry_event_id:"op3",recovered:true},
+    {...base,id:"op2",line:3,status:"error",retry_event_id:"op3",recovered:true},
+    {...base,id:"op3",line:5,status:"returned"},
+    {...base,id:"op4",material:"other.log",line:7,status:"error",retry_event_id:"unavailable",recovered:true},
+    {...base,id:"op5",material:"other.log",line:8,status:"returned"},
+  ]};
+  vm.runInContext("renderOperationHistory(history)",context);
+  const [first, second, retry, missing] = $("operation-timeline").children;
+  const findLink = node => node.children.find(child=>child.className==="text-button operation-linked");
+  assert.equal(findLink($("operation-focus")).text,"重试 第5行 ↗");
+  findLink(first).click();
+  findLink(second).click();
+  assert.equal(findLink(missing),undefined);
+  const details = retry.children.find(child=>child.tag==="details");
+  assert.equal(details.children[0].text,"此前报错（2）");
+  assert.equal(details.children[1]["aria-label"],"定位报错原文 第1行 · terminal.log");
+  details.children[1].click();
+  details.children[2].click();
+  assert.deepEqual(visited,["op3","op3","op1","op2"]);
+
+  const source = $("operation-source-filter"), issues = $("operation-issues-filter");
+  const visible = () => $("operation-timeline").children.filter(row=>!row.hidden);
+  assert.deepEqual(source.children.map(option=>option.text),["全部材料","terminal.log","other.log"]);
+  assert.equal($("operation-filter-count").textContent,"显示 5 / 6 步");
+  source.value = missing.dataset.source;
+  issues.checked = true;
+  vm.runInContext("filterOperationTimeline()",context);
+  assert.deepEqual(visible(),[missing]);
+  source.value = first.dataset.source;
+  vm.runInContext("filterOperationTimeline()",context);
+  assert.deepEqual(visible(),[first,second,retry]);
+  context.history = {event_count:3,events:context.history.events.slice(0,3)};
+  vm.runInContext("renderOperationHistory(history)",context);
+  assert.equal(source.value,"","a single material clears the source filter");
+  vm.runInContext("renderOperationHistory({})",context);
+  assert.equal(issues.checked,false);
+}
+
+async function sameNameReplayChecks() {
+  const statuses = new Map(), nodes = new Map();
+  const $ = id => {
+    if (!nodes.has(id)) nodes.set(id,{value:""});
+    return nodes.get(id);
+  };
+  const select = $("replay-recording");
+  select.options = [];
+  select.replaceChildren = function() { this.options = []; this.value = ""; };
+  select.append = function(option) { this.options.push(option); this.value ||= option.value; };
+  const video = $("replay-video");
+  video.pause = video.load = () => {};
+  video.getAttribute = () => video.src;
+  video.removeAttribute = () => { video.src = undefined; };
+  const context = vm.createContext({$, URL, window:{location:{href:"http://localhost/"}, history:{replaceState(){}}},
+    recordings:new Map(), screenshots:new Map(), materials:new Map(), videoReady:true, replaySeek:0, operationHistory:null,
+    mediaUrl:value=>value, syncWorkspaceLayout(){},requestState(){},renderMaterials(){},previewOperations:async()=>{},
+    element:(tag,text)=>({tag,text}), api:async route=>statuses.get(route.split("/").at(-1))});
+  vm.runInContext(part("function listedSourceLabels(","function renderOperationHistory("),context);
+  vm.runInContext(part("async function waitForRecording(","function requestState("),context);
+  const add = async (id,kind,name) => {
+    statuses.set(id,{id, kind, name, status:"ready", material_name:id+".log", transcript:id, video_url:"/video/"+id});
+    await vm.runInContext("waitForRecording("+JSON.stringify(id)+")",context);
+  };
+  await add("first","video","terminal.webm");
+  await add("second","video","terminal.webm");
+  assert.deepEqual([...context.materials.keys()],["first.log","second.log"]);
+  assert.deepEqual(select.options.map(option=>[option.value,option.text]),[
+    ["first","terminal.webm"],["second","terminal.webm（2）"],
+  ]);
+  const locate = event => {
+    context.event = event;
+    return JSON.parse(JSON.stringify(vm.runInContext("operationLocation(event, recordingLabels())",context)));
+  };
+  assert.deepEqual(locate({material:"second.log",line:3,seconds:2.5}),
+    {label:"00:02.5",source:"terminal.webm（2） · 第3行",playable:true});
+  assert.deepEqual(locate({material:"timed.log",line:4,seconds:2.5}),
+    {label:"00:02.5",source:"timed.log · 第4行",playable:false});
+  assert.deepEqual(locate({material:"untimed.log",line:5,seconds:null}),
+    {label:"第5行",source:"untimed.log",playable:false});
+  await vm.runInContext('waitForRecording("first")',context);
+  assert.equal(context.recordings.size,2,"reopening an existing recording remains idempotent");
+
+  await add("screen1","image","terminal.png");
+  while (context.materials.size < 20) context.materials.set("extra-"+context.materials.size,"text");
+  await add("screen2","image","terminal.png");
+  assert.equal(context.materials.size,20);
+  assert.equal(context.materials.has("screen1.log"),false);
+  assert.deepEqual([...context.screenshots.keys()],["screen2"]);
+  await assert.rejects(vm.runInContext('uploadRecording({name:"terminal.webm",size:1})',context),/最多添加20份/);
+  context.materials.clear();
+  for (const id of ["third","fourth","fifth"]) await add(id,"video","terminal.webm");
+  await assert.rejects(vm.runInContext('uploadRecording({name:"terminal.webm",size:1})',context),/最多添加10份截图、5份录屏/);
 }
 
 async function commandOutputChecks() {
@@ -156,6 +270,6 @@ function historyChecks() {
   media.matches=false; media.changed(); assert.equal($("session-sidebar").hidden,false,"mobile close must not overwrite desktop preference");
 }
 
-(async()=>{await demoChecks();await previewChecks();await replayChecks();await commandOutputChecks();historyChecks();
+(async()=>{await demoChecks();await previewChecks();await replayChecks();replayLinkChecks();await sameNameReplayChecks();await commandOutputChecks();historyChecks();
   console.log("Workspace interactions passed: load races, partial previews, stale results, matched video seek/play and responsive Ctrl+B sidebar");
 })().catch(error=>{console.error(error);process.exitCode=1;});
