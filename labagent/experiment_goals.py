@@ -8,7 +8,7 @@ import ipaddress
 from pathlib import Path
 import re
 
-from .connectivity import parse_ping_records
+from .connectivity import IP, parse_ping_records
 from .runtime_parser import (FRR_NEIGHBOR_COMMAND, FRR_NEIGHBOR_HEADER, FRR_ROUTE_LEGEND, LINUX_ROUTE_COMMAND, LINUX_ROUTE_ROW,
                              OSPF_NEIGHBOR_STATES,
                              parse_frr_neighbors, parse_frr_routes, parse_linux_routes, parse_neighbors,
@@ -25,6 +25,9 @@ DEVICE_SECTION = re.compile(r"^\s*" + SECTION_NUMBER + r"([A-Za-z][A-Za-z0-9_.-]
 DOCUMENT_SECTION = re.compile(r"^\s*(?:[一二三四五六七八九十百]+[、．.]|\d+[、．.]\s+)\s*\S.{0,65}$")
 OBSERVATION_DEVICE = re.compile(r"设备[：:]\s*([\w][\w.-]{0,119})\s*")
 OBSERVATION_COMMAND = re.compile(r"命令[：:]\s*(\S.{0,499}?)\s*")
+PING_ORIGIN = re.compile(
+    r"\s*([A-Za-z][\w.-]*)(?:\s*[（(]\s*" + IP.pattern + r"\s*[）)])?(?:\s*执行\s*|\s+)ping\b", re.I
+)
 PARTIAL_CONFIG = re.compile(r"节选|摘录|片段|配置未提供|配置待补充|尚未提供|\b(?:excerpt|truncated|partial)\b|^\s*(?:\.{3}|…+)(?:\s|$)", re.I | re.M)
 AREA_REQUIREMENT = re.compile(
     r"(?P<devices>[A-Z][\w.-]*(?:\s*[、,，]\s*[A-Z][\w.-]*)*)\s*的\s*"
@@ -100,10 +103,12 @@ def evidence_blocks(sources, *, include_history=False):
         if source["kind"] == "user_message" and source_id != "message:current" and not include_history:
             continue
         lines = [TIME.sub("", line) for line in source["lines"]]
-        # A filename is only a fallback. Explicit device prompts take precedence.
-        device = re.split(r"[-_\s]", Path(source["device"]).stem)[0]
-        if source["kind"] == "screenshot_ocr" and not re.fullmatch(r"(?:R|SW|PC|AR|LSW|FW|SRV)\d+", device, re.I):
-            device = source["device"]
+        # Only infer a device from filenames; structured output already names its device.
+        device = source["device"]
+        if source["kind"] != "submitted_command_output":
+            device = re.split(r"[-_\s]", Path(device).stem)[0]
+            if source["kind"] == "screenshot_ocr" and not re.fullmatch(r"(?:R|SW|PC|AR|LSW|FW|SRV)\d+", device, re.I):
+                device = source["device"]
         sysname = next((match for line in lines if (match := re.fullmatch(r"\s*sysname\s+(\S+)\s*", line, re.I))), None)
         if sysname:
             device = sysname[1]
@@ -153,8 +158,8 @@ def citation(block, number):
 
 
 def ping_device(block, row):
-    named = re.match(r"\s*([A-Za-z][\w.-]*)\s*(?:执行)?\s+ping\b|\s*([A-Za-z][\w.-]*)执行ping\b", row["quote"], re.I)
-    return (named[1] or named[2]) if named else block["device"]
+    named = PING_ORIGIN.match(row["quote"])
+    return named[1] if named else block["device"]
 
 
 def _ping_observations(blocks):

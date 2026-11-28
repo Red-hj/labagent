@@ -135,6 +135,56 @@ class ConnectivityTests(unittest.TestCase):
                 self.assertEqual(review["checks"][0]["status"], "passed")
                 self.assertEqual(review["checks"][0]["evidence"], row["evidence"])
 
+    def test_full_device_names_keep_same_target_pings_independent(self):
+        from labagent.experiment_goals import check_goals
+        from labagent.investigation_context import observed_device_commands
+        from labagent.report import generate_report
+
+        target, west, east = "192.168.20.10", "edge-west_1", "edge-east_1"
+        lost, passed = "1 packets transmitted, 0 received", "5 packets transmitted, 5 received"
+        for mixed in (False, True):
+            with self.subTest(mixed=mixed):
+                payload = {"configs": {"R1": "sysname R1"}, "question": f"核对 {west} 和 {east} 到 {target} 的 Ping"}
+                for received in (0, 5):
+                    if mixed:
+                        west_line = f"{west}（192.168.10.11）执行ping {target}"
+                        east_line = f"{east} (192.168.10.12) 执行 ping {target}"
+                        text = [west_line, lost, east_line, passed]
+                        if received:
+                            text.extend((west_line, passed))
+                        payload["configs"]["combined.log"] = "\n".join(text)
+                    else:
+                        runs = [(west, lost), (east, passed)]
+                        if received:
+                            runs.append((west, passed))
+                        payload["command_outputs"] = [{"device": device, "command": f"ping {target}", "text": counters,
+                                                       "config_fingerprint": fingerprint(payload)} for device, counters in runs]
+                    sources, _ = source_bundle(payload)
+                    goals = [{"id": device, "title": device, "kind": "reachability", "device": device, "target": target,
+                              "expected": "", "instruction": {"source_id": "question:initial", "device": "实验问题与要求",
+                                                            "line": 1, "quote": payload["question"]}} for device in (west, east)]
+                    checked, _ = execute_tool("check_submitted_pings", {}, payload, sources, set())
+                    self.assertEqual({row["test_device"]: row["received"] for row in checked["pings"]}, {west: received, east: 5})
+                    self.assertEqual([row["test_device"] for row in checked["superseded_pings"]], [west] if received else [])
+                    self.assertEqual(observed_device_commands(sources), {(west, f"ping {target}"), (east, f"ping {target}")})
+                    checks = check_goals(goals, sources)["checks"]
+                    self.assertEqual([check["status"] for check in checks], ["passed" if received else "failed", "passed"])
+                    for check in checks:
+                        for ref in check["evidence"]:
+                            self.assertEqual(ref["quote"], sources[ref["source_id"]]["lines"][ref["line"] - 1])
+                    self.assertEqual(checks[0]["evidence"][-1]["quote"], passed if received else lost)
+                    self.assertEqual(checks[1]["evidence"][-1]["quote"], passed)
+
+                    result = {"mode": "open_network", "status": "goals_pending", "llm": {"status": "ok"},
+                              "interaction_checks": {"check_submitted_pings": checked}}
+                    report = generate_report({"session_id": "ping-retest", "learning_record": {"config_revisions": 0},
+                                              "attempts": [{"input": payload, "result": result,
+                                                            "created_at": "2026-11-28T08:00:00+00:00"}]})
+                    material = " · combined.log" if mixed else ""
+                    sent, status = (5, "通过") if received else (1, "未通过")
+                    self.assertIn(f"| {west}{material} | {target} | {sent} | {received} | {status} |", report)
+                    self.assertIn(f"| {east}{material} | {target} | 5 | 5 | 通过 |", report)
+
     def test_sourced_ping_satisfies_only_the_destination_goal(self):
         from labagent.experiment_goals import check_goals
 

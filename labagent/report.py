@@ -12,8 +12,10 @@ def clean(value):
 
 
 def _ping_material(ping):
-    material = clean(ping.get("device", "提交输出"))
-    return material + (f"（源 {clean(ping['source_address'])}）" if ping.get("source_address") else "")
+    material = ping.get("device", "提交输出")
+    device = ping.get("test_device")
+    label = f"{clean(device)} · {clean(material)}" if device and device != material else clean(material)
+    return label + (f"（源 {clean(ping['source_address'])}）" if ping.get("source_address") else "")
 
 
 def _operation_location(event):
@@ -258,7 +260,7 @@ def generate_open_report(history):
         rows += ["", "## 修改与验证过程", ""] + [f"{index}. {clean(step)}" for index, step in enumerate(steps, 1)]
     pings = result.get("interaction_checks", {}).get("check_submitted_pings", {}).get("pings", [])
     if pings:
-        rows += ["", "## 本次运行复测", "", "| 材料来源 | 目标 | 发送 | 接收 | 结果 |", "| --- | --- | --- | --- | --- |"]
+        rows += ["", "## 本次运行复测", "", "| 设备与材料 | 目标 | 发送 | 接收 | 结果 |", "| --- | --- | --- | --- | --- |"]
         for ping in pings:
             rows.append(f"| {_ping_material(ping)} | {clean(ping['target'])} | {ping['sent']} | {ping['received']} | {'通过' if ping['passed'] else '未通过'} |")
     routes = result.get("interaction_checks", {}).get("check_route_selection", [])
