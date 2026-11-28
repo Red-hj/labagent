@@ -111,6 +111,41 @@ class BEvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '链路证据选项'):
             b.comparison([saved_model, knowledge_model])
 
+    def test_paired_comparison_reports_swapped_results_by_case_id(self):
+        metrics = {key: b.score(1, 3) for key in (
+            'state_agreement', 'strict_case_agreement', 'fault_location', 'normal_false_alarm', 'unknown_handling')}
+        expected = {'status': 'awaiting_verification', 'findings': [], 'unknowns': [],
+                    'family': 'test', 'condition': 'healthy', 'case_type': 'normal'}
+        wrong = {**expected, 'status': 'fault_found'}
+        def row(case_id, answer):
+            return {'case_id': case_id, 'case_type': 'normal', **b.assess(expected, answer)}
+        model = {'origin': 'configured_chat_completion', 'provider': 'test', 'model': 'test-model',
+                 'base_inputs_sha256': 'cases', 'temperature': 0.1, 'max_tokens_per_call': 800}
+        baseline = {'mode': 'model-knowledge', 'version': 'v1', 'manifest_sha256': 'inputs',
+                    'labels_sha256': 'labels', 'candidate_count': 3, 'metrics': metrics,
+                    'external_prediction_source': {**model, 'parsed_links': True},
+                    'records': [row('b001', wrong), row('b002', expected), row('b003', None)]}
+        variant = {**baseline, 'external_prediction_source': {**model, 'link_evidence': 'checked', 'claim_review': True},
+                   'records': [row('b003', None), row('b002', wrong), row('b001', expected)]}
+        text = b.paired_comparison(baseline, variant)
+        self.assertIn('| 严格匹配 | 1/3（33.3%） | 1/3（33.3%） |', text)
+        self.assertIn('由错变对 1 例，由对变错 1 例，均匹配 0 例，均未匹配 1 例', text)
+        self.assertIn('| b001 | 正常 | 发现故障（状态不符） | 严格匹配 | 由错变对 |', text)
+        self.assertIn('| b002 | 正常 | 严格匹配 | 发现故障（状态不符） | 由对变错 |', text)
+        self.assertIn('| b003 | 正常 | 无有效预测 | 无有效预测 | 均未匹配 |', text)
+        self.assertIn('| 链路证据 | 解析后的链路证据 | 链路证据与核对提示 |', text)
+        self.assertIn('| 复核 | 无 | 回复复核 |', text)
+        with self.assertRaisesRegex(ValueError, '输入子集'):
+            b.paired_comparison(baseline, {**variant, 'external_prediction_source': {**model, 'base_inputs_sha256': 'other'}})
+        with self.assertRaisesRegex(ValueError, '标签版本'):
+            b.paired_comparison(baseline, {**variant, 'labels_sha256': 'other'})
+        with self.assertRaisesRegex(ValueError, '相同模式'):
+            b.paired_comparison(baseline, {**variant, 'mode': 'model-direct'})
+        with self.assertRaisesRegex(ValueError, '重复'):
+            b.paired_comparison(baseline, {**variant, 'records': [variant['records'][0]] * 3})
+        with self.assertRaisesRegex(ValueError, '题号'):
+            b.paired_comparison(baseline, {**variant, 'records': [row('b004', None), *variant['records'][1:]]})
+
     @unittest.skipUnless((b.PRIVATE / 'diagnosis_labels.json').is_file(), 'Private B benchmark not distributed')
     def test_benchmark_fixed_split_and_no_answer_fields(self):
         from collections import Counter
@@ -172,6 +207,30 @@ class BEvaluationTests(unittest.TestCase):
         self.assertFalse(b.assess(expected, None)['strict_match'])
         extra = {**expected, 'findings': expected['findings'] + [{**expected['findings'][0], 'link_id': 'L2'}]}
         self.assertFalse(b.assess(expected, extra)['strict_match'])
+
+    def test_mismatch_details_distinguish_status_and_issue_locations(self):
+        expected = {'status': 'needs_information', 'findings': [
+                        {'code': 'SUBNET_MISMATCH', 'link_id': 'L1', 'devices': ['R2', 'R1']},
+                        {'code': 'AREA_POLICY_VIOLATION', 'link_id': 'L2', 'devices': ['R1']},
+                        {'code': 'AREA_POLICY_VIOLATION', 'link_id': 'L2', 'devices': ['R2']}],
+                    'unknowns': [{'code': 'MISSING_IP', 'link_id': 'L3', 'devices': ['R3']}]}
+        actual = {'status': 'fault_found', 'findings': [
+                      {**expected['findings'][0], 'devices': ['R2']},
+                      {**expected['findings'][1], 'devices': ['R1', 'R2']},
+                      {'code': 'INTERFACE_SHUTDOWN', 'link_id': 'L4', 'devices': ['R4']}],
+                  'unknowns': []}
+        details = b.describe_mismatch(b.assess(expected, actual), actual)
+        self.assertEqual(details, [
+            '状态预期为待补证，实际为发现故障。',
+            '故障 `AREA_POLICY_VIOLATION` · 链路 `L2` 的设备范围不符。预期 （`R1`） / （`R2`），实际 `R1`、`R2`。',
+            '多报故障 `INTERFACE_SHUTDOWN` · 链路 `L4`，涉及 `R4`。',
+            '故障 `SUBNET_MISMATCH` · 链路 `L1` 的设备范围不符。预期 `R1`、`R2`，实际 `R2`。',
+            '漏报补证项 `MISSING_IP` · 链路 `L3`，涉及 `R3`。',
+        ])
+        self.assertEqual(b.describe_mismatch(b.assess(expected, None), None), ['无预测记录。'])
+        invalid = {'request_error': 'invalid_json_or_case_id'}
+        self.assertEqual(b.describe_mismatch(b.assess(expected, invalid), invalid),
+                         ['预测无法评分（`invalid_json_or_case_id`）。'])
 
     def test_first_five_and_repaired_configs(self):
         folders = sorted((b.DATA / 'team_cases').glob('lab_*'))

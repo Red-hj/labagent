@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from labagent.investigation import source_bundle, execute_tool, investigate
+from labagent.network_map import build_map
 from labagent.operation_history import inspect_history, prompt_info, time_label
 from labagent.recordings import Recordings, changed_lines
 from labagent.report import generate_report
@@ -165,6 +166,63 @@ class OperationHistoryTests(unittest.TestCase):
         self.assertEqual(retry["status"], "returned")
         self.assertEqual([event["command"] for event in recent], [f"show ip route {i}" for i in range(4, 15)])
         self.assertEqual(len({event["id"] for event in summary["events"]}), 13)
+
+    def test_long_timeline_keeps_late_error_retry_and_report_locations(self):
+        route_log = "\n".join(["Early-Edge# show ip route summary"] + ["R1# show ip route ospf"] * 420 + ["R1#"])
+        recording = ("[00:02.500] R2# router ospf\n% Unknown command: router ospf\n"
+                     "[00:04.500] R2# configure terminal\n"
+                     "[00:06.500] R2(config)# router ospf\nR2(config-router)#")
+        payload = {"diagnostic_mode": "open_network", "use_llm": False, "question": "回溯报错",
+                   "configs": {"查询.log": route_log, "重试-录屏识别.log": recording}}
+        current, _ = source_bundle(payload)
+        full = inspect_history(current, full=True)
+        result = investigate(payload)
+        timeline = result["operation_history"]
+        self.assertEqual((timeline["event_count"], len(timeline["events"])), (424, 400))
+        self.assertEqual(len(full["events"]), 424)
+        self.assertEqual(full["events"][0]["command"], "show ip route summary")
+        self.assertEqual(timeline["events"], full["events"][-400:])
+        early_device = next(item for item in build_map(current)["nodes"] if item["id"] == "Early-Edge")
+        self.assertIn(full["events"][0]["evidence"][0], early_device["evidence"])
+        error, navigation, retry = timeline["events"][-3:]
+        self.assertEqual(timeline["first_issue_id"], error["id"])
+        self.assertEqual(timeline["focus_id"], error["id"])
+        self.assertEqual(error["retry_event_id"], retry["id"])
+        self.assertEqual((error["seconds"], retry["seconds"]), (2.5, 6.5))
+        self.assertEqual(navigation["command"], "configure terminal")
+        self.assertEqual((error["line"], retry["line"]), (1, 4))
+        report = generate_report({"session_id": "test", "attempts": [
+            {"created_at": "2026-11-28T08:00:00+08:00", "input": payload, "result": result}],
+                                  "learning_record": {"config_revisions": 0}})
+        self.assertIn("识别424步操作、1处报错。", report)
+        self.assertIn("下方列出400步", report)
+        self.assertIn("关键操作：00:02.5", report)
+        self.assertIn("重试位置：00:06.5 · 重试-录屏识别.log 第4行", report)
+
+        # The same pair must survive when it precedes all 421 routine operations.
+        early = inspect_history(dict(reversed(list(current.items()))))
+        early_error = early["events"][0]
+        self.assertEqual(early["first_issue_id"], early_error["id"])
+        self.assertEqual(early_error["retry_event_id"], early["events"][1]["id"])
+        self.assertEqual(early["events"][1]["command"], "router ospf")
+
+    def test_summary_keeps_unresolved_focus_after_earlier_recovered_errors(self):
+        attempts = [f"R{i}# router ospf\n% Unknown command: router ospf\n"
+                    f"R{i}(config)# router ospf\nR{i}(config-router)#" for i in range(1, 9)]
+        attempts.append("R9# router ospf\n% Unknown command: router ospf")
+        payload = {"configs": {"操作.log": "\n".join(attempts)}, "question": "回溯待解决的报错"}
+        current, _ = source_bundle(payload)
+        summary, _ = execute_tool("inspect_operation_timeline", {}, payload, current, set())
+        events = {event["id"]: event for event in summary["events"]}
+        focus = events[summary["first_issue_id"]]
+        self.assertEqual((focus["device"], focus["status"], focus["recovered"]), ("R9", "error", False))
+        errors = [event for event in events.values() if event["status"] == "error"]
+        self.assertEqual(len(errors), 8)
+        self.assertEqual(summary["error_count"], 9)
+        for error in errors:
+            if error["recovered"]:
+                retry = events[error["retry_event_id"]]
+                self.assertEqual((retry["device"], retry["status"]), (error["device"], "returned"))
 
     def test_history_tool_registers_evidence_and_focus_requires_a_real_event(self):
         payload = {"configs": {"操作.log": example()}, "question": "排查操作"}

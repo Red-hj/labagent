@@ -106,6 +106,58 @@ def generate_report(history):
     return "\n".join(rows) + "\n"
 
 
+def _goal_citation(ref, commands, outputs):
+    location = clean(ref["device"])
+    source_id = ref.get("source_id", "")
+    if source_id.startswith("output:"):
+        lines = outputs.get(source_id, [])
+        number = ref["line"]
+        command = commands.get((source_id, ref["device"]))
+        # A restored result can refer to an older output at the same index.
+        if command and 0 < number <= len(lines) and lines[number - 1] == ref["quote"]:
+            location += f"（{clean(command)}）"
+        else:
+            location += f"（命令输出 {clean(source_id.removeprefix('output:'))}）"
+    return f"{location} 第{ref['line']}行：{clean(ref['quote'])}"
+
+
+def _goal_assessment_rows(attempts):
+    checks_by_round = [attempt["result"].get("investigation", {}).get("goal_assessment", {}).get("checks", [])
+                       for attempt in attempts]
+    if not any(checks_by_round):
+        return []
+    rows = ["", "## 实验目标逐项核对", ""]
+    multi_round = len(attempts) > 1
+    if multi_round:
+        rows += ["| 轮次 | 已满足 / 总目标 | 未满足 | 待补充输出 |", "| --- | --- | --- | --- |"]
+        for number, checks in enumerate(checks_by_round, 1):
+            if not checks:
+                rows.append(f"| {number} | 本轮无核对记录 | — | — |")
+                continue
+            passed, failed, pending = (sum(check["status"] == key for check in checks)
+                                       for key in ("passed", "failed", "needs_evidence"))
+            rows.append(f"| {number} | {passed}/{len(checks)} | {failed} | {pending} |")
+    for number, (attempt, checks) in enumerate(zip(attempts, checks_by_round), 1):
+        if not checks:
+            continue
+        if multi_round:
+            rows += ["", f"### 第{number}轮", ""]
+        rows += ["| 目标 | 状态 | 核对结果 |", "| --- | --- | --- |"]
+        for check in checks:
+            rows.append(f"| {clean(check['title'])} | {LABELS[check['status']]} | {clean(check['detail'])} |")
+        commands = {(source["source_id"], source["device"]): source["command"]
+                    for source in attempt["result"].get("source_manifest", [])
+                    if source.get("kind") == "submitted_command_output" and source.get("command")}
+        outputs = {f"output:{index}": output["text"].splitlines()
+                   for index, output in enumerate(attempt["input"].get("command_outputs", []), 1)}
+        rows.append("")
+        for check in checks:
+            rows.append("- 要求：" + _goal_citation(check["instruction"], commands, outputs))
+            for ref in check["evidence"]:
+                rows.append("  - 结果：" + _goal_citation(ref, commands, outputs))
+    return rows
+
+
 def generate_open_report(history):
     attempts = history["attempts"]
     latest = attempts[-1]
@@ -145,6 +197,8 @@ def generate_open_report(history):
         by_id = {event["id"]: event for event in operations["events"]}
         focus = by_id.get(operations.get("focus_id") or operations.get("first_issue_id"))
         rows += ["", "## 实验过程回溯", "", f"识别{operations['event_count']}步操作、{operations['error_count']}处报错。"]
+        if len(operations["events"]) < operations["event_count"]:
+            rows += ["", f"下方列出{len(operations['events'])}步，优先保留报错及对应重试。"]
         if focus:
             rows += ["", f"关键操作：{time_label(focus['seconds'], precise=True)} · {clean(focus['device'])} · {clean(focus['view_label'])}",
                      "", _operation_location(focus), "", clean(focus["command"]), "", clean(focus["explanation"])]
@@ -169,16 +223,7 @@ def generate_open_report(history):
             rows.append(f"- {clean(evidence['device'])} 第{evidence['line']}行：{clean(evidence['quote'])}")
     elif result["status"] == "verified_from_observations":
         rows += ["", "恢复依据：工具已核对实验目标对应的提交测试输出。"]
-    assessment = analysis.get("goal_assessment", {})
-    if assessment.get("checks"):
-        rows += ["", "## 实验目标逐项核对", "", "| 目标 | 状态 | 核对结果 |", "| --- | --- | --- |"]
-        for check in assessment["checks"]:
-            rows.append(f"| {clean(check['title'])} | {LABELS[check['status']]} | {clean(check['detail'])} |")
-        for check in assessment["checks"]:
-            instruction = check["instruction"]
-            rows.append(f"- 要求：{clean(instruction['device'])} 第{instruction['line']}行：{clean(instruction['quote'])}")
-            for item in check["evidence"]:
-                rows.append(f"  - 结果：{clean(item['device'])} 第{item['line']}行：{clean(item['quote'])}")
+    rows += _goal_assessment_rows(attempts)
     plan = analysis.get("diagnostic_plan", {})
     if plan and result["status"] not in RESOLVED_STATUSES | {"cancelled"} and analysis.get("outcome") != "ready_for_retest":
         selected = plan.get("selected")

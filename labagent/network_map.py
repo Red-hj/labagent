@@ -119,7 +119,8 @@ def build_map(sources):
                 current["route_table"] = True
                 current["routes"] = [{**row, "evidence": [citation(block, row["line"])]} for row in routes]
     pings, _, _ = submitted_pings(sources)
-    for event in inspect_history(sources)["events"]:
+    # Keep the map's evidence budget in source order, independent of replay display.
+    for event in inspect_history(sources, full=True)["events"][:400]:
         if re.fullmatch(DEVICE, event["device"]):
             current = node(event["device"])
             for ref in event["evidence"]:
