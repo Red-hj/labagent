@@ -145,6 +145,8 @@ def generate_open_report(history):
         by_id = {event["id"]: event for event in operations["events"]}
         focus = by_id.get(operations.get("focus_id") or operations.get("first_issue_id"))
         rows += ["", "## 实验过程回溯", "", f"识别{operations['event_count']}步操作、{operations['error_count']}处报错。"]
+        if len(operations["events"]) < operations["event_count"]:
+            rows += ["", f"下方列出{len(operations['events'])}步，优先保留报错及对应重试。"]
         if focus:
             rows += ["", f"关键操作：{time_label(focus['seconds'], precise=True)} · {clean(focus['device'])} · {clean(focus['view_label'])}",
                      "", _operation_location(focus), "", clean(focus["command"]), "", clean(focus["explanation"])]

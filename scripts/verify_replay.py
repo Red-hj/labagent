@@ -141,7 +141,7 @@ def main():
     if args.terminal_log is not None:
         raw = args.terminal_log.read_text(encoding="utf-8-sig")
         log_sources, _ = source_bundle({"configs": {args.terminal_log.name: raw}})
-        log_scores = score_events(inspect_history(log_sources), annotations, tolerance=None)
+        log_scores = score_events(inspect_history(log_sources, full=True), annotations, tolerance=None)
     service = Recordings(folder / "recordings")
     with video.open("rb") as stream:
         job = service.upload(stream, video.stat().st_size, video.name)
@@ -159,7 +159,7 @@ def main():
     materials = {status["material_name"]: status["transcript"]}
     if args.video is None:
         materials["实验要求.txt"] = "实验目标：R1通过OSPF访问R2的Loopback0地址10.2.2.2，Ping全部成功。"
-    operations = inspect_history(source_bundle({"configs": materials})[0])
+    operations = inspect_history(source_bundle({"configs": materials})[0], full=True)
     (folder / "operations.json").write_text(json.dumps(operations, ensure_ascii=False, indent=2), encoding="utf-8")
     issues = [event for event in operations["events"] if event["status"] == "error"]
     issue = issues[0] if issues else None
