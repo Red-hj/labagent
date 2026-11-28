@@ -92,6 +92,57 @@ class ConnectivityTests(unittest.TestCase):
         self.assertEqual(checked["pings"][0]["target"], "3.3.3.3")
         self.assertEqual(assessment["checks"][0]["evidence"], checked["pings"][0]["evidence"])
 
+    def test_ping_keeps_the_source_reported_by_linux(self):
+        header = "PING 10.30.0.10 (10.30.0.10) from 10.12.0.2 eth0: 56(84) bytes of data."
+        counters = "5 packets transmitted, 5 received"
+        for option, first_line in (("eth0", 1), ("10.12.0.1", 2)):
+            with self.subTest(option=option):
+                lines = [f"pc1$ ping -I {option} 10.30.0.10", header, counters]
+                row, = parse_ping_records(lines)
+                self.assertEqual((row["target"], row["source_address"], row["line"]), ("10.30.0.10", "10.12.0.2", first_line))
+                self.assertTrue(all(lines[ref["line"] - 1] == ref["quote"] for ref in row["evidence"]))
+
+    def test_distinct_source_addresses_keep_independent_retest_results(self):
+        from labagent.experiment_goals import check_goals
+        from labagent.network_map import build_map, explain_path
+
+        target = "10.30.0.10"
+        failed = f"<R1>ping -a 1.1.1.1 {target}\n5 packets transmitted, 0 received"
+        passed = f"<R1>ping -a 2.2.2.2 {target}\n5 packets transmitted, 5 received"
+        payload = {"configs": {"R1.log": failed + "\n" + passed}, "question": "核对 R1 的两次源地址测试"}
+        goal = {"id": "reach", "title": payload["question"], "kind": "reachability", "device": "R1",
+                "target": target, "expected": "", "instruction": {"source_id": "question:initial",
+                    "device": "实验问题与要求", "line": 1, "quote": payload["question"]}}
+
+        def review():
+            sources, _ = source_bundle(payload)
+            checked, _ = execute_tool("check_submitted_pings", {}, payload, sources, set())
+            return sources, checked, check_goals([goal], sources)["checks"][0]
+
+        sources, checked, check = review()
+        self.assertEqual([(row["source_address"], row["received"]) for row in checked["pings"]], [("1.1.1.1", 0), ("2.2.2.2", 5)])
+        self.assertEqual(check["status"], "failed")
+        self.assertEqual(checked["superseded_pings"], [])
+        route = explain_path(build_map(sources), "R1", target)
+        self.assertEqual(route["status"], "failed")
+        ping_steps = [step for step in route["steps"] if step["title"].startswith("端到端测试")]
+        self.assertEqual([step["status"] for step in ping_steps], ["passed", "failed"])
+        self.assertIn("2.2.2.2", ping_steps[0]["detail"])
+        self.assertIn("1.1.1.1", ping_steps[1]["detail"])
+
+        payload["interaction"] = {"type": "verify", "message":
+            f"PING {target} ({target}) 56 data bytes\n5 packets transmitted, 5 received"}
+        _, checked, check = review()
+        self.assertEqual(len(checked["pings"]), 3)
+        self.assertEqual(checked["superseded_pings"], [])
+        self.assertEqual(check["status"], "failed")
+
+        payload["interaction"]["message"] = f"<R1>ping -a 1.1.1.1 {target}\n5 packets transmitted, 5 received"
+        _, checked, check = review()
+        self.assertEqual([(row["source_address"], row["received"]) for row in checked["pings"]], [("1.1.1.1", 5), ("2.2.2.2", 5)])
+        self.assertEqual([row["source_address"] for row in checked["superseded_pings"]], ["1.1.1.1"])
+        self.assertEqual(check["status"], "passed")
+
     def test_later_complete_ping_in_one_log_replaces_earlier_failure(self):
         from labagent.experiment_goals import check_goals
 

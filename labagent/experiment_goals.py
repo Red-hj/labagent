@@ -133,7 +133,7 @@ def ping_device(block, row):
 
 
 def _ping_observations(blocks):
-    """Use the latest complete observation for each device and destination."""
+    """Use the latest complete observation for each device, source address and destination."""
     current, reported, observations = {}, [], []
     for block in blocks:
         for row in parse_ping_records(block["lines"]):
@@ -146,15 +146,15 @@ def _ping_observations(blocks):
                 reported.append(item)
             else:
                 observations.append(item)
-                current[(device.casefold(), row["target"])] = item
-    active = list(current.values())
-    from_message = [item for item in active if item["source_id"] == "message:current"]
-    unnamed_targets = {item["target"] for item in from_message if item["test_device"] == item["device"]}
-    named_targets = {item["target"] for item in from_message if item["test_device"] != item["device"]}
-    earlier_counts = Counter(item["target"] for item in active if item["source_id"] != "message:current")
-    # Preserve the single-source retest flow when a pasted result has no device label.
-    replaced_targets = {target for target in unnamed_targets - named_targets if earlier_counts[target] == 1}
-    active = [item for item in active if item["source_id"] == "message:current" or item["target"] not in replaced_targets]
+                current[(device.casefold(), (row["target"], row.get("source_address")))] = item
+    from_message = [(path, item) for (_, path), item in current.items() if item["source_id"] == "message:current"]
+    unnamed_paths = {path for path, item in from_message if item["test_device"] == item["device"]}
+    named_paths = {path for path, item in from_message if item["test_device"] != item["device"]}
+    earlier_counts = Counter(path for (_, path), item in current.items() if item["source_id"] != "message:current")
+    # Preserve an unlabeled retest only when its source address and target have a single earlier origin.
+    replaced_paths = {path for path in unnamed_paths - named_paths if earlier_counts[path] == 1}
+    active = [item for (_, path), item in current.items()
+              if item["source_id"] == "message:current" or path not in replaced_paths]
     active_refs = {(item["source_id"], item["line"]) for item in active}
     superseded = [item for item in observations if (item["source_id"], item["line"]) not in active_refs]
     return active, reported, superseded

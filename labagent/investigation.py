@@ -239,7 +239,7 @@ def _check_submitted_pings(args, payload, sources, seen, *, previous_materials=N
         seen.update((row["source_id"], item["line"]) for item in row["evidence"])
     return {"source": "uploaded_text", "pings": observations[:100], "reported_pings": reported,
             "superseded_pings": superseded[:100],
-            "note": "pings为同设备同目标的最新输出，superseded_pings为已被新输出替代的历史记录；reported_pings为用户口述统计。"}, False
+            "note": "pings为同设备、同源地址和同目标的最新输出，superseded_pings为已被新输出替代的历史记录；reported_pings为用户口述统计。"}, False
 
 
 @tool_registry.register(SUBMIT_HYPOTHESES_TOOL, "正在整理结论与下一步")

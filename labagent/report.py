@@ -11,6 +11,11 @@ def clean(value):
     return str(value).replace("\r", " ").replace("\n", " ").replace("|", "\\|")
 
 
+def _ping_material(ping):
+    material = clean(ping.get("device", "提交输出"))
+    return material + (f"（源 {clean(ping['source_address'])}）" if ping.get("source_address") else "")
+
+
 def _operation_location(event):
     return f"{clean(event['material'])} 第{event['line']}行"
 
@@ -73,7 +78,7 @@ def generate_report(history):
         rows.append(f"- {clean(check['check'])}：{clean(check['status'])}；来源 {clean(check.get('source', 'user_submitted'))}")
     ping_rows = result.get("interaction_checks", {}).get("check_submitted_pings", {}).get("pings", [])
     for ping in ping_rows:
-        rows.append(f"- {clean(ping['device'])} → {clean(ping['target'])}：{ping['sent']}发{ping['received']}收，{'通过' if ping['passed'] else '未通过'}。")
+        rows.append(f"- {_ping_material(ping)} → {clean(ping['target'])}：{ping['sent']}发{ping['received']}收，{'通过' if ping['passed'] else '未通过'}。")
     for missing in result["runtime_missing"]:
         rows.append(f"- 待补充：{clean(missing)}")
     for warning in result.get("command_output_parsing", {}).get("warnings", []):
@@ -255,7 +260,7 @@ def generate_open_report(history):
     if pings:
         rows += ["", "## 本次运行复测", "", "| 材料来源 | 目标 | 发送 | 接收 | 结果 |", "| --- | --- | --- | --- | --- |"]
         for ping in pings:
-            rows.append(f"| {clean(ping.get('device', '提交输出'))} | {clean(ping['target'])} | {ping['sent']} | {ping['received']} | {'通过' if ping['passed'] else '未通过'} |")
+            rows.append(f"| {_ping_material(ping)} | {clean(ping['target'])} | {ping['sent']} | {ping['received']} | {'通过' if ping['passed'] else '未通过'} |")
     routes = result.get("interaction_checks", {}).get("check_route_selection", [])
     if routes:
         rows += ["", "## 路由表核对", ""]

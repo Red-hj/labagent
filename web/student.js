@@ -619,7 +619,11 @@ function renderChecks(checks) {
   if (checks.check_submitted_pings?.pings?.length) {
     const pings = checks.check_submitted_pings.pings;
     container.append(element("p", pings.length ? "已核对上传材料中的 " + pings.length + " 条 Ping 记录：" : "请补充包含收发统计的 Ping 输出。"));
-    for (const ping of pings) container.append(element("p", ping.device + " → " + ping.target + "：" + ping.sent + " 发 " + ping.received + " 收 · " + (ping.passed ? "该条观测通过" : "该条观测未通过"), ping.passed ? "check-pass" : "check-fail"));
+    for (const ping of pings) {
+      const source = ping.device + (ping.source_address ? "（源 " + ping.source_address + "）" : "");
+      container.append(element("p", source + " → " + ping.target + "：" + ping.sent + " 发 " + ping.received + " 收 · " +
+        (ping.passed ? "该条观测通过" : "该条观测未通过"), ping.passed ? "check-pass" : "check-fail"));
+    }
   }
   for (const lookup of routes) {
     container.append(element("p", lookup.detail));
