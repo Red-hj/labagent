@@ -22,9 +22,15 @@ PLAN_TOOL = {"type": "function", "function": {"name": "plan_diagnostic_checks",
         "required": ["hypotheses", "tests"], "additionalProperties": False}}}
 
 
-def rank_checks(hypotheses, tests):
+def normalize_check_command(command):
+    return " ".join(str(command or "").strip().lower().split())
+
+
+def rank_checks(hypotheses, tests, *, observed_commands=None):
     active = {item["id"] for item in hypotheses if item["state"] != "ruled_out"}
     pairs = list(combinations(sorted(active), 2))
+    observed = {(device.casefold(), normalize_check_command(cmd)) for device, cmd in (observed_commands or set())
+                if device and cmd}
     ranked = []
     for test in tests:
         predictions = {item["hypothesis_id"]: item["result"].strip().casefold() for item in test["predictions"]
@@ -32,19 +38,35 @@ def rank_checks(hypotheses, tests):
         separated = [list(pair) for pair in pairs if all(key in predictions for key in pair) and predictions[pair[0]] != predictions[pair[1]]]
         if not predictions or not active:
             continue
+        already_observed = (test["device"].casefold(), normalize_check_command(test["command"])) in observed
+        distinct_outcomes = len(set(predictions.values()))
+        uniform_outcome = len(active) > 1 and len(predictions) > 1 and distinct_outcomes == 1
         ranked.append({**test, "separated_pairs": separated, "pair_count": len(separated),
-                       "coverage": len(predictions), "score": round(len(separated) / test["cost"], 3)})
-    ranked.sort(key=lambda item: (item["pair_count"] / item["cost"], item["coverage"], -item["cost"]), reverse=True)
-    selected = ranked[0] if ranked else None
-    reason = "当前原因均已排除，等待新的排查方向。"
-    if selected:
+                       "coverage": len(predictions), "already_observed": already_observed,
+                       "score": round(len(separated) / test["cost"], 3),
+                       "_uniform": uniform_outcome})
+    ranked.sort(key=lambda item: (
+        not item["already_observed"],
+        item["pair_count"] / item["cost"],
+        not item["_uniform"],
+        item["coverage"],
+        -item["cost"],
+    ), reverse=True)
+    for item in ranked:
+        item.pop("_uniform", None)
+    selected = next((item for item in ranked if not item["already_observed"]), None)
+    reason = ("当前检查的预期结果不足以选择下一步，请补充能区分原因的检查。" if active
+              else "当前原因均已排除，等待新的排查方向。")
+    if ranked and selected is None:
+        reason = "所列检查在当前材料中已有观测记录，无需重复采集。"
+    elif selected:
         reason = (f"这项检查能区分{selected['pair_count']}组候选原因，采集成本为{selected['cost']}。"
                   if selected["pair_count"] else "这项检查用于核对剩余原因；当前候选结果还不能进一步区分原因。")
     return {"hypotheses": hypotheses, "tests": ranked, "selected": selected, "reason": reason,
             "method": "separated_hypothesis_pairs_per_cost"}
 
 
-def validate_plan(args, check_citation):
+def validate_plan(args, check_citation, *, observed_commands=None):
     if not isinstance(args, dict) or set(args) != {"hypotheses", "tests"}:
         raise ValueError("检查规划需要hypotheses和tests")
     hypotheses, tests = args["hypotheses"], args["tests"]
@@ -80,4 +102,4 @@ def validate_plan(args, check_citation):
             if not isinstance(prediction["result"], str) or not prediction["result"].strip() or len(prediction["result"]) > 80:
                 raise ValueError("预期结果标签须为80字以内文本")
             predicted.add(prediction["hypothesis_id"])
-    return rank_checks(checked, tests)
+    return rank_checks(checked, tests, observed_commands=observed_commands)

@@ -24,7 +24,8 @@ COMMON = (
     "围绕可见报错和输出解释，必要时补截图或核对OCR字符。语法或视图出错时修正当前一步并保留其他参数；参数修改需对应目标或接口的依据。",
     "OSPF network地址与反掩码选择参与OSPF的接口。0.0.0.0精确匹配接口主IP，不等于通告/32；"
     "通告前缀由接口掩码、网络类型等决定。以太网10.12.0.2/24用network 10.12.0.2 0.0.0.0参与时，接口网段仍为10.12.0.0/24。"
-    "network可匹配包括Loopback在内的接口，另一个接口地址不能作为改写目标的依据。",
+    "已有network 0.0.0.0已匹配对应接口主IP时，不要建议把反掩码改成0.0.0.255或改动正常接口的network语句；"
+    "新增/32 Loopback宣告优先使用network <接口IP> 0.0.0.0或接口下ospf enable。",
     "检查OSPF区域时，两端区域都需材料依据；缺一端先要相应display ospf interface输出或完整配置。"
     "接口配置可能缺少OSPF进程下的network规则。两端一致时说明已排除失配；修改哪端及目标区域需实验要求或拓扑依据。"
     "目标明确且network选错区域时，只移动对应语句，保留其余区域与接口。",
@@ -32,11 +33,12 @@ COMMON = (
     "广播或NBMA网络上两个DROther之间正常停在2-Way，不应一律判故障或要求改成点到点。"
     "判断是否应到Full需结合接口网络类型以及本地和邻居的DR/BDR角色；缺这些输出先说明条件。"
     "点到点链路及涉及DR/BDR的邻居应建立邻接，持续停在2-Way时再结合后续协商、事件和实际输出排查，"
-    "不能仅凭2-Way断言区域失配或Hello不通。"
+    "不能仅凭2-Way断言区域失配或Hello不通。",
     "实验原文明确要求某个 OSPF 邻居达到指定状态时，用check_experiment_goals的ospf_neighbor核对。"
     "device填本机设备，target填对端Router ID，expected填目标状态（如Full）。",
     "read_source的configuration_coverage说明配置覆盖范围，range_complete只表示读完所求行。"
-    "partial_or_unconfirmed或未读全时，未见命令不代表缺失。已有失败现象不用重复采集，修改后再取新输出复测。",
+    "partial_or_unconfirmed或未读全时，未见命令不代表缺失，严禁在正文或标题提前断言该设备漏配/未宣告，也不给出未经证实的补配步骤，先补齐该设备完整配置或运行输出。"
+    "已有失败现象或已提交当前路由表时不用重复采集同一当前输出，修改后再取新输出复测。",
     "查询当前路由、来源协议或下一跳时，用check_route_selection按设备和实际目标核对。"
     "配置中的静态路由是候选，已安装路由按表项判断。no_match表示已核对完整当前表而无匹配，不再索取同一表；needs_evidence时补所缺材料。"
     "只有网段却缺端点IP时索要实际端点IP，Ping用实际收发统计。",
@@ -53,14 +55,16 @@ DIAGNOSIS = (
     "已排除原因用state=ruled_out，目标编号留在工具字段。",
     "ask回答追问或概念，repair给具体修改步骤，update分析新材料，verify先用compare_materials和check_submitted_pings核对变化及Ping。"
     "修改用明确目标参数，不猜测删除命令后的默认行为。首次提取experiment_goal与verification_targets，后续沿用。"
-    "给出步骤后可用ready_for_retest。目标Ping与原实验目标均通过才用observations_passed，此时hypotheses与evidence_requests为空。"
+    "给出明确最小修改步骤且当前证据已足够定位时，用ready_for_retest并将evidence_requests设为空数组，不再索要修改前的当前路由表或配置；"
+    "目标Ping与原实验目标均通过才用observations_passed，此时hypotheses与evidence_requests为空。"
     "用户明确口述恢复时用user_reported_resolved，resolution_evidence引用本轮反馈，与工具核验分别记录。"
     "已恢复时不索要无关材料，概念追问保留完成状态，再次失败时引用新反馈继续排查。",
     "用read_source读取实验说明、question:initial或本轮追问中的要求，再用check_experiment_goals提取可检查目标：reachability、route_protocol、config_contains/config_absent、ospf_interface_area。"
     "目标的instruction只填已读的source_id和line，工具会保存完整原文。同一行明确写了多项目标时可共用该行。"
     "区域目标device填设备、target填接口、expected填区域号，两端分别核对。"
     "路由目标指定源设备、目的地址和协议，配置目标填写命令前缀。后续空对象沿用saved_goals。"
-    "按checks说明满足与缺少的项目，不能只检查Ping就宣布协议实验完成。",
+    "按checks说明满足与缺少的项目，不能只检查Ping就宣布协议实验完成。"
+    "若现有材料不足以唯一定位且存在2个及以上待验证原因（如远端配置仅为摘录或中间链路未观测），提交前调用plan_diagnostic_checks按区分能力和采集成本选出下一项只读检查；故障已由完整材料确定或目标已全部通过时不调用。",
     "仅查询选路时，check_route_selection后用submit_hypotheses的answer_mode=route_table，summary写‘核对当前路由’，hypotheses与evidence_requests为空；"
     "还需解释故障、修改或核对Ping时省略answer_mode。时间线焦点用operation_focus填写工具返回的事件id。",
 )
@@ -79,13 +83,18 @@ GUIDANCE = (
 )
 
 
-def system_instructions(active_learning=None, previous=None, *, connected=False):
+GOAL_TOOL_NAMES = ("check_experiment_goals", "plan_diagnostic_checks")
+
+
+def system_instructions(active_learning=None, previous=None, *, connected=False, goal_checks=True):
     sections = [*COMMON]
     if active_learning:
         sections.extend(GUIDANCE)
         sections.append(learning_instructions(active_learning, previous))
     else:
         sections.extend(DIAGNOSIS)
+    if not goal_checks:
+        sections = [section for section in sections if not any(name in section for name in GOAL_TOOL_NAMES)]
     if connected:
         sections.append("可用lab_开头的MCP工具读取本实验设备，输出加入当前材料并可引用。工具成功表示取得输出，达标由目标核对决定；需要当前状态时重新采集。")
     return "\n".join(sections)

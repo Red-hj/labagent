@@ -241,7 +241,8 @@ class ExperimentGoalTests(unittest.TestCase):
                 with self.subTest(goals=mode, case=name):
                     request = requests[name]
                     sources, _ = source_bundle(request)
-                    context, seen = {"goal_checks_disabled": not mode}, {("config:3", 3)}
+                    context = {"goal_checks_disabled": not mode}
+                    seen = {(key, line) for key, source in sources.items() for line in range(1, len(source["lines"]) + 1)}
                     execute_tool("check_route_selection", {"device": "R1", "target": "10.3.3.3"}, request,
                                  sources, seen, diagnostic_context=context)
                     result, _ = execute_tool("submit_hypotheses", wrong, request, sources, seen, diagnostic_context=context)

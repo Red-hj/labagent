@@ -13,6 +13,9 @@ from labagent.recordings import changed_lines, write_status
 
 
 def create_ocr():
+    import onnxruntime
+    # Windows builds collect platform telemetry unless disabled before sessions start.
+    onnxruntime.disable_telemetry_events()
     from rapidocr import RapidOCR
     models = ROOT / "runtime/ocr-models"
     models.mkdir(parents=True, exist_ok=True)
